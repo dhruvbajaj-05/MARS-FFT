@@ -1,0 +1,10 @@
+node_modules/
+.env
+*.log
+npm-debug.log*
+.DS_Store
+coverage/
+dist/
+
+# Uploaded media binaries (URLs are persisted in mongo; files are not committed)
+public/uploads/

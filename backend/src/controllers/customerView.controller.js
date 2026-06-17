@@ -1,0 +1,69 @@
+'use strict';
+
+const customerViewService = require('../services/customerView.service');
+
+// Phase 8 — Customer dashboard (read-only). Every handler delegates to the service,
+// which scopes all data to req.user.customerId. There are intentionally no
+// create/update/delete handlers.
+
+// GET /api/v1/customer/dashboard  (customer) — order counters for this customer.
+async function dashboard(req, res, next) {
+  try {
+    const result = await customerViewService.getDashboard(req.user);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/customer/orders  (customer) — paginated list of own orders + summary.
+async function listOrders(req, res, next) {
+  try {
+    const result = await customerViewService.listOrders(req.user, req.query);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/customer/orders/:id  (customer) — full detail for one own order.
+async function getOrder(req, res, next) {
+  try {
+    const result = await customerViewService.getOrderDetails(req.user, req.params.id);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/customer/orders/:id/progress  (customer) — per-department progress.
+async function getOrderProgress(req, res, next) {
+  try {
+    const result = await customerViewService.getOrderProgress(req.user, req.params.id);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/customer/components  (customer) — Component Store availability.
+async function components(req, res, next) {
+  try {
+    const result = await customerViewService.getComponentAvailability(req.user);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/customer/finished-goods  (customer) — Finished Goods availability.
+async function finishedGoods(req, res, next) {
+  try {
+    const result = await customerViewService.getFinishedGoods(req.user);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { dashboard, listOrders, getOrder, getOrderProgress, components, finishedGoods };

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(unzip -p docs/FFT_Manufacturing_Platform_Requirements.docx word/document.xml)",
+      "Bash(npm run *)",
+      "Bash(npm start *)",
+      "Bash(node -e \"require\\('./src/models/MoldDefinition'\\); require\\('./src/models/MouldingRecord'\\); require\\('./src/services/mold.service'\\); require\\('./src/services/moulding.service'\\); require\\('./src/controllers/moulding.controller'\\); require\\('./src/routes/moulding.routes'\\); console.log\\('OK: all Phase 1 modules load'\\);\")",
+      "Bash(node *)",
+      "Read(//c/Users/dhruv/.claude/projects/C--Users-dhruv-Desktop-Modern-Manufacturing/memory/**)",
+      "Bash(xargs grep -l \"createNativeStackNavigator\\\\|Tab.Screen\\\\|Stack.Screen\")"
+    ]
+  }
+}

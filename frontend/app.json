@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "FFT Manufacturing",
+    "slug": "fft-manufacturing-mobile",
+    "version": "1.0.0",
+    "orientation": "default",
+    "scheme": "fftmfg",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0F172A"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.fft.manufacturing",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app uses the camera to capture production, QC and dispatch photos.",
+        "NSPhotoLibraryUsageDescription": "This app needs photo library access to attach images to records."
+      }
+    },
+    "android": {
+      "package": "com.fft.manufacturing",
+      "adaptiveIcon": {
+        "backgroundColor": "#0F172A"
+      },
+      "permissions": ["CAMERA", "READ_EXTERNAL_STORAGE", "READ_MEDIA_IMAGES"]
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow FFT Manufacturing to access your photos to attach record images.",
+          "cameraPermission": "Allow FFT Manufacturing to use the camera to capture record photos."
+        }
+      ]
+    ],
+    "extra": {
+      "apiBaseUrl": "http://192.168.29.14:5001"
+    }
+  }
+}

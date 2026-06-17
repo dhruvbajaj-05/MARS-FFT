@@ -1,0 +1,35 @@
+{
+  "name": "fft-manufacturing-backend",
+  "version": "1.0.0",
+  "description": "FFT Manufacturing Transparency Platform — Backend API (Phase 1: foundation, MongoDB, models, JWT auth, RBAC)",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "seed:admin": "node src/scripts/seedAdmin.js",
+    "migrate:workflow": "node src/scripts/migrateWorkflow.js"
+  },
+  "keywords": [
+    "fft",
+    "manufacturing",
+    "express",
+    "mongodb",
+    "jwt",
+    "rbac"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.5.1",
+    "morgan": "^1.10.0",
+    "multer": "^2.1.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  }
+}
