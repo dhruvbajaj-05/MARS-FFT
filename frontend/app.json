@@ -11,7 +11,9 @@
       "resizeMode": "contain",
       "backgroundColor": "#0F172A"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.fft.manufacturing",
@@ -25,7 +27,12 @@
       "adaptiveIcon": {
         "backgroundColor": "#0F172A"
       },
-      "permissions": ["CAMERA", "READ_EXTERNAL_STORAGE", "READ_MEDIA_IMAGES"]
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "plugins": [
       "expo-secure-store",
@@ -38,7 +45,10 @@
       ]
     ],
     "extra": {
-      "apiBaseUrl": "http://192.168.29.14:5001"
+      "apiBaseUrl": "https://mars-fft-production.up.railway.app",
+      "eas": {
+        "projectId": "ca2adca9-44a6-422c-ac62-008a717acf1d"
+      }
     }
   }
 }
