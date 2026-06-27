@@ -8,6 +8,7 @@ const Customer = require('../models/Customer');
 const Product = require('../models/Product');
 const moldService = require('./mold.service');
 const orderMoldService = require('./orderMold.service');
+const OrderMold = require('../models/OrderMold');
 const storeService = require('./store.service');
 const rejectionReasonService = require('./rejectionReason.service');
 const { currentShift } = require('../utils/shift');
@@ -20,10 +21,21 @@ const EDIT_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 // ---- Order-level production status (computed at read time).
 // Fulfillment is measured by GOOD parts; rejected parts cannot ship.
-function deriveStatus({ recordCount, totalGoodParts }, orderQuantity) {
+function deriveStatus({ recordCount, totalGoodParts }, targetPieces) {
   if (recordCount === 0) return 'Pending';
-  if (totalGoodParts >= orderQuantity) return 'Completed';
+  if (totalGoodParts >= targetPieces) return 'Completed';
   return 'In Progress';
+}
+
+// Sum of (requiredShots × cavity) across all molds set up for an order.
+// This is the true piece target for moulding — distinct from order.orderQuantity which is
+// in customer-facing sets/units, not moulded pieces.
+async function computeTargetPieces(orderId) {
+  const [agg] = await OrderMold.aggregate([
+    { $match: { orderId: new mongoose.Types.ObjectId(String(orderId)) } },
+    { $group: { _id: null, total: { $sum: { $multiply: ['$requiredShots', '$cavity'] } } } },
+  ]);
+  return agg?.total ?? 0;
 }
 
 async function computeOrderStatus(orderId) {
@@ -35,20 +47,24 @@ async function computeOrderStatus(orderId) {
     throw notFound('Order not found', 'order_not_found');
   }
 
-  const [agg] = await MouldingRecord.aggregate([
-    { $match: { orderId: order._id } },
-    {
-      $group: {
-        _id: null,
-        totalProduced: { $sum: '$productionQuantity' },
-        totalGoodParts: { $sum: '$goodParts' },
-        recordCount: { $sum: 1 },
+  const [[agg], targetFromMolds] = await Promise.all([
+    MouldingRecord.aggregate([
+      { $match: { orderId: order._id } },
+      {
+        $group: {
+          _id: null,
+          totalProduced: { $sum: '$productionQuantity' },
+          totalGoodParts: { $sum: '$goodParts' },
+          recordCount: { $sum: 1 },
+        },
       },
-    },
+    ]),
+    computeTargetPieces(order._id),
   ]);
 
   const sums = agg || { totalProduced: 0, totalGoodParts: 0, recordCount: 0 };
-  const orderQuantity = order.orderQuantity;
+  // Use mold-derived piece target when molds are configured; fall back to order quantity.
+  const orderQuantity = targetFromMolds > 0 ? targetFromMolds : order.orderQuantity;
   const status = deriveStatus(sums, orderQuantity);
   const progressPct = orderQuantity > 0
     ? Math.min(100, Math.round((sums.totalGoodParts / orderQuantity) * 100))
@@ -164,11 +180,39 @@ async function validateChain({ orderId, productId, customerId }) {
 async function createMouldingRecord({ payload, file, createdBy }) {
   const order = await validateChain(payload);
 
-  if (order.productionStatus === 'Completed' || order.status === 'Archived') {
+  if (order.status === 'Archived') {
     throw conflict(
       'Production for this order is already completed — the moulding workspace is closed.',
       'production_completed'
     );
+  }
+
+  if (order.productionStatus === 'Completed') {
+    // Self-heal: if the order was auto-completed incorrectly (goodParts vs order sets mismatch),
+    // reset it so the engineer can continue pushing production.
+    const targetPieces = await computeTargetPieces(order._id);
+    if (targetPieces > 0) {
+      const [existingAgg] = await MouldingRecord.aggregate([
+        { $match: { orderId: order._id } },
+        { $group: { _id: null, total: { $sum: '$goodParts' } } },
+      ]);
+      const currentGoodParts = existingAgg?.total ?? 0;
+      if (currentGoodParts < targetPieces) {
+        order.productionStatus = 'Active';
+        order.productionCompletedAt = null;
+        await order.save();
+      } else {
+        throw conflict(
+          'Production for this order is already completed — the moulding workspace is closed.',
+          'production_completed'
+        );
+      }
+    } else {
+      throw conflict(
+        'Production for this order is already completed — the moulding workspace is closed.',
+        'production_completed'
+      );
+    }
   }
 
   const moldName = String(payload.moldName).trim();
