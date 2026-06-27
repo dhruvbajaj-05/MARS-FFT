@@ -9,18 +9,22 @@ const { ROLES } = require('../utils/roles');
 
 const router = express.Router();
 
-// Updated workflow: the engineer enters Shots Done + Rejected Pieces; cavity/part are
-// resolved from the selected mold (so they are not required in the body). Good pieces
-// are computed server-side (Shots × Cavity − Rejected).
-// Shift is auto-detected server-side (no longer sent by the client).
+// Required body fields for a new production record.
 const REQUIRED_FIELDS = [
   'orderId', 'productId', 'customerId',
   'moldName', 'machineNumber',
-  'shotsDone', 'rejectedParts',
+  'shotsDone',
 ];
 
-// Create a moulding record — moulding engineer only.
-// `singleImage` (multipart) runs before requireBody so text fields are parsed first.
+// Dashboard: companies → products → active order counts (moulding engineer + admin).
+// Declared before /:id so "dashboard" is not captured as an id.
+router.get(
+  '/dashboard',
+  ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER),
+  mouldingController.dashboard
+);
+
+// Create a moulding record (moulding engineer only).
 router.post(
   '/',
   ...protect(ROLES.MOULDING_ENGINEER),
@@ -29,32 +33,37 @@ router.post(
   mouldingController.create
 );
 
-// This engineer's own records — moulding engineer only.
+// All dept records (shared visibility, role-based — moulding engineer only).
 router.get('/mine', ...protect(ROLES.MOULDING_ENGINEER), mouldingController.listMine);
 
-// Computed production status for an order — admin + moulding engineer.
+// Computed production status for an order.
 router.get(
   '/status',
   ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER),
   mouldingController.status
 );
 
-// Remembered rejection reasons (dropdown + custom entry) — admin + moulding engineer.
+// Remembered rejection reasons (multi-select list).
 router.get(
   '/rejection-reasons',
   ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER),
   mouldingController.rejectionReasons
 );
 
-// Learned molds for a product (Mold Learning dropdown + part autofill) — admin +
-// moulding engineer. Declared before '/:id' so "molds" is not captured as an id.
+// Recover good pieces from rejected shots → product surplus.
+router.post(
+  '/recover',
+  ...protect(ROLES.MOULDING_ENGINEER),
+  requireBody(['orderId', 'productId', 'customerId', 'recoveries']),
+  mouldingController.recover
+);
+
+// Learned molds for a product. Declared before /:id.
 router.get(
   '/molds',
   ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER),
   mouldingController.listMolds
 );
-
-// Define/edit a mold (Mold Name, Part, Cavity, Required Shots) — moulding engineer.
 router.post(
   '/molds',
   ...protect(ROLES.MOULDING_ENGINEER),
@@ -62,7 +71,7 @@ router.post(
   mouldingController.createMold
 );
 
-// Per-order Mould Setup (revised workflow). Declared before '/:id'.
+// Per-order Mould Setup. Declared before /:id.
 router.get(
   '/order-molds',
   ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER),
@@ -75,15 +84,27 @@ router.post(
   mouldingController.createOrderMold
 );
 
-// Read-all across customers/orders — admin only.
+// Read-all — admin only.
 router.get('/', ...protect(ROLES.ADMIN), mouldingController.listAll);
 
-// Get one — admin (any) or moulding engineer (own, enforced in the service).
+// Get, edit, delete one record — admin (get only) or moulding engineer (own, with 12h window).
 router.get(
   '/:id',
   ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER),
   validateObjectId('id'),
   mouldingController.getById
+);
+router.patch(
+  '/:id',
+  ...protect(ROLES.MOULDING_ENGINEER),
+  validateObjectId('id'),
+  mouldingController.update
+);
+router.delete(
+  '/:id',
+  ...protect(ROLES.MOULDING_ENGINEER),
+  validateObjectId('id'),
+  mouldingController.remove
 );
 
 module.exports = router;

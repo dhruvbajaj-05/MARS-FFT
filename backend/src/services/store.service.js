@@ -795,11 +795,76 @@ async function ensureStoreIndexes() {
   }
 }
 
+// Add recovered pieces directly to PRODUCT-LEVEL surplus (no order scope).
+// Used when an engineer physically inspects rejected shots and finds good pieces.
+async function addToSurplus({ customerId, productId, partName, moldName, cavity, quantity, referenceId, remarks, createdBy }) {
+  const qty = assertPositiveQuantity(quantity);
+  assertObjectId(customerId, 'customerId');
+  assertObjectId(productId, 'productId');
+  const part = String(partName || '').trim();
+  if (!part) throw badRequest('partName is required', 'missing_part');
+
+  const balance = await incSurplusBalance({ customerId, productId, partName: part, moldName, cavity, quantity: qty });
+  await writeLedger({
+    storeType: STORE.SURPLUS, transactionType: TXN.IN, customerId, productId, orderId: null,
+    partName: part, quantity: qty, sourceModule: 'moulding_recovery',
+    referenceId: referenceId || null, remarks: remarks || 'Recovered from rejected shots', createdBy,
+  });
+  return balance;
+}
+
+// On new order creation, move all available product surplus into the order's component
+// store (Pending bucket). This means the engineer only needs to produce what the surplus
+// doesn't already cover. The surplus is drained per-part, and each transfer is logged.
+async function consumeSurplusForNewOrder({ customerId, productId, orderId, createdBy }) {
+  assertObjectId(customerId, 'customerId');
+  assertObjectId(productId, 'productId');
+  assertObjectId(orderId, 'orderId');
+
+  const rows = await SurplusStockItem.find({
+    customerId, productId, quantityOnHand: { $gt: 0 },
+  }).lean();
+
+  for (const s of rows) {
+    const qty = s.quantityOnHand;
+    // Move from surplus into this order's component bucket (no required target yet —
+    // that is set when the engineer defines the OrderMold for the order).
+    await incComponentBalance({
+      customerId, productId, orderId, partName: s.partName,
+      moldName: s.moldName, cavity: s.cavity,
+      requiredQuantity: 0, // unknown until OrderMold is set up
+      quantity: qty,
+    });
+    // Drain the surplus cell.
+    await SurplusStockItem.findOneAndUpdate(
+      { _id: s._id },
+      { $inc: { quantityOnHand: -qty } }
+    );
+    await writeLedger({
+      storeType: STORE.SURPLUS, transactionType: TXN.OUT,
+      customerId, productId, orderId,
+      partName: s.partName, quantity: qty,
+      sourceModule: 'order_surplus_consumption',
+      remarks: `Auto-consumed into new order`, createdBy,
+    });
+    await writeLedger({
+      storeType: STORE.COMPONENT, transactionType: TXN.IN,
+      customerId, productId, orderId,
+      partName: s.partName, quantity: qty,
+      sourceModule: 'order_surplus_consumption',
+      remarks: `From product surplus on order creation`, createdBy,
+    });
+  }
+  return rows.map((s) => ({ partName: s.partName, quantity: s.quantityOnHand }));
+}
+
 module.exports = {
   STORE,
   TXN,
   applyStockIn,
   applyStockOut,
+  addToSurplus,
+  consumeSurplusForNewOrder,
   getComponentAvailability,
   getFinishedGoodsBalance,
   getSurplusByProduct,

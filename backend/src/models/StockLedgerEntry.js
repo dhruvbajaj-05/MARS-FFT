@@ -17,7 +17,10 @@ const mongoose = require('mongoose');
 //   referenceId      the source record (mouldingrecord / qcrecord / packingdispatchrecord)
 const STORE_TYPES = ['COMPONENT', 'SURPLUS', 'FINISHED_GOODS'];
 const TRANSACTION_TYPES = ['IN', 'OUT'];
-const SOURCE_MODULES = ['moulding', 'assembly', 'qc', 'dispatch', 'adjustment'];
+const SOURCE_MODULES = [
+  'moulding', 'assembly', 'qc', 'dispatch', 'adjustment',
+  'moulding_recovery', 'moulding_edit', 'moulding_delete', 'order_surplus_consumption',
+];
 
 const stockLedgerEntrySchema = new mongoose.Schema(
   {

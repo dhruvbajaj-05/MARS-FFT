@@ -4,6 +4,8 @@ const mongoose = require('mongoose');
 const MouldingRecord = require('../models/MouldingRecord');
 const MediaAsset = require('../models/MediaAsset');
 const Order = require('../models/Order');
+const Customer = require('../models/Customer');
+const Product = require('../models/Product');
 const moldService = require('./mold.service');
 const orderMoldService = require('./orderMold.service');
 const storeService = require('./store.service');
@@ -13,21 +15,17 @@ const { ROLES } = require('../utils/roles');
 const { badRequest, notFound, forbidden, conflict } = require('../utils/httpError');
 const { parsePagination, buildList } = require('../utils/pagination');
 
-const SHIFTS = ['A', 'B', 'C'];
+// Engineer may edit/delete within 12 hours of record creation.
+const EDIT_WINDOW_MS = 12 * 60 * 60 * 1000;
 
-// ---- Order-level production status (computed at read time; never stored — V1 is
-// insert-only/immutable). Fulfillment is measured by GOOD parts, since rejected
-// parts cannot ship against the order quantity.
-//   Pending     → no moulding records submitted for the order yet
-//   In Progress → records exist but good parts < order quantity
-//   Completed   → good parts >= order quantity
+// ---- Order-level production status (computed at read time).
+// Fulfillment is measured by GOOD parts; rejected parts cannot ship.
 function deriveStatus({ recordCount, totalGoodParts }, orderQuantity) {
   if (recordCount === 0) return 'Pending';
   if (totalGoodParts >= orderQuantity) return 'Completed';
   return 'In Progress';
 }
 
-// Aggregate moulding production for one order and return its computed status.
 async function computeOrderStatus(orderId) {
   if (!mongoose.Types.ObjectId.isValid(orderId)) {
     throw badRequest('Invalid orderId', 'invalid_id');
@@ -44,13 +42,12 @@ async function computeOrderStatus(orderId) {
         _id: null,
         totalProduced: { $sum: '$productionQuantity' },
         totalGoodParts: { $sum: '$goodParts' },
-        totalRejected: { $sum: '$rejectedParts' },
         recordCount: { $sum: 1 },
       },
     },
   ]);
 
-  const sums = agg || { totalProduced: 0, totalGoodParts: 0, totalRejected: 0, recordCount: 0 };
+  const sums = agg || { totalProduced: 0, totalGoodParts: 0, recordCount: 0 };
   const orderQuantity = order.orderQuantity;
   const status = deriveStatus(sums, orderQuantity);
   const progressPct = orderQuantity > 0
@@ -64,7 +61,6 @@ async function computeOrderStatus(orderId) {
     orderQuantity,
     producedQuantity: sums.totalProduced,
     goodParts: sums.totalGoodParts,
-    rejectedParts: sums.totalRejected,
     pendingQuantity: Math.max(0, orderQuantity - sums.totalGoodParts),
     progressPct,
     recordCount: sums.recordCount,
@@ -72,8 +68,21 @@ async function computeOrderStatus(orderId) {
   };
 }
 
-// Shape a moulding record for client responses. Handles `imageId` whether it is a
-// raw ObjectId or a populated MediaAsset document.
+// Auto-complete the moulding workspace when all good parts reach the order quantity.
+// This replaces the admin "Complete Production" button (req #13).
+async function autoCompleteOrderIfDone(order, orderStatus) {
+  if (orderStatus.status === 'Completed' && order.productionStatus === 'Active') {
+    order.productionStatus = 'Completed';
+    order.productionCompletedAt = new Date();
+    if (order.assemblyStatus === 'Completed') {
+      order.status = 'Completed';
+      order.completedAt = new Date();
+    }
+    await order.save();
+  }
+}
+
+// Shape a moulding record for client responses.
 function toPublicMouldingRecord(record) {
   const media = record.imageId && record.imageId.url ? record.imageId : null;
   return {
@@ -87,9 +96,10 @@ function toPublicMouldingRecord(record) {
     shift: record.shift,
     cavity: record.cavity,
     shotsDone: record.shotsDone,
+    rejectedShots: record.rejectedShots ?? 0,
     productionQuantity: record.productionQuantity,
     goodParts: record.goodParts,
-    rejectedParts: record.rejectedParts,
+    rejectionReasons: record.rejectionReasons || [],
     rejectionReason: record.rejectionReason || null,
     comments: record.comments || null,
     imageId: record.imageId ? (record.imageId._id || record.imageId).toString() : null,
@@ -98,16 +108,14 @@ function toPublicMouldingRecord(record) {
       : null,
     createdBy: record.createdBy.toString(),
     createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    canEdit: (Date.now() - new Date(record.createdAt).getTime()) < EDIT_WINDOW_MS,
   };
 }
 
-// Validate + coerce the numeric/enum department fields, throwing clean 400s.
-// Updated workflow: the engineer enters Shots Done + Rejected Pieces; cavity is resolved
-// from the mold. The system computes the totals — never trusts client-sent good/total:
-//   productionQuantity = shotsDone × cavity
-//   goodParts          = productionQuantity − rejectedParts   (must be >= 0)
+// Validate + coerce numeric/enum fields.
+// Formula: goodParts = (shotsDone − rejectedShots) × cavity.
 function normalizeFields(input, cavity) {
-  // Shift is auto-detected from server time (manual selection removed).
   const shift = currentShift();
 
   const cav = Number(cavity);
@@ -120,36 +128,30 @@ function normalizeFields(input, cavity) {
     throw badRequest('shotsDone must be a number >= 0', 'invalid_quantity');
   }
 
-  const rejectedParts = Number(input.rejectedParts);
-  if (!Number.isFinite(rejectedParts) || rejectedParts < 0) {
-    throw badRequest('rejectedParts must be a number >= 0', 'invalid_quantity');
+  const rejectedShots = (input.rejectedShots !== undefined && input.rejectedShots !== null && input.rejectedShots !== '')
+    ? Number(input.rejectedShots)
+    : 0;
+
+  if (!Number.isFinite(rejectedShots) || rejectedShots < 0) {
+    throw badRequest('rejectedShots must be a number >= 0', 'invalid_quantity');
+  }
+  if (rejectedShots > shotsDone) {
+    throw badRequest('rejectedShots cannot exceed shotsDone', 'inconsistent_quantities');
   }
 
   const productionQuantity = shotsDone * cav;
-  const goodParts = productionQuantity - rejectedParts;
-  if (goodParts < 0) {
-    throw badRequest(
-      'rejectedParts cannot exceed produced pieces (shotsDone × cavity)',
-      'inconsistent_quantities'
-    );
-  }
-
-  return { shift, cavity: cav, shotsDone, productionQuantity, goodParts, rejectedParts };
+  const goodParts = (shotsDone - rejectedShots) * cav;
+  return { shift, cavity: cav, shotsDone, rejectedShots, productionQuantity, goodParts };
 }
 
-// Validate the customer → product → order chain so a record can never be linked to
-// an inconsistent selection (the dropdowns are cascading, but never trust the client).
 async function validateChain({ orderId, productId, customerId }) {
   for (const [key, value] of Object.entries({ orderId, productId, customerId })) {
     if (!mongoose.Types.ObjectId.isValid(value)) {
       throw badRequest(`Invalid ${key}`, 'invalid_id');
     }
   }
-
   const order = await Order.findById(orderId);
-  if (!order) {
-    throw badRequest('orderId does not reference an existing order', 'invalid_order');
-  }
+  if (!order) throw badRequest('orderId does not reference an existing order', 'invalid_order');
   if (order.productId.toString() !== String(productId)) {
     throw badRequest('productId does not match the order', 'product_order_mismatch');
   }
@@ -159,13 +161,9 @@ async function validateChain({ orderId, productId, customerId }) {
   return order;
 }
 
-// Create a moulding record (moulding engineer only). If `file` is present it is
-// linked as the record's image via a `mediaassets` document.
 async function createMouldingRecord({ payload, file, createdBy }) {
   const order = await validateChain(payload);
 
-  // A push can only land on an Active production workspace. Once Admin completes
-  // production the order's records become history and the workspace is closed.
   if (order.productionStatus === 'Completed' || order.status === 'Archived') {
     throw conflict(
       'Production for this order is already completed — the moulding workspace is closed.',
@@ -175,28 +173,26 @@ async function createMouldingRecord({ payload, file, createdBy }) {
 
   const moldName = String(payload.moldName).trim();
 
-  // Resolve cavity + Required Shots server-authoritatively. Precedence:
-  //   1. the per-order Mould Setup (OrderMold) — the order's concrete target
-  //   2. the product-level learned MoldDefinition — suggestion memory
-  //   3. the cavity/requiredShots sent with the form — first-ever submission fallback
   const orderMold = await orderMoldService.findOrderMold(payload.orderId, moldName);
   const mold = orderMold ? null : await moldService.findMold(payload.productId, moldName);
   const source = orderMold || mold;
   const cavity = source ? source.cavity : payload.cavity;
-  // Part name comes from the order/learned mold; an explicit override is allowed.
   const partName = String(
     payload.partName || (orderMold && orderMold.partName) || (mold && mold.defaultPartName) || ''
   ).trim();
-  if (!partName) {
-    throw badRequest('partName is required', 'missing_part');
-  }
+  if (!partName) throw badRequest('partName is required', 'missing_part');
 
   const fields = normalizeFields(payload, cavity);
 
-  // Required Quantity target for this mold-part in the order's store cell
-  // (= requiredShots × cavity).
   const requiredShots = source ? source.requiredShots : Number(payload.requiredShots) || 0;
   const requiredQuantity = (requiredShots || 0) * fields.cavity;
+
+  // rejectionReasons: accept array (new) or single string (legacy).
+  const rejectionReasons = Array.isArray(payload.rejectionReasons)
+    ? payload.rejectionReasons.map((r) => String(r).trim()).filter(Boolean)
+    : payload.rejectionReason
+      ? [String(payload.rejectionReason).trim()]
+      : [];
 
   const record = await MouldingRecord.create({
     orderId: payload.orderId,
@@ -208,22 +204,20 @@ async function createMouldingRecord({ payload, file, createdBy }) {
     shift: fields.shift,
     cavity: fields.cavity,
     shotsDone: fields.shotsDone,
+    rejectedShots: fields.rejectedShots,
     productionQuantity: fields.productionQuantity,
     goodParts: fields.goodParts,
-    rejectedParts: fields.rejectedParts,
-    rejectionReason: payload.rejectionReason ? String(payload.rejectionReason).trim() : undefined,
+    rejectionReasons,
+    rejectionReason: null,
     comments: payload.comments ? String(payload.comments).trim() : undefined,
     createdBy,
   });
 
-  // Remember a newly typed rejection reason so future dropdowns suggest it.
-  if (payload.rejectionReason && String(payload.rejectionReason).trim()) {
-    await rejectionReasonService.rememberReason(String(payload.rejectionReason).trim(), createdBy);
+  // Remember any new rejection reasons for the multi-select list.
+  if (rejectionReasons.length > 0) {
+    await rejectionReasonService.rememberReason(rejectionReasons, createdBy);
   }
 
-  // Mold Learning: remember this Product → Mold → Part → Cavity relationship so future
-  // orders surface the mold in the dropdown and auto-fill part + cavity. cavity/
-  // requiredShots are seeded on first sight; explicit edits go through upsertMold.
   await moldService.learnMold({
     customerId: payload.customerId,
     productId: payload.productId,
@@ -234,10 +228,6 @@ async function createMouldingRecord({ payload, file, createdBy }) {
     createdBy,
   });
 
-  // Component Store: only GOOD pieces flow into central inventory (Customer → Product →
-  // Part). Rejected pieces are not usable downstream. Multiple shifts/orders for the same
-  // mold-part accumulate into the same cell; the Required Quantity target rides along so
-  // the store can mark the row Pending → Finished.
   if (fields.goodParts > 0) {
     await storeService.applyStockIn({
       storeType: storeService.STORE.COMPONENT,
@@ -256,9 +246,6 @@ async function createMouldingRecord({ payload, file, createdBy }) {
     });
   }
 
-  // Attach the uploaded image (if any). MediaAsset.ownerId requires the record to
-  // exist first, so we create the record, then the media, then link it — all within
-  // this single create request (not an "edit" of an existing record).
   if (file) {
     const { publicUrlFor } = require('../middleware/upload');
     const media = await MediaAsset.create({
@@ -272,11 +259,196 @@ async function createMouldingRecord({ payload, file, createdBy }) {
     });
     record.imageId = media._id;
     await record.save();
-    record.imageId = media; // populate for the response shape
+    record.imageId = media;
   }
 
   const orderStatus = await computeOrderStatus(payload.orderId);
+
+  // Auto-complete moulding workspace when order quantity is fully produced (req #13).
+  await autoCompleteOrderIfDone(order, orderStatus);
+
   return { record: toPublicMouldingRecord(record), orderStatus };
+}
+
+// Edit a moulding record within the 12-hour window. Stock is recalculated if shot
+// counts change; a ledger correction entry is written for any delta.
+async function updateMouldingRecord(id, payload, user) {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw badRequest('Invalid id', 'invalid_id');
+  const record = await MouldingRecord.findById(id);
+  if (!record) throw notFound('Moulding record not found', 'moulding_record_not_found');
+
+  if (record.createdBy.toString() !== String(user.id)) {
+    throw forbidden('You can only edit your own moulding records');
+  }
+  const ageMs = Date.now() - new Date(record.createdAt).getTime();
+  if (ageMs > EDIT_WINDOW_MS) {
+    throw forbidden('Edit window has expired (12 hours after creation)', 'edit_window_expired');
+  }
+
+  const prevGoodParts = record.goodParts;
+
+  // Update shot counts (with stock delta) when provided.
+  if (payload.shotsDone !== undefined || payload.rejectedShots !== undefined) {
+    const newShotsDone = payload.shotsDone !== undefined ? Number(payload.shotsDone) : record.shotsDone;
+    const newRejectedShots = payload.rejectedShots !== undefined ? Number(payload.rejectedShots) : (record.rejectedShots ?? 0);
+    if (!Number.isFinite(newShotsDone) || newShotsDone < 0) throw badRequest('shotsDone must be >= 0', 'invalid_quantity');
+    if (!Number.isFinite(newRejectedShots) || newRejectedShots < 0) throw badRequest('rejectedShots must be >= 0', 'invalid_quantity');
+    if (newRejectedShots > newShotsDone) throw badRequest('rejectedShots cannot exceed shotsDone', 'inconsistent_quantities');
+
+    record.shotsDone = newShotsDone;
+    record.rejectedShots = newRejectedShots;
+    record.productionQuantity = newShotsDone * record.cavity;
+    record.goodParts = (newShotsDone - newRejectedShots) * record.cavity;
+  }
+
+  if (payload.rejectionReasons !== undefined) {
+    const reasons = Array.isArray(payload.rejectionReasons)
+      ? payload.rejectionReasons.map((r) => String(r).trim()).filter(Boolean)
+      : [];
+    record.rejectionReasons = reasons;
+    if (reasons.length > 0) await rejectionReasonService.rememberReason(reasons, user.id);
+  }
+  if (payload.comments !== undefined) {
+    record.comments = payload.comments ? String(payload.comments).trim() : undefined;
+  }
+
+  await record.save();
+
+  // Apply stock delta if goodParts changed.
+  const delta = record.goodParts - prevGoodParts;
+  if (delta > 0) {
+    await storeService.applyStockIn({
+      storeType: storeService.STORE.COMPONENT,
+      customerId: record.customerId.toString(),
+      productId: record.productId.toString(),
+      orderId: record.orderId.toString(),
+      partName: record.partName,
+      moldName: record.moldName,
+      cavity: record.cavity,
+      quantity: delta,
+      sourceModule: 'moulding_edit',
+      referenceId: record._id,
+      remarks: `Edit correction +${delta} ${record.partName}`,
+      createdBy: user.id,
+    });
+  } else if (delta < 0) {
+    await storeService.applyStockOut({
+      storeType: storeService.STORE.COMPONENT,
+      customerId: record.customerId.toString(),
+      productId: record.productId.toString(),
+      orderId: record.orderId.toString(),
+      partName: record.partName,
+      quantity: Math.abs(delta),
+      sourceModule: 'moulding_edit',
+      referenceId: record._id,
+      remarks: `Edit correction ${delta} ${record.partName}`,
+      createdBy: user.id,
+    });
+  }
+
+  return toPublicMouldingRecord(record);
+}
+
+// Delete a moulding record within the 12-hour window. Reverses the stock entry.
+async function deleteMouldingRecord(id, user) {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw badRequest('Invalid id', 'invalid_id');
+  const record = await MouldingRecord.findById(id);
+  if (!record) throw notFound('Moulding record not found', 'moulding_record_not_found');
+
+  if (record.createdBy.toString() !== String(user.id)) {
+    throw forbidden('You can only delete your own moulding records');
+  }
+  const ageMs = Date.now() - new Date(record.createdAt).getTime();
+  if (ageMs > EDIT_WINDOW_MS) {
+    throw forbidden('Delete window has expired (12 hours after creation)', 'delete_window_expired');
+  }
+
+  if (record.goodParts > 0) {
+    try {
+      await storeService.applyStockOut({
+        storeType: storeService.STORE.COMPONENT,
+        customerId: record.customerId.toString(),
+        productId: record.productId.toString(),
+        orderId: record.orderId.toString(),
+        partName: record.partName,
+        quantity: record.goodParts,
+        sourceModule: 'moulding_delete',
+        referenceId: record._id,
+        remarks: `Deleted moulding record — reversing ${record.goodParts} ${record.partName}`,
+        createdBy: user.id,
+      });
+    } catch (err) {
+      throw conflict(
+        'Cannot delete: these pieces may already be consumed. Contact admin.',
+        'stock_consumed'
+      );
+    }
+  }
+
+  await MouldingRecord.deleteOne({ _id: record._id });
+  return { deleted: true };
+}
+
+// Recover good pieces from physically inspected rejected shots. Goes directly to
+// product surplus (NOT to the order's pending store). (req #9)
+async function recoverPieces({ orderId, productId, customerId, recoveries, createdBy }) {
+  for (const [key, val] of Object.entries({ orderId, productId, customerId })) {
+    if (!mongoose.Types.ObjectId.isValid(val)) throw badRequest(`Invalid ${key}`, 'invalid_id');
+  }
+  if (!Array.isArray(recoveries) || recoveries.length === 0) {
+    throw badRequest('recoveries array is required', 'missing_recoveries');
+  }
+
+  const results = [];
+  for (const r of recoveries) {
+    const qty = Number(r.goodPieces);
+    if (!Number.isFinite(qty) || qty <= 0) continue;
+    const partName = String(r.partName || '').trim();
+    if (!partName) continue;
+
+    await storeService.addToSurplus({
+      customerId,
+      productId,
+      partName,
+      moldName: r.moldName || '',
+      cavity: Number(r.cavity) || 1,
+      quantity: qty,
+      referenceId: null,
+      remarks: `Recovered from rejected shots (order ${orderId})`,
+      createdBy,
+    });
+    results.push({ partName, goodPieces: qty });
+  }
+  return { recovered: results };
+}
+
+// Moulding dashboard: all customers → their products → active order count.
+// Powers the engineer dashboard (req #1).
+async function getMouldingDashboard() {
+  const customers = await Customer.find().sort({ name: 1 }).lean();
+  const result = [];
+  for (const c of customers) {
+    const products = await Product.find({ customerId: c._id, status: { $ne: 'Archived' } })
+      .sort({ name: 1 })
+      .lean();
+    const productRows = [];
+    for (const p of products) {
+      const activeOrders = await Order.countDocuments({
+        customerId: c._id,
+        productId: p._id,
+        status: 'Active',
+        productionStatus: 'Active',
+      });
+      productRows.push({
+        id: p._id.toString(),
+        name: p.name,
+        partName: p.partName || null,
+        activeOrders,
+      });
+    }
+    result.push({ id: c._id.toString(), name: c.name, products: productRows });
+  }
+  return result;
 }
 
 // Shared filter builder for list queries.
@@ -293,10 +465,11 @@ function buildFilter(query) {
   return filter;
 }
 
-// List the calling engineer's own moulding records (GET /moulding/mine).
-async function listMyRecords(createdBy, query = {}) {
+// List moulding records — shared visibility (role-based, not user-based, req #7).
+// All moulding engineers see ALL records; optional filters by customer/product/order.
+async function listMyRecords(_createdBy, query = {}) {
   const { page, limit, skip } = parsePagination(query);
-  const filter = { ...buildFilter(query), createdBy };
+  const filter = buildFilter(query);
 
   const [items, total] = await Promise.all([
     MouldingRecord.find(filter).populate('imageId').sort({ createdAt: -1 }).skip(skip).limit(limit),
@@ -306,7 +479,7 @@ async function listMyRecords(createdBy, query = {}) {
   return buildList(items.map(toPublicMouldingRecord), total, page, limit);
 }
 
-// Admin read-all across customers/orders (GET /moulding), with optional filters.
+// Admin read-all with optional filters.
 async function listAllRecords(query = {}) {
   const { page, limit, skip } = parsePagination(query);
   const filter = buildFilter(query);
@@ -322,31 +495,25 @@ async function listAllRecords(query = {}) {
   return buildList(items.map(toPublicMouldingRecord), total, page, limit);
 }
 
-// Fetch one record. Admin may read any; a moulding engineer may read only their own.
+// Fetch one record. Admins may read any; engineers may read any in their dept (req #7).
 async function getRecordById(id, user) {
   const record = await MouldingRecord.findById(id).populate('imageId');
-  if (!record) {
-    throw notFound('Moulding record not found', 'moulding_record_not_found');
-  }
-  if (user.role !== ROLES.ADMIN && record.createdBy.toString() !== String(user.id)) {
-    throw forbidden('You can only access your own moulding records');
+  if (!record) throw notFound('Moulding record not found', 'moulding_record_not_found');
+  // Engineers can now see all dept records (shared visibility).
+  if (user.role !== ROLES.ADMIN && user.role !== ROLES.MOULDING_ENGINEER) {
+    throw forbidden('Access denied');
   }
   return toPublicMouldingRecord(record);
 }
 
-// Learned molds for a product (Mold Learning dropdown + part autofill). Delegates to
-// the mold service so the controller keeps using a single department service.
 async function listMoldsForProduct(productId) {
   return moldService.listMoldsForProduct(productId);
 }
 
-// Explicitly define/edit a mold for a product (Mold Name, Part, Cavity, Required Shots).
 async function upsertMold(payload, createdBy) {
   return moldService.upsertMold({ ...payload, createdBy });
 }
 
-// Per-order Mould Setup (revised workflow) — delegates to the order-mold service so the
-// controller keeps using a single department service.
 async function listOrderMolds(orderId) {
   return orderMoldService.listForOrder(orderId);
 }
@@ -357,6 +524,10 @@ async function upsertOrderMold(payload, createdBy) {
 
 module.exports = {
   createMouldingRecord,
+  updateMouldingRecord,
+  deleteMouldingRecord,
+  recoverPieces,
+  getMouldingDashboard,
   listMyRecords,
   listAllRecords,
   getRecordById,

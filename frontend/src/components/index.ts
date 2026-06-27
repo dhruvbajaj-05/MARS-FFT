@@ -9,5 +9,5 @@ export { DetailRow } from './DetailRow';
 export { ImageGallery } from './ImageGallery';
 export { QueryBoundary } from './QueryBoundary';
 export { Loader, EmptyState, ErrorState } from './states';
-export { FormField, Select, Banner } from './forms';
+export { FormField, Select, MultiCheckbox, Banner } from './forms';
 export type { SelectOption } from './forms';

@@ -143,7 +143,9 @@ async function getProductionSummary() {
 // QC rejections also carry a defect-type breakdown (defects are only modelled in QC).
 async function getRejections() {
   const [moulding, assembly, qc, qcDefects] = await Promise.all([
-    sumField(MouldingRecord, 'rejectedParts'),
+    MouldingRecord.aggregate([
+      { $group: { _id: null, total: { $sum: { $subtract: ['$productionQuantity', '$goodParts'] } }, count: { $sum: 1 } } },
+    ]).then(([r]) => r || { total: 0, count: 0 }),
     sumField(AssemblyRecord, 'rejectedQuantity'),
     sumField(QCRecord, 'rejectedQuantity'),
     QCRecord.aggregate([
@@ -179,7 +181,7 @@ async function getDepartments() {
           recordCount: { $sum: 1 },
           total: { $sum: '$productionQuantity' },
           throughput: { $sum: '$goodParts' },
-          rejections: { $sum: '$rejectedParts' },
+          rejections: { $sum: { $subtract: ['$productionQuantity', '$goodParts'] } },
         },
       },
     ]),
@@ -616,7 +618,7 @@ async function getProductionByCustomer() {
         _id: '$customerId',
         produced: { $sum: '$productionQuantity' },
         good: { $sum: '$goodParts' },
-        rejected: { $sum: '$rejectedParts' },
+        rejected: { $sum: { $subtract: ['$productionQuantity', '$goodParts'] } },
         records: { $sum: 1 },
       },
     },
@@ -643,7 +645,7 @@ async function getProductionByProduct() {
         _id: { productId: '$productId', customerId: '$customerId' },
         produced: { $sum: '$productionQuantity' },
         good: { $sum: '$goodParts' },
-        rejected: { $sum: '$rejectedParts' },
+        rejected: { $sum: { $subtract: ['$productionQuantity', '$goodParts'] } },
         records: { $sum: 1 },
       },
     },
@@ -674,7 +676,7 @@ async function getProductionByMold() {
         _id: { moldName: '$moldName', partName: '$partName', productId: '$productId' },
         produced: { $sum: '$productionQuantity' },
         good: { $sum: '$goodParts' },
-        rejected: { $sum: '$rejectedParts' },
+        rejected: { $sum: { $subtract: ['$productionQuantity', '$goodParts'] } },
         records: { $sum: 1 },
       },
     },

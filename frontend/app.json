@@ -23,7 +23,7 @@
       }
     },
     "android": {
-      "package": "com.fft.manufacturing",
+      "package": "com.funfactorytoys.marsfft",
       "adaptiveIcon": {
         "backgroundColor": "#0F172A"
       },

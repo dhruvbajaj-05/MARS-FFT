@@ -6,6 +6,7 @@ const Product = require('../models/Product');
 const Counter = require('../models/Counter');
 const { notFound, badRequest } = require('../utils/httpError');
 const { parsePagination, buildList } = require('../utils/pagination');
+const storeService = require('./store.service');
 
 const ORDER_CODE_SEQ = 'orderCode';
 const ORDER_CODE_PREFIX = 'FFT-';
@@ -69,6 +70,21 @@ async function createOrder({ customerId, productId, orderQuantity, createdBy }) 
     orderQuantity: quantity,
     createdBy,
   });
+
+  // Auto-consume any product-level surplus into this order's component store so the
+  // engineer only needs to produce the remaining quantity (req #11).
+  try {
+    await storeService.consumeSurplusForNewOrder({
+      customerId: order.customerId.toString(),
+      productId: order.productId.toString(),
+      orderId: order._id.toString(),
+      createdBy,
+    });
+  } catch (e) {
+    // Surplus consumption is best-effort; never block order creation.
+    console.warn('[order] surplus auto-consumption failed:', e.message);
+  }
+
   return toPublicOrder(order);
 }
 

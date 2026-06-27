@@ -16,6 +16,7 @@ export const queryKeys = {
 
   machines: (params?: unknown) => ['machines', params ?? {}] as const,
   rejectionReasons: ['moulding', 'rejection-reasons'] as const,
+  mouldingDashboard: ['moulding', 'dashboard'] as const,
   molds: (productId: string) => ['moulding', 'molds', productId] as const,
   orderMolds: (orderId: string) => ['moulding', 'order-molds', orderId] as const,
   assortment: (customerId: string, productId: string) =>

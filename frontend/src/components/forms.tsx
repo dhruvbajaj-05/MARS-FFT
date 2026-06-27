@@ -172,6 +172,109 @@ export function Select({
   );
 }
 
+// Multi-select checkbox list for defect/reason selection (req #3).
+// Renders a scrollable list of labelled checkboxes. The selected set is an array of
+// string values; toggle adds/removes a value. A text field for new entries appears
+// at the bottom so engineers can add defects that are not in the list.
+interface MultiCheckboxProps {
+  label: string;
+  options: string[];
+  selected: string[];
+  onToggle: (value: string) => void;
+  newEntryValue?: string;
+  onNewEntryChange?: (v: string) => void;
+  onAddNewEntry?: () => void;
+  newEntryPlaceholder?: string;
+}
+
+export function MultiCheckbox({
+  label,
+  options,
+  selected,
+  onToggle,
+  newEntryValue,
+  onNewEntryChange,
+  onAddNewEntry,
+  newEntryPlaceholder = 'Add a new defect…',
+}: MultiCheckboxProps) {
+  const { colors, spacing, radius } = useTheme();
+  return (
+    <View style={{ marginBottom: spacing(3) }}>
+      <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>
+        {label}
+      </AppText>
+      {options.map((opt) => {
+        const checked = selected.includes(opt);
+        return (
+          <Pressable
+            key={opt}
+            onPress={() => onToggle(opt)}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              paddingVertical: spacing(2),
+              paddingHorizontal: spacing(2),
+              borderRadius: radius.sm,
+              backgroundColor: checked ? colors.status.info.bg : 'transparent',
+              marginBottom: 2,
+            }}
+          >
+            <View
+              style={{
+                width: 20,
+                height: 20,
+                borderRadius: 4,
+                borderWidth: 2,
+                borderColor: checked ? colors.primary : colors.border,
+                backgroundColor: checked ? colors.primary : 'transparent',
+                marginRight: spacing(2),
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              {checked ? (
+                <AppText style={{ color: colors.primaryText, fontSize: 11, fontWeight: '700' }}>✓</AppText>
+              ) : null}
+            </View>
+            <AppText style={{ color: checked ? colors.status.info.fg : colors.text }}>{opt}</AppText>
+          </Pressable>
+        );
+      })}
+      {onNewEntryChange ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: spacing(1) }}>
+          <TextInput
+            style={{
+              flex: 1,
+              backgroundColor: colors.surfaceAlt,
+              borderColor: colors.border,
+              borderWidth: StyleSheet.hairlineWidth,
+              borderRadius: radius.md,
+              color: colors.text,
+              padding: spacing(2),
+              marginRight: spacing(2),
+            }}
+            value={newEntryValue}
+            onChangeText={onNewEntryChange}
+            placeholder={newEntryPlaceholder}
+            placeholderTextColor={colors.textMuted}
+          />
+          <Pressable
+            onPress={onAddNewEntry}
+            style={{
+              backgroundColor: colors.primary,
+              borderRadius: radius.md,
+              paddingVertical: spacing(2),
+              paddingHorizontal: spacing(3),
+            }}
+          >
+            <AppText style={{ color: colors.primaryText, fontWeight: '600' }}>Add</AppText>
+          </Pressable>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 // Inline result banner (used instead of Alert so it shows on web too).
 export function Banner({ tone, message }: { tone: 'success' | 'danger' | 'info'; message: string }) {
   const { colors, radius, spacing } = useTheme();

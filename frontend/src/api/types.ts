@@ -94,6 +94,27 @@ export interface Media {
   sizeBytes: number | null;
 }
 
+// ---- Moulding dashboard (companies → products → active orders) ----
+export interface MouldingDashboardProduct {
+  id: string;
+  name: string;
+  partName: string | null;
+  activeOrders: number;
+}
+export interface MouldingDashboardCustomer {
+  id: string;
+  name: string;
+  products: MouldingDashboardProduct[];
+}
+
+// ---- Recovery entry (rejected shots → surplus) ----
+export interface RecoveryEntry {
+  partName: string;
+  cavity: number;
+  moldName?: string;
+  goodPieces: number;
+}
+
 // ---- Department records ----
 export interface MouldingRecord {
   id: string;
@@ -106,15 +127,20 @@ export interface MouldingRecord {
   shift: 'A' | 'B' | 'C';
   cavity: number;
   shotsDone: number;
+  rejectedShots: number;
   productionQuantity: number;
   goodParts: number;
-  rejectedParts: number;
+  // rejectionReasons: multi-select array; legacy single-string in rejectionReason.
+  rejectionReasons: string[];
   rejectionReason: string | null;
   comments: string | null;
   imageId: string | null;
   image: Media | null;
   createdBy: string;
   createdAt: string;
+  updatedAt: string;
+  // canEdit: true if within the 12-hour edit/delete window (computed server-side).
+  canEdit: boolean;
 }
 export interface AssemblyRecord {
   id: string;
@@ -195,7 +221,6 @@ export interface OrderStatusBase {
 export type MouldingStatus = OrderStatusBase & {
   producedQuantity: number;
   goodParts: number;
-  rejectedParts: number;
   pendingQuantity: number;
 };
 export type AssemblyStatus = OrderStatusBase & {

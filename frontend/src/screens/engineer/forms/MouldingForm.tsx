@@ -12,6 +12,7 @@ import {
   Button,
   Card,
   FormField,
+  MultiCheckbox,
   Screen,
   Select,
   type SelectOption,
@@ -20,21 +21,20 @@ import { ApiError, friendlyMessage } from '@/services/apiError';
 import { useCustomerProduct } from '@/screens/engineer/useCustomerProduct';
 import { useTheme } from '@/theme/ThemeProvider';
 
-// Moulding Engineer screen (revised, order-centric workflow):
-//   1. Select Customer → Product → Order (only orders whose production is still Active
-//      appear; the order quantity in sets loads automatically).
-//   2. Mould Setup for THIS order: define multiple molds (Mold Name, Part, Cavity,
-//      Required Shots). Product-level suggestions can be adopted with one tap; everything
-//      stays editable. Required Shots × Cavity is the order's Component Store target.
-//   3. Production push: pick Shift / Machine / Mold → Part + Cavity auto-fill → enter
-//      Shots Done + Rejected. Good Pieces = Shots × Cavity − Rejected (only good are
-//      stocked into THIS order's Component Store bucket).
+// Moulding Engineer screen (revised workflow):
+//   1. Select Customer → Product → Order (Active production only).
+//   2. Mould Setup: define molds per order (Mold Name, Part, Cavity, Required Shots).
+//   3. Production push: Shots Done + Rejected Shots (shots, not pieces).
+//      Good Pieces = (Shots Done − Rejected Shots) × Cavity (req #2).
+//      Rejection reasons: multi-select checkboxes (req #3).
+//   4. Recovery section (when order is complete): enter recovered good pieces
+//      from inspected rejected shots → goes to Product Surplus (req #9).
 export function MouldingForm() {
   const { spacing, colors } = useTheme();
   const qc = useQueryClient();
   const cp = useCustomerProduct({ orderFilter: { productionStatus: 'Active' } });
 
-  // ---- Mould Setup form (per order) ----
+  // ---- Mould Setup form ----
   const [mMoldName, setMMoldName] = useState('');
   const [mPartName, setMPartName] = useState('');
   const [mCavity, setMCavity] = useState('');
@@ -45,12 +45,18 @@ export function MouldingForm() {
   const [machineNumber, setMachineNumber] = useState<string | null>(null);
   const [selectedMold, setSelectedMold] = useState<string | null>(null);
   const [shotsDone, setShotsDone] = useState('');
-  const [rejected, setRejected] = useState('');
-  const [rejectReason, setRejectReason] = useState<string | null>(null);
-  const [customReason, setCustomReason] = useState('');
+  const [rejectedShots, setRejectedShots] = useState('');
+  // Multi-select rejection reasons (req #3)
+  const [rejectionReasons, setRejectionReasons] = useState<string[]>([]);
+  const [newReasonText, setNewReasonText] = useState('');
   const [ok, setOk] = useState<string | null>(null);
 
-  // Machine Master dropdown (engineers select only) + remembered rejection reasons.
+  // ---- Recovery form (after production completion — req #9) ----
+  const [showRecovery, setShowRecovery] = useState(false);
+  // recoveries: list of { partName, cavity, moldName, goodPieces } keyed by partName
+  const [recoveries, setRecoveries] = useState<Record<string, string>>({});
+  const [recoveryOk, setRecoveryOk] = useState<string | null>(null);
+
   const machines = useQuery({
     queryKey: queryKeys.machines({}),
     queryFn: () => masterApi.listMachines(),
@@ -59,14 +65,11 @@ export function MouldingForm() {
     queryKey: queryKeys.rejectionReasons,
     queryFn: () => mouldingApi.rejectionReasons(),
   });
-
   const orderMolds = useQuery({
     queryKey: queryKeys.orderMolds(cp.orderId ?? 'none'),
     queryFn: () => mouldingApi.orderMolds(cp.orderId!),
     enabled: !!cp.orderId,
   });
-
-  // Production status for the selected order (inspect per OrderID).
   const prodStatus = useQuery({
     queryKey: queryKeys.dept('moulding').status(cp.orderId ?? 'none'),
     queryFn: () => mouldingApi.status(cp.orderId!),
@@ -99,8 +102,6 @@ export function MouldingForm() {
     },
   });
 
-  const resolvedReason = rejectReason === '__custom__' ? customReason.trim() : rejectReason || undefined;
-
   const submit = useMutation({
     mutationFn: () =>
       mouldingApi.submit({
@@ -110,19 +111,48 @@ export function MouldingForm() {
         moldName: selectedMold!,
         machineNumber: machineNumber!,
         shotsDone: Number(shotsDone),
-        rejectedParts: Number(rejected),
-        rejectionReason: Number(rejected) > 0 ? resolvedReason : undefined,
+        rejectedShots: Number(rejectedShots),
+        rejectionReasons: Number(rejectedShots) > 0 ? rejectionReasons : undefined,
       }),
     onSuccess: (res) => {
-      setOk(`Saved (Shift ${res.record.shift}). ${res.record.goodParts} ${res.record.partName} pushed to Component Store.`);
+      setOk(
+        `Saved (Shift ${res.record.shift}). ${res.record.goodParts} ${res.record.partName} pushed to Component Store.`
+      );
       setShotsDone('');
-      setRejected('');
-      setCustomReason('');
-      setRejectReason(null);
+      setRejectedShots('');
+      setRejectionReasons([]);
+      setNewReasonText('');
       qc.invalidateQueries({ queryKey: ['store'] });
       qc.invalidateQueries({ queryKey: ['moulding'] });
       qc.invalidateQueries({ queryKey: queryKeys.rejectionReasons });
       qc.invalidateQueries({ queryKey: queryKeys.orderMolds(cp.orderId!) });
+      qc.invalidateQueries({ queryKey: queryKeys.mouldingDashboard });
+    },
+  });
+
+  const recoverMutation = useMutation({
+    mutationFn: () => {
+      const moldList = orderMolds.data?.molds ?? [];
+      const entries = moldList
+        .map((m) => ({
+          partName: m.partName,
+          moldName: m.moldName,
+          cavity: m.cavity,
+          goodPieces: Number(recoveries[m.partName] ?? 0),
+        }))
+        .filter((e) => e.goodPieces > 0);
+      return mouldingApi.recover({
+        orderId: cp.orderId!,
+        productId: cp.productId!,
+        customerId: cp.customerId!,
+        recoveries: entries,
+      });
+    },
+    onSuccess: (res) => {
+      const total = res.recovered.reduce((s, r) => s + r.goodPieces, 0);
+      setRecoveryOk(`Recovered ${total} good pieces added to Product Surplus.`);
+      setRecoveries({});
+      qc.invalidateQueries({ queryKey: ['store'] });
     },
   });
 
@@ -131,13 +161,30 @@ export function MouldingForm() {
     value: m.name,
     hint: m.category === 'injection' ? 'Injection' : 'Blow',
   }));
-  const reasonOptions: SelectOption[] = [
-    ...(reasons.data ?? []).map((r) => ({ label: r, value: r })),
-    { label: '+ Type a new reason', value: '__custom__' },
-  ];
+
+  const allReasonOptions = reasons.data ?? [];
+
+  const toggleReason = (r: string) => {
+    setRejectionReasons((prev) =>
+      prev.includes(r) ? prev.filter((x) => x !== r) : [...prev, r]
+    );
+  };
+
+  const addNewReason = () => {
+    const r = newReasonText.trim();
+    if (!r) return;
+    if (!rejectionReasons.includes(r)) setRejectionReasons((prev) => [...prev, r]);
+    if (!allReasonOptions.includes(r)) {
+      qc.setQueryData(queryKeys.rejectionReasons, (old: string[] | undefined) =>
+        old ? [...old, r].sort() : [r]
+      );
+    }
+    setNewReasonText('');
+  };
 
   const moldError = saveMold.error instanceof ApiError ? friendlyMessage(saveMold.error) : null;
   const error = submit.error instanceof ApiError ? friendlyMessage(submit.error) : null;
+  const recoverError = recoverMutation.error instanceof ApiError ? friendlyMessage(recoverMutation.error) : null;
 
   const moldList: OrderMold[] = orderMolds.data?.molds ?? [];
   const suggestions: OrderMoldSuggestion[] = orderMolds.data?.suggestions ?? [];
@@ -154,17 +201,16 @@ export function MouldingForm() {
     setMShots(s.requiredShots ? String(s.requiredShots) : '');
   };
 
-  // Auto-filled values for the selected production mold.
   const activeMold = useMemo(
     () => moldList.find((m) => m.moldName === selectedMold) ?? null,
-    [moldList, selectedMold],
+    [moldList, selectedMold]
   );
   const cavity = activeMold?.cavity ?? 0;
   const shotsNum = Number(shotsDone);
-  const rejectedNum = Number(rejected);
+  const rejectedShotsNum = Number(rejectedShots);
   const goodPreview =
-    Number.isFinite(shotsNum) && Number.isFinite(rejectedNum) && cavity > 0
-      ? shotsNum * cavity - rejectedNum
+    Number.isFinite(shotsNum) && Number.isFinite(rejectedShotsNum) && cavity > 0
+      ? (shotsNum - rejectedShotsNum) * cavity
       : null;
 
   const canSaveMold = !!(cp.orderId && mMoldName.trim() && mPartName.trim() && Number(mCavity) >= 1);
@@ -175,14 +221,16 @@ export function MouldingForm() {
     cp.orderId &&
     selectedMold &&
     machineNumber &&
-    (Number(rejected) <= 0 || (rejectReason && (rejectReason !== '__custom__' || customReason.trim()))) &&
     Number.isFinite(shotsNum) &&
     shotsNum >= 0 &&
-    Number.isFinite(rejectedNum) &&
-    rejectedNum >= 0 &&
+    Number.isFinite(rejectedShotsNum) &&
+    rejectedShotsNum >= 0 &&
+    rejectedShotsNum <= shotsNum &&
     goodPreview !== null &&
     goodPreview >= 0
   );
+
+  const isProductionComplete = prodStatus.data?.status === 'Completed';
 
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={cp.orders.isRefetching} onRefresh={cp.orders.refetch} />}>
@@ -243,14 +291,15 @@ export function MouldingForm() {
         ) : null}
         {prodStatus.data ? (
           <AppText variant="caption" tone="muted" style={{ marginTop: spacing(2) }}>
-            Production status: <AppText weight="600">{prodStatus.data.status}</AppText> · good{' '}
-            {prodStatus.data.goodParts} / {prodStatus.data.orderQuantity} · pending {prodStatus.data.pendingQuantity}
+            Status: <AppText weight="600">{prodStatus.data.status}</AppText> · good{' '}
+            {prodStatus.data.goodParts} / {prodStatus.data.orderQuantity} · pending{' '}
+            {prodStatus.data.pendingQuantity}
           </AppText>
         ) : null}
       </Card>
 
       {/* Mould Setup (per order) */}
-      {cp.orderId ? (
+      {cp.orderId && !isProductionComplete ? (
         <Card style={{ marginBottom: spacing(4) }}>
           <AppText variant="h3" style={{ marginBottom: spacing(2) }}>
             Mould Setup for this order
@@ -326,8 +375,8 @@ export function MouldingForm() {
       ) : null}
 
       {/* Production push */}
-      {cp.orderId ? (
-        <Card>
+      {cp.orderId && !isProductionComplete ? (
+        <Card style={{ marginBottom: spacing(4) }}>
           <AppText variant="h3" style={{ marginBottom: spacing(2) }}>
             Production Push
           </AppText>
@@ -365,41 +414,53 @@ export function MouldingForm() {
                 marginBottom: spacing(3),
               }}
             >
-              <AppText tone="muted">Part: <AppText weight="600">{activeMold.partName}</AppText></AppText>
-              <AppText tone="muted">Cavity: <AppText weight="600">{activeMold.cavity}</AppText></AppText>
+              <AppText tone="muted">
+                Part: <AppText weight="600">{activeMold.partName}</AppText>
+              </AppText>
+              <AppText tone="muted">
+                Cavity: <AppText weight="600">{activeMold.cavity}</AppText>
+              </AppText>
             </View>
           ) : null}
 
-          <FormField label="Shots done" value={shotsDone} onChangeText={setShotsDone} keyboardType="number-pad" placeholder="e.g. 3000" />
-          <FormField label="Rejected pieces" value={rejected} onChangeText={setRejected} keyboardType="number-pad" placeholder="e.g. 50" />
+          {/* Shots-based entry (req #2) */}
+          <FormField
+            label="Total Shots Produced"
+            value={shotsDone}
+            onChangeText={setShotsDone}
+            keyboardType="number-pad"
+            placeholder="e.g. 7000"
+          />
+          <FormField
+            label="Rejected Shots"
+            value={rejectedShots}
+            onChangeText={setRejectedShots}
+            keyboardType="number-pad"
+            placeholder="e.g. 300"
+          />
 
-          {Number(rejected) > 0 ? (
-            <>
-              <Select
-                label="Rejection reason"
-                value={rejectReason}
-                options={reasonOptions}
-                onChange={(v) => setRejectReason(v)}
-                placeholder="Select a reason"
-              />
-              {rejectReason === '__custom__' ? (
-                <FormField
-                  label="New reason"
-                  value={customReason}
-                  onChangeText={setCustomReason}
-                  placeholder="e.g. Sink Mark"
-                />
-              ) : null}
-            </>
+          {/* Multi-select rejection reasons (req #3) */}
+          {Number(rejectedShots) > 0 ? (
+            <MultiCheckbox
+              label="Defects (select all that apply)"
+              options={allReasonOptions}
+              selected={rejectionReasons}
+              onToggle={toggleReason}
+              newEntryValue={newReasonText}
+              onNewEntryChange={setNewReasonText}
+              onAddNewEntry={addNewReason}
+              newEntryPlaceholder="Add new defect…"
+            />
           ) : null}
 
+          {/* Good pieces preview (req #2 formula) */}
           {goodPreview !== null ? (
             <Banner
               tone={goodPreview >= 0 ? 'info' : 'danger'}
               message={
                 goodPreview >= 0
-                  ? `Good pieces = ${shotsNum} × ${cavity} − ${rejectedNum} = ${goodPreview}`
-                  : `Rejected exceeds produced (${shotsNum} × ${cavity} = ${shotsNum * cavity})`
+                  ? `Good Pieces = (${shotsNum} − ${rejectedShotsNum}) × ${cavity} = ${goodPreview}`
+                  : `Rejected shots exceed total shots`
               }
             />
           ) : null}
@@ -413,6 +474,61 @@ export function MouldingForm() {
               submit.mutate();
             }}
           />
+        </Card>
+      ) : null}
+
+      {/* Order completed banner + recovery section (req #9) */}
+      {cp.orderId && isProductionComplete ? (
+        <Card style={{ marginBottom: spacing(4) }}>
+          <Banner tone="success" message="Production complete for this order." />
+          <Pressable
+            onPress={() => setShowRecovery((s) => !s)}
+            style={{
+              backgroundColor: colors.surfaceAlt,
+              borderRadius: 8,
+              padding: spacing(3),
+              marginTop: spacing(2),
+            }}
+          >
+            <AppText weight="600">
+              {showRecovery ? '▾' : '▸'} Recover Good Pieces from Rejected Shots
+            </AppText>
+            <AppText variant="caption" tone="muted">
+              Physically inspect rejected shots and enter recovered good pieces → goes to Product Surplus
+            </AppText>
+          </Pressable>
+
+          {showRecovery && moldList.length > 0 ? (
+            <View style={{ marginTop: spacing(3) }}>
+              {recoveryOk ? <Banner tone="success" message={recoveryOk} /> : null}
+              {recoverError ? <Banner tone="danger" message={recoverError} /> : null}
+              {moldList.map((m) => (
+                <FormField
+                  key={m.partName}
+                  label={`${m.partName} (${m.cavity} cavity) — Good Pieces Recovered`}
+                  value={recoveries[m.partName] ?? ''}
+                  onChangeText={(v) =>
+                    setRecoveries((prev) => ({ ...prev, [m.partName]: v }))
+                  }
+                  keyboardType="number-pad"
+                  placeholder="0"
+                />
+              ))}
+              <Button
+                label="Submit Recovery"
+                loading={recoverMutation.isPending}
+                disabled={Object.values(recoveries).every((v) => !v || Number(v) <= 0)}
+                onPress={() => {
+                  setRecoveryOk(null);
+                  recoverMutation.mutate();
+                }}
+              />
+            </View>
+          ) : showRecovery ? (
+            <AppText tone="muted" style={{ marginTop: spacing(2) }}>
+              No molds set up for this order.
+            </AppText>
+          ) : null}
         </Card>
       ) : null}
     </Screen>

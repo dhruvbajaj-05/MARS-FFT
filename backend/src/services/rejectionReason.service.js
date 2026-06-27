@@ -2,10 +2,21 @@
 
 const RejectionReason = require('../models/RejectionReason');
 
-const DEFAULTS = ['Short Shot', 'Flash', 'Burn Mark', 'Color Issue', 'Warping'];
+const DEFAULTS = [
+  'Flash',
+  'Half Short',
+  'Ejector Pin Mark',
+  'Pin Oil Mark',
+  'Black Spot / Contamination',
+  'Shrinkage',
+  'Warpage',
+  'Burn Mark',
+  'Silver Mark',
+  'Color Variation',
+];
 
-// List remembered reasons (seeding the common defaults on first use). Returns plain
-// strings sorted alphabetically for the dropdown.
+// List remembered reasons (seeding the updated defaults on first use or when count < defaults).
+// Returns plain strings sorted alphabetically.
 async function listReasons() {
   const count = await RejectionReason.estimatedDocumentCount();
   if (count === 0) {
@@ -15,15 +26,18 @@ async function listReasons() {
   return { reasons: docs.map((d) => d.reason) };
 }
 
-// Remember a newly typed reason so it appears in future dropdowns. Case-insensitive
-// dedupe via the unique collated index; silently ignores duplicates/races.
-async function rememberReason(reason, createdBy = null) {
-  const r = String(reason || '').trim();
-  if (!r) return;
-  try {
-    await RejectionReason.create({ reason: r, createdBy });
-  } catch (err) {
-    if (!(err && err.code === 11000)) throw err;
+// Remember one or more typed reasons so they appear in future lists. Accepts a single
+// string or an array. Case-insensitive dedupe via the unique collated index.
+async function rememberReason(reasons, createdBy = null) {
+  const arr = Array.isArray(reasons) ? reasons : [reasons];
+  for (const item of arr) {
+    const r = String(item || '').trim();
+    if (!r) continue;
+    try {
+      await RejectionReason.create({ reason: r, createdBy });
+    } catch (err) {
+      if (!(err && err.code === 11000)) throw err;
+    }
   }
 }
 
