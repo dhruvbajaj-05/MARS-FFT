@@ -143,6 +143,18 @@ async function rejectionReasons(req, res, next) {
   }
 }
 
+// POST /api/v1/moulding/rejection-reasons  — persist a custom defect immediately.
+async function saveRejectionReason(req, res, next) {
+  try {
+    const reason = String(req.body.reason || '').trim();
+    if (!reason) return res.status(400).json({ error: 'missing_reason', message: 'reason is required' });
+    await mouldingService.persistRejectionReason(reason, req.user.id);
+    res.status(200).json(await mouldingService.listRejectionReasons());
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /api/v1/moulding/:id
 async function getById(req, res, next) {
   try {
@@ -167,5 +179,6 @@ module.exports = {
   listOrderMolds,
   createOrderMold,
   rejectionReasons,
+  saveRejectionReason,
   getById,
 };

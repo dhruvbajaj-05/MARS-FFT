@@ -116,6 +116,12 @@ export const mouldingApi = {
   rejectionReasons: () =>
     apiClient.get<{ reasons: string[] }>('/moulding/rejection-reasons').then((r) => r.data.reasons),
 
+  // Persist a custom defect immediately (before form submission) — returns updated list.
+  saveRejectionReason: (reason: string) =>
+    apiClient
+      .post<{ reasons: string[] }>('/moulding/rejection-reasons', { reason })
+      .then((r) => r.data.reasons),
+
   get: (id: string) =>
     apiClient.get<{ record: MouldingRecord }>(`/moulding/${id}`).then((r) => r.data.record),
 };

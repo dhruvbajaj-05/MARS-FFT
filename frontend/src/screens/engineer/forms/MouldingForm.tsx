@@ -175,9 +175,14 @@ export function MouldingForm() {
     if (!r) return;
     if (!rejectionReasons.includes(r)) setRejectionReasons((prev) => [...prev, r]);
     if (!allReasonOptions.includes(r)) {
+      // Optimistically update cache so it shows immediately everywhere.
       qc.setQueryData(queryKeys.rejectionReasons, (old: string[] | undefined) =>
         old ? [...old, r].sort() : [r]
       );
+      // Persist in the background — makes it permanent across all sessions.
+      mouldingApi.saveRejectionReason(r)
+        .then((updated) => qc.setQueryData(queryKeys.rejectionReasons, updated))
+        .catch(() => {});
     }
     setNewReasonText('');
   };
@@ -233,7 +238,7 @@ export function MouldingForm() {
   const isProductionComplete = prodStatus.data?.status === 'Completed';
 
   return (
-    <Screen scroll refreshControl={<RefreshControl refreshing={cp.orders.isRefetching} onRefresh={cp.orders.refetch} />}>
+    <Screen scroll contentStyle={{ paddingBottom: 200 }} refreshControl={<RefreshControl refreshing={cp.orders.isRefetching} onRefresh={cp.orders.refetch} />}>
       <AppText variant="h2" style={{ marginBottom: spacing(3) }}>
         Moulding
       </AppText>
@@ -310,17 +315,41 @@ export function MouldingForm() {
             </AppText>
           ) : (
             <View style={{ marginBottom: spacing(3) }}>
-              {moldList.map((m) => (
-                <View
-                  key={m.id}
-                  style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 }}
-                >
-                  <AppText weight="600">{m.moldName}</AppText>
-                  <AppText tone="muted">
-                    {m.partName} · {m.cavity} cav · {m.requiredShots} shots · target {m.requiredQuantity}
-                  </AppText>
-                </View>
-              ))}
+              {moldList.map((m) => {
+                const mp = prodStatus.data?.moldProgress?.find((p) => p.moldName === m.moldName);
+                const hasProg = mp && m.requiredShots > 0;
+                return (
+                  <View
+                    key={m.id}
+                    style={{
+                      paddingVertical: spacing(2),
+                      borderBottomWidth: 1,
+                      borderBottomColor: colors.border,
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <AppText weight="600">{m.moldName}</AppText>
+                      <AppText tone="muted" variant="caption">
+                        {m.partName} · {m.cavity} cav
+                      </AppText>
+                    </View>
+                    {hasProg ? (
+                      <AppText
+                        variant="caption"
+                        style={{ color: mp.isComplete ? colors.status.success.fg : colors.textMuted, marginTop: 2 }}
+                      >
+                        {mp.goodParts.toLocaleString()} / {mp.requiredPieces.toLocaleString()} pieces
+                        {'  '}({mp.shotsDone.toLocaleString()} / {mp.requiredShots.toLocaleString()} shots)
+                        {mp.isComplete ? '  ✓ Done' : ''}
+                      </AppText>
+                    ) : (
+                      <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
+                        Target: {m.requiredShots} shots × {m.cavity} cav = {m.requiredQuantity} pieces
+                      </AppText>
+                    )}
+                  </View>
+                );
+              })}
             </View>
           )}
 

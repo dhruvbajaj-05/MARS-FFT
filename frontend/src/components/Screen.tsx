@@ -32,8 +32,8 @@ export function Screen({ children, scroll = false, padded = true, contentStyle, 
       {scroll ? (
         <KeyboardAvoidingView
           style={styles.fill}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
+          behavior="padding"
+          keyboardVerticalOffset={0}
         >
           <ScrollView
             contentContainerStyle={[pad, contentStyle]}

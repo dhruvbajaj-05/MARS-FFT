@@ -49,6 +49,12 @@ router.get(
   ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER),
   mouldingController.rejectionReasons
 );
+// Persist a custom defect immediately (before form submission).
+router.post(
+  '/rejection-reasons',
+  ...protect(ROLES.MOULDING_ENGINEER),
+  mouldingController.saveRejectionReason
+);
 
 // Recover good pieces from rejected shots → product surplus.
 router.post(

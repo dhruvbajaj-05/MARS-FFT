@@ -218,10 +218,23 @@ export interface OrderStatusBase {
   recordCount: number;
   status: string;
 }
+// Per-mold production progress returned inside MouldingStatus.
+export interface MoldProgress {
+  moldName: string;
+  partName: string;
+  cavity: number;
+  requiredShots: number;
+  requiredPieces: number;
+  shotsDone: number;
+  goodParts: number;
+  isComplete: boolean;
+}
 export type MouldingStatus = OrderStatusBase & {
   producedQuantity: number;
   goodParts: number;
   pendingQuantity: number;
+  // Per-mold breakdown — present when OrderMolds are configured for the order.
+  moldProgress: MoldProgress[];
 };
 export type AssemblyStatus = OrderStatusBase & {
   mouldingOutput: number;

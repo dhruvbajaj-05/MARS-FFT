@@ -12,7 +12,7 @@ import { useTheme } from '@/theme/ThemeProvider';
 import { useCustomerProduct } from './useCustomerProduct';
 import { ApiError, friendlyMessage } from '@/services/apiError';
 
-// ---- Aggregation helpers for moulding grouped view (req #6) ----
+// ---- Aggregation helpers for moulding grouped view ----
 
 type CavityGroup = {
   cavity: number;
@@ -23,27 +23,21 @@ type CavityGroup = {
   goodPieces: number;
   records: MouldingRecord[];
 };
-type MachineGroup = {
-  machine: string;
-  cavities: CavityGroup[];
-};
 type ShiftGroup = {
   shift: string;
-  machines: MachineGroup[];
+  cavities: CavityGroup[];
 };
 
 function groupMouldingRecords(records: MouldingRecord[]): ShiftGroup[] {
-  const shifts: Record<string, Record<string, Record<string, CavityGroup>>> = {};
+  const shifts: Record<string, Record<string, CavityGroup>> = {};
 
   for (const r of records) {
     const s = r.shift ?? '?';
-    const m = r.machineNumber ?? '?';
     const key = `${r.partName}|${r.cavity}`;
 
     if (!shifts[s]) shifts[s] = {};
-    if (!shifts[s][m]) shifts[s][m] = {};
-    if (!shifts[s][m][key]) {
-      shifts[s][m][key] = {
+    if (!shifts[s][key]) {
+      shifts[s][key] = {
         cavity: r.cavity,
         partName: r.partName,
         moldName: r.moldName,
@@ -53,7 +47,7 @@ function groupMouldingRecords(records: MouldingRecord[]): ShiftGroup[] {
         records: [],
       };
     }
-    const g = shifts[s][m][key];
+    const g = shifts[s][key];
     g.totalShots += r.shotsDone;
     g.totalRejectedShots += r.rejectedShots ?? 0;
     g.goodPieces += r.goodParts;
@@ -62,15 +56,21 @@ function groupMouldingRecords(records: MouldingRecord[]): ShiftGroup[] {
 
   return Object.entries(shifts)
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([shift, machines]) => ({
+    .map(([shift, cavities]) => ({
       shift,
-      machines: Object.entries(machines)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([machine, cavities]) => ({
-          machine,
-          cavities: Object.values(cavities).sort((a, b) => a.partName.localeCompare(b.partName)),
-        })),
+      // Sort by cavity descending (highest cavity first)
+      cavities: Object.values(cavities).sort((a, b) => b.cavity - a.cavity),
     }));
+}
+
+// Returns "Xh Ym" remaining in the 12h edit window, or null if expired.
+function editTimeRemaining(createdAt: string): string | null {
+  const WINDOW = 12 * 60 * 60 * 1000;
+  const remaining = WINDOW - (Date.now() - new Date(createdAt).getTime());
+  if (remaining <= 0) return null;
+  const h = Math.floor(remaining / 3_600_000);
+  const m = Math.floor((remaining % 3_600_000) / 60_000);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
 // ---- Edit modal (inline) for a single moulding record ----
@@ -116,7 +116,10 @@ function MouldingEditPanel({
     const r = newReason.trim();
     if (!r) return;
     if (!selReasons.includes(r)) setSelReasons((prev) => [...prev, r]);
-    if (!allReasons.includes(r)) setAllReasons((prev) => [...prev, r].sort());
+    if (!allReasons.includes(r)) {
+      setAllReasons((prev) => [...prev, r].sort());
+      mouldingApi.saveRejectionReason(r).catch(() => {});
+    }
     setNewReason('');
   };
 
@@ -160,7 +163,7 @@ function MouldingEditPanel({
   );
 }
 
-// ---- Moulding-specific grouped records (req #6 + #7) ----
+// ---- Moulding-specific grouped records ----
 function MouldingRecords() {
   const { spacing, colors } = useTheme();
   const qc = useQueryClient();
@@ -168,7 +171,7 @@ function MouldingRecords() {
   const { customerId, productId, orderId } = cp;
 
   const [expandedShift, setExpandedShift] = useState<string | null>(null);
-  const [expandedMachine, setExpandedMachine] = useState<string | null>(null);
+  const [expandedCavity, setExpandedCavity] = useState<string | null>(null);
   const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
 
   const params = {
@@ -267,144 +270,187 @@ function MouldingRecords() {
                 {groups.map((sg) => {
                   const shiftKey = sg.shift;
                   const isShiftOpen = expandedShift === shiftKey;
+                  const shiftTotal = sg.cavities.reduce((s, c) => s + c.goodPieces, 0);
                   return (
                     <Card key={shiftKey}>
-                      {/* Shift header */}
+                      {/* Shift header — large tap area */}
                       <Pressable
                         onPress={() => setExpandedShift(isShiftOpen ? null : shiftKey)}
-                        style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}
+                        style={{
+                          flexDirection: 'row',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          paddingVertical: spacing(2),
+                        }}
+                        hitSlop={{ top: 8, bottom: 8 }}
                       >
-                        <AppText variant="h3">Shift {sg.shift}</AppText>
-                        <AppText tone="muted">{isShiftOpen ? '▾' : '▸'}</AppText>
+                        <View>
+                          <AppText variant="h3">
+                            Shift {sg.shift === 'A' ? 'A  (08:00–16:00)' : sg.shift === 'B' ? 'B  (16:00–00:00)' : 'C  (00:00–08:00)'}
+                          </AppText>
+                          <AppText variant="caption" tone="muted">
+                            {sg.cavities.length} mould{sg.cavities.length !== 1 ? 's' : ''} · {shiftTotal.toLocaleString()} good pieces
+                          </AppText>
+                        </View>
+                        <AppText style={{ fontSize: 22, color: colors.textMuted }}>
+                          {isShiftOpen ? '▾' : '▸'}
+                        </AppText>
                       </Pressable>
 
-                      {isShiftOpen && sg.machines.map((mg) => {
-                        const machineKey = `${shiftKey}|${mg.machine}`;
-                        const isMachineOpen = expandedMachine === machineKey;
+                      {/* Cavity groups */}
+                      {isShiftOpen && sg.cavities.map((cg) => {
+                        const cavKey = `${shiftKey}|${cg.partName}|${cg.cavity}`;
+                        const isCavOpen = expandedCavity === cavKey;
                         return (
                           <View
-                            key={mg.machine}
+                            key={cavKey}
                             style={{
                               marginTop: spacing(2),
-                              borderLeftWidth: 2,
-                              borderLeftColor: colors.border,
-                              paddingLeft: spacing(3),
+                              borderRadius: 10,
+                              overflow: 'hidden',
+                              borderWidth: 1,
+                              borderColor: colors.border,
                             }}
                           >
-                            {/* Machine header */}
+                            {/* Cavity summary row — tap to expand individual records */}
                             <Pressable
-                              onPress={() => setExpandedMachine(isMachineOpen ? null : machineKey)}
-                              style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing(1) }}
+                              onPress={() => setExpandedCavity(isCavOpen ? null : cavKey)}
+                              style={{
+                                flexDirection: 'row',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                backgroundColor: colors.surfaceAlt,
+                                padding: spacing(3),
+                              }}
+                              hitSlop={{ top: 4, bottom: 4 }}
                             >
-                              <AppText weight="600">Machine {mg.machine}</AppText>
-                              <AppText tone="muted" variant="caption">{isMachineOpen ? '▾' : '▸'}</AppText>
+                              <View style={{ flex: 1 }}>
+                                <AppText weight="700" style={{ fontSize: 15 }}>
+                                  {cg.cavity} Cavity — {cg.partName}
+                                </AppText>
+                                <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
+                                  {cg.totalShots.toLocaleString()} shots · {cg.totalRejectedShots.toLocaleString()} rej
+                                </AppText>
+                                <AppText
+                                  variant="caption"
+                                  weight="600"
+                                  style={{ color: colors.status.success.fg, marginTop: 2 }}
+                                >
+                                  {cg.goodPieces.toLocaleString()} good pieces
+                                </AppText>
+                              </View>
+                              <View style={{ alignItems: 'center', paddingLeft: spacing(2) }}>
+                                <AppText variant="caption" tone="muted">
+                                  {cg.records.length} {cg.records.length === 1 ? 'entry' : 'entries'}
+                                </AppText>
+                                <AppText style={{ fontSize: 20, color: colors.textMuted, marginTop: 2 }}>
+                                  {isCavOpen ? '▾' : '▸'}
+                                </AppText>
+                              </View>
                             </Pressable>
 
-                            {/* Cavity groups */}
-                            {mg.cavities.map((cg) => (
-                              <View
-                                key={`${cg.partName}|${cg.cavity}`}
-                                style={{
-                                  backgroundColor: colors.surfaceAlt,
-                                  borderRadius: 8,
-                                  padding: spacing(3),
-                                  marginBottom: spacing(2),
-                                }}
-                              >
-                                <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing(1) }}>
-                                  <AppText weight="600">
-                                    {cg.cavity} Cavity — {cg.partName}
-                                  </AppText>
-                                  <AppText variant="caption" tone="muted">{cg.records.length} entr{cg.records.length === 1 ? 'y' : 'ies'}</AppText>
-                                </View>
-                                <AppText variant="caption" tone="muted">
-                                  {cg.totalShots.toLocaleString()} Shots · {cg.totalRejectedShots.toLocaleString()} Rejected Shots
-                                </AppText>
-                                <AppText variant="caption" weight="600" style={{ color: colors.status.success.fg }}>
-                                  {cg.goodPieces.toLocaleString()} Good Pieces
-                                </AppText>
-
-                                {/* Individual records (edit/delete) */}
-                                {isMachineOpen && cg.records.map((r) => {
-                                  const isEditing = editingRecordId === r.id;
-                                  return (
-                                    <View
-                                      key={r.id}
-                                      style={{
-                                        marginTop: spacing(2),
-                                        padding: spacing(2),
-                                        backgroundColor: colors.surface,
-                                        borderRadius: 8,
-                                        borderWidth: 1,
-                                        borderColor: colors.border,
-                                      }}
-                                    >
-                                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                                        <View style={{ flex: 1 }}>
-                                          <AppText variant="caption">
-                                            {r.shotsDone} shots · {r.rejectedShots ?? '—'} rej shots · {r.goodParts} good
+                            {/* Individual records */}
+                            {isCavOpen && cg.records.map((r) => {
+                              const isEditing = editingRecordId === r.id;
+                              const timeLeft = editTimeRemaining(r.createdAt);
+                              const canModify = !!timeLeft;
+                              return (
+                                <View
+                                  key={r.id}
+                                  style={{
+                                    padding: spacing(3),
+                                    borderTopWidth: 1,
+                                    borderTopColor: colors.border,
+                                    backgroundColor: colors.surface,
+                                  }}
+                                >
+                                  {/* Record info */}
+                                  <View style={{ marginBottom: spacing(2) }}>
+                                    <AppText style={{ fontSize: 14 }}>
+                                      <AppText weight="600">{r.shotsDone.toLocaleString()}</AppText> shots
+                                      {r.rejectedShots ? (
+                                        <>
+                                          {' · '}
+                                          <AppText weight="600" style={{ color: colors.status.danger.fg }}>
+                                            {r.rejectedShots}
                                           </AppText>
-                                          {r.rejectionReasons.length > 0 ? (
-                                            <AppText variant="caption" tone="muted">
-                                              {r.rejectionReasons.join(', ')}
-                                            </AppText>
-                                          ) : null}
-                                          <AppText variant="caption" tone="muted">
-                                            {new Date(r.createdAt).toLocaleString()} · {orderCodeFor(r.orderId)}
-                                          </AppText>
-                                          {!r.canEdit ? (
-                                            <AppText variant="caption" style={{ color: colors.status.pending.fg }}>
-                                              Edit window closed (12h passed)
-                                            </AppText>
-                                          ) : null}
-                                        </View>
-                                        {r.canEdit ? (
-                                          <View style={{ flexDirection: 'row', gap: spacing(1) }}>
-                                            <Pressable
-                                              onPress={() => setEditingRecordId(isEditing ? null : r.id)}
-                                              style={{
-                                                backgroundColor: colors.status.info.bg,
-                                                borderRadius: 6,
-                                                paddingHorizontal: spacing(2),
-                                                paddingVertical: spacing(1),
-                                              }}
-                                            >
-                                              <AppText variant="caption" style={{ color: colors.status.info.fg }}>
-                                                {isEditing ? 'Cancel' : 'Edit'}
-                                              </AppText>
-                                            </Pressable>
-                                            <Pressable
-                                              onPress={() => confirmDelete(r)}
-                                              style={{
-                                                backgroundColor: colors.status.danger.bg,
-                                                borderRadius: 6,
-                                                paddingHorizontal: spacing(2),
-                                                paddingVertical: spacing(1),
-                                              }}
-                                            >
-                                              <AppText variant="caption" style={{ color: colors.status.danger.fg }}>
-                                                Delete
-                                              </AppText>
-                                            </Pressable>
-                                          </View>
-                                        ) : null}
-                                      </View>
-                                      {isEditing ? (
-                                        <MouldingEditPanel
-                                          record={r}
-                                          reasons={allReasons}
-                                          onClose={() => setEditingRecordId(null)}
-                                          onSaved={() => {
-                                            setEditingRecordId(null);
-                                            qc.invalidateQueries({ queryKey: queryKeys.dept('moulding').mine({}) });
-                                          }}
-                                        />
+                                          {' rej'}
+                                        </>
                                       ) : null}
+                                      {' · '}
+                                      <AppText weight="600" style={{ color: colors.status.success.fg }}>
+                                        {r.goodParts.toLocaleString()}
+                                      </AppText>
+                                      {' good'}
+                                    </AppText>
+                                    <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
+                                      Machine {r.machineNumber} · {new Date(r.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {orderCodeFor(r.orderId)}
+                                    </AppText>
+                                    {r.rejectionReasons.length > 0 ? (
+                                      <AppText variant="caption" style={{ color: colors.status.warning?.fg ?? colors.textMuted, marginTop: 2 }}>
+                                        Defects: {r.rejectionReasons.join(', ')}
+                                      </AppText>
+                                    ) : null}
+                                    {canModify ? (
+                                      <AppText variant="caption" style={{ color: colors.status.info.fg, marginTop: 2 }}>
+                                        {timeLeft} left to edit
+                                      </AppText>
+                                    ) : (
+                                      <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
+                                        Edit window closed
+                                      </AppText>
+                                    )}
+                                  </View>
+
+                                  {/* Edit / Delete — only while window is open */}
+                                  {canModify ? (
+                                    <View style={{ flexDirection: 'row', gap: spacing(2) }}>
+                                      <Pressable
+                                        onPress={() => setEditingRecordId(isEditing ? null : r.id)}
+                                        style={{
+                                          flex: 1,
+                                          backgroundColor: colors.status.info.bg,
+                                          borderRadius: 8,
+                                          paddingVertical: spacing(2),
+                                          alignItems: 'center',
+                                        }}
+                                      >
+                                        <AppText weight="600" style={{ color: colors.status.info.fg }}>
+                                          {isEditing ? 'Cancel Edit' : 'Edit'}
+                                        </AppText>
+                                      </Pressable>
+                                      <Pressable
+                                        onPress={() => confirmDelete(r)}
+                                        style={{
+                                          flex: 1,
+                                          backgroundColor: colors.status.danger.bg,
+                                          borderRadius: 8,
+                                          paddingVertical: spacing(2),
+                                          alignItems: 'center',
+                                        }}
+                                      >
+                                        <AppText weight="600" style={{ color: colors.status.danger.fg }}>
+                                          Delete
+                                        </AppText>
+                                      </Pressable>
                                     </View>
-                                  );
-                                })}
-                              </View>
-                            ))}
+                                  ) : null}
+
+                                  {isEditing ? (
+                                    <MouldingEditPanel
+                                      record={r}
+                                      reasons={allReasons}
+                                      onClose={() => setEditingRecordId(null)}
+                                      onSaved={() => {
+                                        setEditingRecordId(null);
+                                        qc.invalidateQueries({ queryKey: queryKeys.dept('moulding').mine({}) });
+                                        qc.invalidateQueries({ queryKey: ['moulding'] });
+                                      }}
+                                    />
+                                  ) : null}
+                                </View>
+                              );
+                            })}
                           </View>
                         );
                       })}

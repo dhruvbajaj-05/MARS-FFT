@@ -47,40 +47,80 @@ async function computeOrderStatus(orderId) {
     throw notFound('Order not found', 'order_not_found');
   }
 
-  const [[agg], targetFromMolds] = await Promise.all([
+  // Single per-mold aggregation — overall totals are derived from it (one DB hit).
+  const [moldProdArr, orderMolds] = await Promise.all([
     MouldingRecord.aggregate([
       { $match: { orderId: order._id } },
       {
         $group: {
-          _id: null,
-          totalProduced: { $sum: '$productionQuantity' },
-          totalGoodParts: { $sum: '$goodParts' },
+          _id: '$moldName',
+          shotsDone: { $sum: '$shotsDone' },
+          goodParts: { $sum: '$goodParts' },
+          productionQuantity: { $sum: '$productionQuantity' },
           recordCount: { $sum: 1 },
         },
       },
     ]),
-    computeTargetPieces(order._id),
+    OrderMold.find({ orderId: order._id }).lean(),
   ]);
 
-  const sums = agg || { totalProduced: 0, totalGoodParts: 0, recordCount: 0 };
-  // Use mold-derived piece target when molds are configured; fall back to order quantity.
-  const orderQuantity = targetFromMolds > 0 ? targetFromMolds : order.orderQuantity;
-  const status = deriveStatus(sums, orderQuantity);
+  // Overall totals computed from per-mold data.
+  const totalGoodParts = moldProdArr.reduce((s, m) => s + m.goodParts, 0);
+  const totalProduced = moldProdArr.reduce((s, m) => s + m.productionQuantity, 0);
+  const totalRecords = moldProdArr.reduce((s, m) => s + m.recordCount, 0);
+
+  // Index production by moldName for O(1) lookup.
+  const prodByMold = Object.fromEntries(moldProdArr.map((m) => [m._id, m]));
+
+  // Per-mold progress — each OrderMold is the authoritative source for targets.
+  const moldProgress = orderMolds.map((m) => {
+    const prod = prodByMold[m.moldName] || { shotsDone: 0, goodParts: 0 };
+    const requiredPieces = (m.requiredShots || 0) * m.cavity;
+    return {
+      moldName: m.moldName,
+      partName: m.partName,
+      cavity: m.cavity,
+      requiredShots: m.requiredShots || 0,
+      requiredPieces,
+      shotsDone: prod.shotsDone || 0,
+      goodParts: prod.goodParts || 0,
+      isComplete: requiredPieces > 0 && (prod.goodParts || 0) >= requiredPieces,
+    };
+  });
+
+  // Overall status: ALL molds with a piece target must be complete.
+  const moldsWithTargets = moldProgress.filter((m) => m.requiredPieces > 0);
+  const totalTargetPieces = moldsWithTargets.reduce((s, m) => s + m.requiredPieces, 0);
+
+  let status;
+  if (totalRecords === 0) {
+    status = 'Pending';
+  } else if (moldsWithTargets.length > 0 && moldsWithTargets.every((m) => m.isComplete)) {
+    status = 'Completed';
+  } else if (moldsWithTargets.length === 0) {
+    // No mold targets configured — fall back to aggregate comparison against order qty.
+    status = deriveStatus({ recordCount: totalRecords, totalGoodParts }, order.orderQuantity);
+  } else {
+    status = 'In Progress';
+  }
+
+  const orderQuantity = totalTargetPieces > 0 ? totalTargetPieces : order.orderQuantity;
   const progressPct = orderQuantity > 0
-    ? Math.min(100, Math.round((sums.totalGoodParts / orderQuantity) * 100))
-    : (sums.recordCount > 0 ? 100 : 0);
+    ? Math.min(100, Math.round((totalGoodParts / orderQuantity) * 100))
+    : (totalRecords > 0 ? 100 : 0);
 
   return {
     orderId: order._id.toString(),
     customerId: order.customerId.toString(),
     productId: order.productId.toString(),
     orderQuantity,
-    producedQuantity: sums.totalProduced,
-    goodParts: sums.totalGoodParts,
-    pendingQuantity: Math.max(0, orderQuantity - sums.totalGoodParts),
+    producedQuantity: totalProduced,
+    goodParts: totalGoodParts,
+    pendingQuantity: Math.max(0, orderQuantity - totalGoodParts),
     progressPct,
-    recordCount: sums.recordCount,
+    recordCount: totalRecords,
     status,
+    moldProgress,
   };
 }
 
@@ -581,5 +621,6 @@ module.exports = {
   listOrderMolds,
   upsertOrderMold,
   listRejectionReasons: rejectionReasonService.listReasons,
+  persistRejectionReason: (reason, createdBy) => rejectionReasonService.rememberReason(reason, createdBy),
   toPublicMouldingRecord,
 };
