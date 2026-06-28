@@ -1,3 +1,4 @@
+import { useNavigation } from '@react-navigation/native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useMemo, useState } from 'react';
 import { Alert, Pressable, RefreshControl, View } from 'react-native';
@@ -33,6 +34,7 @@ const STATUS_FILTER_OPTIONS: SelectOption[] = [
 export function OrdersScreen() {
   const { spacing, colors } = useTheme();
   const qc = useQueryClient();
+  const navigation = useNavigation<any>();
 
   // ---- Create form ----
   const [customerId, setCustomerId] = useState<string | null>(null);
@@ -254,6 +256,20 @@ export function OrdersScreen() {
                       Production: <AppText weight="600" style={{ color: statusColor(o.productionStatus) }}>{o.productionStatus}</AppText>
                       {'   '}Assembly: <AppText weight="600" style={{ color: statusColor(o.assemblyStatus) }}>{o.assemblyStatus}</AppText>
                     </AppText>
+
+                    <Pressable
+                      onPress={() =>
+                        navigation.navigate('OrderTimeline', {
+                          orderId: o.id,
+                          orderCode: o.orderCode ?? o.id,
+                        })
+                      }
+                      style={{ marginTop: spacing(2) }}
+                    >
+                      <AppText variant="caption" weight="600" style={{ color: colors.primary }}>
+                        View Timeline ›
+                      </AppText>
+                    </Pressable>
 
                     {o.status !== 'Archived' ? (
                       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(3), marginTop: spacing(2) }}>

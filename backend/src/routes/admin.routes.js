@@ -28,10 +28,16 @@ router.get('/customers', ...protect(ROLES.ADMIN), adminController.customers);
 // Users grouped by role.
 router.get('/users', ...protect(ROLES.ADMIN), adminController.users);
 
-// Orders. Define the specific `/orders/delayed` before the generic list so it is
-// never shadowed.
+// Orders. Specific routes before parameterized to avoid shadowing.
 router.get('/orders/delayed', ...protect(ROLES.ADMIN), adminController.delayedOrders);
 router.get('/orders', ...protect(ROLES.ADMIN), adminController.orders);
+router.get('/orders/:id/timeline', ...protect(ROLES.ADMIN), adminController.orderTimeline);
+
+// Department record lists — admin visibility across all records.
+router.get('/records/moulding', ...protect(ROLES.ADMIN), adminController.adminMouldingRecords);
+router.get('/records/assembly', ...protect(ROLES.ADMIN), adminController.adminAssemblyRecords);
+router.get('/records/qc', ...protect(ROLES.ADMIN), adminController.adminQcRecords);
+router.get('/records/dispatch', ...protect(ROLES.ADMIN), adminController.adminDispatchRecords);
 
 // --- Phase 7 analytics ---------------------------------------------------------
 

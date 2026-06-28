@@ -371,6 +371,10 @@ export interface AdminOrderRow {
   lifecycleStatus: OrderLifecycle;
   productionStatus: OrderPhaseStatus;
   assemblyStatus: OrderPhaseStatus;
+  mouldingCount?: number;
+  assemblyCount?: number;
+  qcCount?: number;
+  dispatchCount?: number;
   createdAt: string;
   ageDays?: number;
 }
@@ -574,4 +578,92 @@ export interface FinishedGoodsBalance {
   customerId: string;
   productId: string;
   quantityOnHand: number;
+}
+
+// ---- Admin department record rows (admin-only paginated record lists) ----
+export interface AdminMouldingRecord {
+  id: string;
+  orderId: string | null;
+  orderCode: string | null;
+  customerId: string | null;
+  customer: string | null;
+  productId: string | null;
+  product: string | null;
+  moldName: string;
+  partName: string;
+  machineNumber: string;
+  shift: 'A' | 'B' | 'C';
+  cavity: number;
+  shotsDone: number;
+  rejectedShots: number;
+  goodParts: number;
+  productionQuantity: number;
+  rejectionReasons: string[];
+  createdAt: string;
+}
+
+export interface AdminAssemblyRecord {
+  id: string;
+  orderId: string | null;
+  orderCode: string | null;
+  customerId: string | null;
+  customer: string | null;
+  productId: string | null;
+  product: string | null;
+  assemblyLine: string;
+  operatorCount: number;
+  shift: 'A' | 'B' | 'C';
+  inputQuantity: number;
+  assembledSets: number;
+  assembledQuantity: number;
+  rejectedQuantity: number;
+  rejectionReason: string | null;
+  createdAt: string;
+}
+
+export interface AdminQCRecord {
+  id: string;
+  orderId: string | null;
+  orderCode: string | null;
+  customerId: string | null;
+  customer: string | null;
+  productId: string | null;
+  product: string | null;
+  inspectionDate: string;
+  inspectionType: string;
+  sampleSize: number;
+  acceptedQuantity: number;
+  rejectedQuantity: number;
+  defectCount: number;
+  defects: { defectType: string; quantity: number; remarks: string | null }[];
+  remarks: string | null;
+  createdAt: string;
+}
+
+export interface AdminDispatchRecord {
+  id: string;
+  orderId: string | null;
+  orderCode: string | null;
+  customerId: string | null;
+  customer: string | null;
+  productId: string | null;
+  product: string | null;
+  dispatchDate: string;
+  packedQuantity: number;
+  cartonCount: number;
+  transporterName: string;
+  vehicleNumber: string;
+  lrNumber: string;
+  invoiceNumber: string;
+  dispatchRemarks: string | null;
+  createdAt: string;
+}
+
+// ---- Admin order timeline ----
+export interface AdminOrderTimeline extends AdminOrderRow {
+  mouldingGoodParts: number;
+  assembledQuantity: number;
+  qcAcceptedQuantity: number;
+  productionCompletedAt: string | null;
+  assemblyCompletedAt: string | null;
 }

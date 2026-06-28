@@ -323,8 +323,6 @@ function shapeOrderRow(o) {
   const qty = o.orderQuantity || 0;
   return {
     id: o._id.toString(),
-    // Prefer the real OrderID code (FFT-#####); fall back to the legacy derived number
-    // for any order not yet assigned a code.
     orderCode: o.orderCode || null,
     orderNumber: o.orderCode || formatOrderNumber(o._id),
     customer: o.customerName || null,
@@ -334,12 +332,14 @@ function shapeOrderRow(o) {
     orderQuantity: o.orderQuantity,
     dispatchedQuantity: o.dispatchedQuantity,
     progressPct: qty > 0 ? Math.min(100, Math.round((o.dispatchedQuantity / qty) * 100)) : 0,
-    // `status` stays the customer-facing production stage (back-compat); lifecycle +
-    // phase flags are surfaced separately for the revised Admin order management.
     status: deriveOverallStatus(o),
     lifecycleStatus: o.status || 'Active',
     productionStatus: o.productionStatus || 'Active',
     assemblyStatus: o.assemblyStatus || 'Active',
+    mouldingCount: o.mouldingCount || 0,
+    assemblyCount: o.assemblyCount || 0,
+    qcCount: o.qcCount || 0,
+    dispatchCount: o.dispatchCount || 0,
     createdAt: o.createdAt,
   };
 }
@@ -853,6 +853,231 @@ async function getDispatchSummary() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// GET /admin/orders/:id/timeline — full per-order dept breakdown for one order
+// ---------------------------------------------------------------------------
+async function getOrderTimeline(id) {
+  const mongoose = require('mongoose');
+  if (!mongoose.Types.ObjectId.isValid(id)) throw badRequest('Invalid order id', 'invalid_id');
+
+  const pipeline = [
+    { $match: { _id: new mongoose.Types.ObjectId(id) } },
+    ...orderEnrichmentStages(),
+    {
+      $addFields: {
+        mouldingGoodParts: pick('$moulding.total'),
+        assembledQuantity: pick('$assembly.total'),
+        qcAcceptedQuantity: pick('$qc.total'),
+        dispatchedQty: pick('$dispatch.total'),
+      },
+    },
+  ];
+
+  const [o] = await Order.aggregate(pipeline);
+  if (!o) throw notFound('Order not found', 'order_not_found');
+
+  return {
+    ...shapeOrderRow(o),
+    mouldingCount: o.mouldingCount || 0,
+    assemblyCount: o.assemblyCount || 0,
+    qcCount: o.qcCount || 0,
+    dispatchCount: o.dispatchCount || 0,
+    mouldingGoodParts: o.mouldingGoodParts || 0,
+    assembledQuantity: o.assembledQuantity || 0,
+    qcAcceptedQuantity: o.qcAcceptedQuantity || 0,
+    productionCompletedAt: o.productionCompletedAt ?? null,
+    assemblyCompletedAt: o.assemblyCompletedAt ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// GET /admin/records/moulding | assembly | qc | dispatch — paginated dept records
+// ---------------------------------------------------------------------------
+
+function buildRecordFilter(query, mongoose) {
+  const match = {};
+  for (const key of ['customerId', 'productId', 'orderId']) {
+    if (query[key] && mongoose.Types.ObjectId.isValid(query[key]))
+      match[key] = new mongoose.Types.ObjectId(query[key]);
+  }
+  if (query.shift) match.shift = query.shift;
+  return match;
+}
+
+async function listAdminMouldingRecords(query = {}) {
+  const mongoose = require('mongoose');
+  const { page, limit, skip } = parsePagination(query);
+  const match = buildRecordFilter(query, mongoose);
+
+  const [items, total] = await Promise.all([
+    MouldingRecord.aggregate([
+      { $match: match },
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      { $lookup: { from: Customer.collection.name, localField: 'customerId', foreignField: '_id', as: 'customer' } },
+      { $unwind: { path: '$customer', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: Product.collection.name, localField: 'productId', foreignField: '_id', as: 'product' } },
+      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: Order.collection.name, localField: 'orderId', foreignField: '_id', as: 'order' } },
+      { $unwind: { path: '$order', preserveNullAndEmptyArrays: true } },
+    ]),
+    MouldingRecord.countDocuments(match),
+  ]);
+
+  const data = items.map((r) => ({
+    id: r._id.toString(),
+    orderId: r.orderId ? r.orderId.toString() : null,
+    orderCode: r.order ? r.order.orderCode : null,
+    customerId: r.customerId ? r.customerId.toString() : null,
+    customer: r.customer ? r.customer.name : null,
+    productId: r.productId ? r.productId.toString() : null,
+    product: r.product ? r.product.name : null,
+    moldName: r.moldName,
+    partName: r.partName,
+    machineNumber: r.machineNumber,
+    shift: r.shift,
+    cavity: r.cavity,
+    shotsDone: r.shotsDone,
+    rejectedShots: r.rejectedShots || 0,
+    goodParts: r.goodParts,
+    productionQuantity: r.productionQuantity,
+    rejectionReasons: r.rejectionReasons || [],
+    createdAt: r.createdAt,
+  }));
+
+  return buildList(data, total, page, limit);
+}
+
+async function listAdminAssemblyRecords(query = {}) {
+  const mongoose = require('mongoose');
+  const { page, limit, skip } = parsePagination(query);
+  const match = buildRecordFilter(query, mongoose);
+
+  const [items, total] = await Promise.all([
+    AssemblyRecord.aggregate([
+      { $match: match },
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      { $lookup: { from: Customer.collection.name, localField: 'customerId', foreignField: '_id', as: 'customer' } },
+      { $unwind: { path: '$customer', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: Product.collection.name, localField: 'productId', foreignField: '_id', as: 'product' } },
+      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: Order.collection.name, localField: 'orderId', foreignField: '_id', as: 'order' } },
+      { $unwind: { path: '$order', preserveNullAndEmptyArrays: true } },
+    ]),
+    AssemblyRecord.countDocuments(match),
+  ]);
+
+  const data = items.map((r) => ({
+    id: r._id.toString(),
+    orderId: r.orderId ? r.orderId.toString() : null,
+    orderCode: r.order ? r.order.orderCode : null,
+    customerId: r.customerId ? r.customerId.toString() : null,
+    customer: r.customer ? r.customer.name : null,
+    productId: r.productId ? r.productId.toString() : null,
+    product: r.product ? r.product.name : null,
+    assemblyLine: r.assemblyLine,
+    operatorCount: r.operatorCount,
+    shift: r.shift,
+    inputQuantity: r.inputQuantity,
+    assembledSets: r.assembledSets,
+    assembledQuantity: r.assembledQuantity,
+    rejectedQuantity: r.rejectedQuantity,
+    rejectionReason: r.rejectionReason || null,
+    createdAt: r.createdAt,
+  }));
+
+  return buildList(data, total, page, limit);
+}
+
+async function listAdminQCRecords(query = {}) {
+  const mongoose = require('mongoose');
+  const { page, limit, skip } = parsePagination(query);
+  const match = buildRecordFilter(query, mongoose);
+
+  const [items, total] = await Promise.all([
+    QCRecord.aggregate([
+      { $match: match },
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      { $lookup: { from: Customer.collection.name, localField: 'customerId', foreignField: '_id', as: 'customer' } },
+      { $unwind: { path: '$customer', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: Product.collection.name, localField: 'productId', foreignField: '_id', as: 'product' } },
+      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: Order.collection.name, localField: 'orderId', foreignField: '_id', as: 'order' } },
+      { $unwind: { path: '$order', preserveNullAndEmptyArrays: true } },
+    ]),
+    QCRecord.countDocuments(match),
+  ]);
+
+  const data = items.map((r) => ({
+    id: r._id.toString(),
+    orderId: r.orderId ? r.orderId.toString() : null,
+    orderCode: r.order ? r.order.orderCode : null,
+    customerId: r.customerId ? r.customerId.toString() : null,
+    customer: r.customer ? r.customer.name : null,
+    productId: r.productId ? r.productId.toString() : null,
+    product: r.product ? r.product.name : null,
+    inspectionDate: r.inspectionDate,
+    inspectionType: r.inspectionType,
+    sampleSize: r.sampleSize,
+    acceptedQuantity: r.acceptedQuantity,
+    rejectedQuantity: r.rejectedQuantity,
+    defectCount: r.defectCount,
+    defects: r.defects || [],
+    remarks: r.remarks || null,
+    createdAt: r.createdAt,
+  }));
+
+  return buildList(data, total, page, limit);
+}
+
+async function listAdminDispatchRecords(query = {}) {
+  const mongoose = require('mongoose');
+  const { page, limit, skip } = parsePagination(query);
+  const match = buildRecordFilter(query, mongoose);
+
+  const [items, total] = await Promise.all([
+    PackingDispatchRecord.aggregate([
+      { $match: match },
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      { $lookup: { from: Customer.collection.name, localField: 'customerId', foreignField: '_id', as: 'customer' } },
+      { $unwind: { path: '$customer', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: Product.collection.name, localField: 'productId', foreignField: '_id', as: 'product' } },
+      { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+      { $lookup: { from: Order.collection.name, localField: 'orderId', foreignField: '_id', as: 'order' } },
+      { $unwind: { path: '$order', preserveNullAndEmptyArrays: true } },
+    ]),
+    PackingDispatchRecord.countDocuments(match),
+  ]);
+
+  const data = items.map((r) => ({
+    id: r._id.toString(),
+    orderId: r.orderId ? r.orderId.toString() : null,
+    orderCode: r.order ? r.order.orderCode : null,
+    customerId: r.customerId ? r.customerId.toString() : null,
+    customer: r.customer ? r.customer.name : null,
+    productId: r.productId ? r.productId.toString() : null,
+    product: r.product ? r.product.name : null,
+    dispatchDate: r.dispatchDate,
+    packedQuantity: r.packedQuantity,
+    cartonCount: r.cartonCount,
+    transporterName: r.transporterName,
+    vehicleNumber: r.vehicleNumber,
+    lrNumber: r.lrNumber,
+    invoiceNumber: r.invoiceNumber,
+    dispatchRemarks: r.dispatchRemarks || null,
+    createdAt: r.createdAt,
+  }));
+
+  return buildList(data, total, page, limit);
+}
+
 module.exports = {
   getDashboard,
   getProductionSummary,
@@ -870,4 +1095,9 @@ module.exports = {
   getLowStock,
   getQcQuality,
   getDispatchSummary,
+  getOrderTimeline,
+  listAdminMouldingRecords,
+  listAdminAssemblyRecords,
+  listAdminQCRecords,
+  listAdminDispatchRecords,
 };

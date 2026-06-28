@@ -50,5 +50,12 @@ export const queryKeys = {
     users: ['admin', 'users'] as const,
     orders: (params?: unknown) => ['admin', 'orders', params ?? {}] as const,
     delayed: (params?: unknown) => ['admin', 'orders', 'delayed', params ?? {}] as const,
+    orderTimeline: (id: string) => ['admin', 'orders', id, 'timeline'] as const,
+    records: {
+      moulding: (params?: unknown) => ['admin', 'records', 'moulding', params ?? {}] as const,
+      assembly: (params?: unknown) => ['admin', 'records', 'assembly', params ?? {}] as const,
+      qc: (params?: unknown) => ['admin', 'records', 'qc', params ?? {}] as const,
+      dispatch: (params?: unknown) => ['admin', 'records', 'dispatch', params ?? {}] as const,
+    },
   },
 } as const;

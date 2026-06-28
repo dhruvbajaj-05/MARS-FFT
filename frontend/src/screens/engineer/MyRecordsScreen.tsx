@@ -387,7 +387,7 @@ function MouldingRecords() {
                                       Machine {r.machineNumber} · {new Date(r.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {orderCodeFor(r.orderId)}
                                     </AppText>
                                     {r.rejectionReasons.length > 0 ? (
-                                      <AppText variant="caption" style={{ color: colors.status.warning?.fg ?? colors.textMuted, marginTop: 2 }}>
+                                      <AppText variant="caption" style={{ color: colors.status.danger.fg, marginTop: 2 }}>
                                         Defects: {r.rejectionReasons.join(', ')}
                                       </AppText>
                                     ) : null}

@@ -151,6 +151,51 @@ async function dispatchSummary(req, res, next) {
   }
 }
 
+// GET /api/v1/admin/orders/:id/timeline
+async function orderTimeline(req, res, next) {
+  try {
+    res.status(200).json(await adminService.getOrderTimeline(req.params.id));
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/admin/records/moulding
+async function adminMouldingRecords(req, res, next) {
+  try {
+    res.status(200).json(await adminService.listAdminMouldingRecords(req.query));
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/admin/records/assembly
+async function adminAssemblyRecords(req, res, next) {
+  try {
+    res.status(200).json(await adminService.listAdminAssemblyRecords(req.query));
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/admin/records/qc
+async function adminQcRecords(req, res, next) {
+  try {
+    res.status(200).json(await adminService.listAdminQCRecords(req.query));
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/admin/records/dispatch
+async function adminDispatchRecords(req, res, next) {
+  try {
+    res.status(200).json(await adminService.listAdminDispatchRecords(req.query));
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   dashboard,
   productionSummary,
@@ -168,4 +213,9 @@ module.exports = {
   lowStock,
   qcQuality,
   dispatchSummary,
+  orderTimeline,
+  adminMouldingRecords,
+  adminAssemblyRecords,
+  adminQcRecords,
+  adminDispatchRecords,
 };

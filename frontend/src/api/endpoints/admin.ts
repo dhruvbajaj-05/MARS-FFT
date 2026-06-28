@@ -1,7 +1,12 @@
 import { apiClient } from '@/api/client';
 import type {
+  AdminAssemblyRecord,
   AdminDashboard,
+  AdminDispatchRecord,
+  AdminMouldingRecord,
   AdminOrderRow,
+  AdminOrderTimeline,
+  AdminQCRecord,
   CustomerAnalyticsRow,
   DepartmentSummary,
   Paginated,
@@ -16,6 +21,15 @@ export interface AdminOrderParams {
   orderId?: string;
   orderCode?: string;
   status?: 'Active' | 'Completed' | 'Archived';
+  page?: number;
+  limit?: number;
+}
+
+export interface AdminRecordParams {
+  customerId?: string;
+  productId?: string;
+  orderId?: string;
+  shift?: 'A' | 'B' | 'C';
   page?: number;
   limit?: number;
 }
@@ -38,4 +52,14 @@ export const adminApi = {
         { params },
       )
       .then((r) => r.data),
+  orderTimeline: (id: string) =>
+    apiClient.get<AdminOrderTimeline>(`/admin/orders/${id}/timeline`).then((r) => r.data),
+  mouldingRecords: (params: AdminRecordParams = {}) =>
+    apiClient.get<Paginated<AdminMouldingRecord>>('/admin/records/moulding', { params }).then((r) => r.data),
+  assemblyRecords: (params: AdminRecordParams = {}) =>
+    apiClient.get<Paginated<AdminAssemblyRecord>>('/admin/records/assembly', { params }).then((r) => r.data),
+  qcRecords: (params: AdminRecordParams = {}) =>
+    apiClient.get<Paginated<AdminQCRecord>>('/admin/records/qc', { params }).then((r) => r.data),
+  dispatchRecords: (params: AdminRecordParams = {}) =>
+    apiClient.get<Paginated<AdminDispatchRecord>>('/admin/records/dispatch', { params }).then((r) => r.data),
 };

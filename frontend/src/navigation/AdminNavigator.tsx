@@ -2,15 +2,20 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import React from 'react';
 
 import { AdminDashboardScreen } from '@/screens/admin/AdminDashboardScreen';
-import { OrdersScreen } from '@/screens/admin/OrdersScreen';
 import { SettingsScreen } from '@/screens/shared/SettingsScreen';
+import { AdminFactoryNavigator } from './AdminFactoryNavigator';
 import { AdminMasterNavigator } from './AdminMasterNavigator';
+import { AdminOrdersNavigator } from './AdminOrdersNavigator';
 import { useTabScreenOptions } from './tabOptions';
 
 const Tab = createBottomTabNavigator();
 
-// Admin tab shell. Master (Customers/Products/Users) is a nested stack; Orders is a
-// direct create+list screen. Analytics is intentionally omitted for the MVP.
+// Admin tab shell. 5 tabs:
+//   Dashboard — redesigned command center overview
+//   Factory   — production records for all departments
+//   Orders    — create + manage + timeline (nested stack)
+//   Master    — customers / products / machines / users (nested stack)
+//   Settings  — app settings
 export function AdminNavigator() {
   const options = useTabScreenOptions();
   return (
@@ -21,11 +26,20 @@ export function AdminNavigator() {
         options={{ title: 'Dashboard' }}
       />
       <Tab.Screen
+        name="AdminFactory"
+        component={AdminFactoryNavigator}
+        options={{ title: 'Factory', headerShown: false }}
+      />
+      <Tab.Screen
+        name="AdminOrders"
+        component={AdminOrdersNavigator}
+        options={{ title: 'Orders', headerShown: false }}
+      />
+      <Tab.Screen
         name="AdminMaster"
         component={AdminMasterNavigator}
         options={{ title: 'Master', headerShown: false }}
       />
-      <Tab.Screen name="AdminOrders" component={OrdersScreen} options={{ title: 'Orders' }} />
       <Tab.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
     </Tab.Navigator>
   );
