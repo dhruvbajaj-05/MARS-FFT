@@ -7,7 +7,8 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed:admin": "node src/scripts/seedAdmin.js",
-    "migrate:workflow": "node src/scripts/migrateWorkflow.js"
+    "migrate:workflow": "node src/scripts/migrateWorkflow.js",
+    "reconcile:all": "node src/scripts/reconcileAll.js"
   },
   "keywords": [
     "fft",

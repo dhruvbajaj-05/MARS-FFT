@@ -4,6 +4,7 @@ import { Pressable, RefreshControl, View } from 'react-native';
 
 import { masterApi } from '@/api/endpoints/master';
 import { mouldingApi } from '@/api/endpoints/moulding';
+import { storeApi } from '@/api/endpoints/store';
 import { queryKeys } from '@/api/queryKeys';
 import type { OrderMold, OrderMoldSuggestion } from '@/api/types';
 import {
@@ -20,6 +21,7 @@ import {
 import { ApiError, friendlyMessage } from '@/services/apiError';
 import { useCustomerProduct } from '@/screens/engineer/useCustomerProduct';
 import { useTheme } from '@/theme/ThemeProvider';
+import { currentShift, shiftLabel } from '@/utils/shift';
 
 // Moulding Engineer screen (revised workflow):
 //   1. Select Customer → Product → Order (Active production only).
@@ -40,6 +42,8 @@ export function MouldingForm() {
   const [mCavity, setMCavity] = useState('');
   const [mShots, setMShots] = useState('');
   const [moldOk, setMoldOk] = useState<string | null>(null);
+  // When set, the setup form is EDITING this existing mold (name locked as the key).
+  const [editingMold, setEditingMold] = useState<string | null>(null);
 
   // ---- Production push form ----
   const [machineNumber, setMachineNumber] = useState<string | null>(null);
@@ -75,12 +79,25 @@ export function MouldingForm() {
     queryFn: () => mouldingApi.status(cp.orderId!),
     enabled: !!cp.orderId,
   });
+  // Product-level store surplus (pooled across all orders) — shown on the mould setup so the
+  // planner can reduce Required Shots by whatever usable inventory already exists.
+  const storeSurplus = useQuery({
+    queryKey: queryKeys.store.componentsByOrder({
+      customerId: cp.customerId ?? undefined,
+      productId: cp.productId ?? undefined,
+    }),
+    queryFn: () => storeApi.componentsByOrder({ customerId: cp.customerId!, productId: cp.productId! }),
+    enabled: !!cp.customerId && !!cp.productId,
+  });
+  const surplusRows =
+    storeSurplus.data?.customers?.[0]?.products?.[0]?.surplus?.filter((s) => s.surplusQuantity > 0) ?? [];
 
   const resetSetupForm = () => {
     setMMoldName('');
     setMPartName('');
     setMCavity('');
     setMShots('');
+    setEditingMold(null);
   };
 
   const saveMold = useMutation({
@@ -93,14 +110,31 @@ export function MouldingForm() {
         partName: mPartName.trim(),
         cavity: Number(mCavity),
         requiredShots: mShots === '' ? undefined : Number(mShots),
+        // When editing, this is the row's original name so the backend can rename it (req #9).
+        originalMoldName: editingMold ?? undefined,
       }),
     onSuccess: (mold) => {
       setMoldOk(`Mold "${mold.moldName}" saved (${mold.partName}, ${mold.cavity} cavity, target ${mold.requiredQuantity}).`);
       resetSetupForm();
       qc.invalidateQueries({ queryKey: queryKeys.orderMolds(cp.orderId!) });
       if (cp.productId) qc.invalidateQueries({ queryKey: queryKeys.molds(cp.productId) });
+      // Target (requiredShots) changes re-derive finished/pending/surplus.
+      qc.invalidateQueries({ queryKey: ['store'] });
+      qc.invalidateQueries({ queryKey: queryKeys.dept('moulding').status(cp.orderId!) });
     },
   });
+
+  // Load an existing mold into the setup form for quick editing. Every field — including the
+  // mold NAME — is editable; on save the original name is sent so the backend renames the row
+  // (and re-tags its production) instead of creating a duplicate (req #9).
+  const editMold = (m: OrderMold) => {
+    setMMoldName(m.moldName);
+    setMPartName(m.partName);
+    setMCavity(String(m.cavity));
+    setMShots(m.requiredShots ? String(m.requiredShots) : '');
+    setEditingMold(m.moldName);
+    setMoldOk(null);
+  };
 
   const submit = useMutation({
     mutationFn: () =>
@@ -113,6 +147,7 @@ export function MouldingForm() {
         shotsDone: Number(shotsDone),
         rejectedShots: Number(rejectedShots),
         rejectionReasons: Number(rejectedShots) > 0 ? rejectionReasons : undefined,
+        shift: currentShift(),
       }),
     onSuccess: (res) => {
       setOk(
@@ -296,9 +331,7 @@ export function MouldingForm() {
         ) : null}
         {prodStatus.data ? (
           <AppText variant="caption" tone="muted" style={{ marginTop: spacing(2) }}>
-            Status: <AppText weight="600">{prodStatus.data.status}</AppText> · good{' '}
-            {prodStatus.data.goodParts} / {prodStatus.data.orderQuantity} · pending{' '}
-            {prodStatus.data.pendingQuantity}
+            Status: <AppText weight="600">{prodStatus.data.status}</AppText>
           </AppText>
         ) : null}
       </Card>
@@ -309,6 +342,35 @@ export function MouldingForm() {
           <AppText variant="h3" style={{ marginBottom: spacing(2) }}>
             Mould Setup for this order
           </AppText>
+
+          {/* Current store surplus (product-level, pooled across orders) — so the planner can
+              reduce Required Shots by the usable inventory that already exists. */}
+          {surplusRows.length > 0 ? (
+            <View
+              style={{
+                backgroundColor: colors.status.info.bg,
+                borderRadius: 8,
+                padding: spacing(3),
+                marginBottom: spacing(3),
+              }}
+            >
+              <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg, marginBottom: spacing(1) }}>
+                Current Store Surplus — usable before you produce
+              </AppText>
+              {surplusRows.map((s) => (
+                <View
+                  key={`${s.moldName}-${s.partName}`}
+                  style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}
+                >
+                  <AppText variant="caption" weight="600">{s.moldName || s.partName}</AppText>
+                  <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg }}>
+                    Surplus: {s.surplusQuantity.toLocaleString()}
+                  </AppText>
+                </View>
+              ))}
+            </View>
+          ) : null}
+
           {moldList.length === 0 ? (
             <AppText tone="muted" style={{ marginBottom: spacing(2) }}>
               No molds set up yet. Define one below.
@@ -318,19 +380,24 @@ export function MouldingForm() {
               {moldList.map((m) => {
                 const mp = prodStatus.data?.moldProgress?.find((p) => p.moldName === m.moldName);
                 const hasProg = mp && m.requiredShots > 0;
+                const isEditing = editingMold === m.moldName;
                 return (
-                  <View
+                  <Pressable
                     key={m.id}
+                    onPress={() => editMold(m)}
                     style={{
                       paddingVertical: spacing(2),
+                      paddingHorizontal: isEditing ? spacing(2) : 0,
                       borderBottomWidth: 1,
                       borderBottomColor: colors.border,
+                      backgroundColor: isEditing ? colors.surfaceAlt : 'transparent',
+                      borderRadius: isEditing ? 8 : 0,
                     }}
                   >
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                       <AppText weight="600">{m.moldName}</AppText>
                       <AppText tone="muted" variant="caption">
-                        {m.partName} · {m.cavity} cav
+                        {m.partName} · {m.cavity} cav  ·  ✎ edit
                       </AppText>
                     </View>
                     {hasProg ? (
@@ -347,7 +414,7 @@ export function MouldingForm() {
                         Target: {m.requiredShots} shots × {m.cavity} cav = {m.requiredQuantity} pieces
                       </AppText>
                     )}
-                  </View>
+                  </Pressable>
                 );
               })}
             </View>
@@ -384,15 +451,22 @@ export function MouldingForm() {
 
           {moldOk ? <Banner tone="success" message={moldOk} /> : null}
           {moldError ? <Banner tone="danger" message={moldError} /> : null}
-          <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>
-            Add / edit a mold (re-using a name overwrites it)
-          </AppText>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing(1) }}>
+            <AppText variant="caption" tone="muted">
+              {editingMold ? `Editing mold "${editingMold}"` : 'Add a new mold (tap a mold above to edit it)'}
+            </AppText>
+            {editingMold ? (
+              <Pressable onPress={resetSetupForm}>
+                <AppText variant="caption" weight="600" style={{ color: colors.primary }}>Cancel edit</AppText>
+              </Pressable>
+            ) : null}
+          </View>
           <FormField label="Mold name" value={mMoldName} onChangeText={setMMoldName} placeholder="e.g. MB-01" />
           <FormField label="Part name" value={mPartName} onChangeText={setMPartName} placeholder="e.g. Big Block" />
           <FormField label="Cavity number" value={mCavity} onChangeText={setMCavity} keyboardType="number-pad" placeholder="e.g. 11" />
           <FormField label="Required shots" value={mShots} onChangeText={setMShots} keyboardType="number-pad" placeholder="e.g. 3000" />
           <Button
-            label="Save Mold"
+            label={editingMold ? 'Update Mold' : 'Save Mold'}
             loading={saveMold.isPending}
             disabled={!canSaveMold}
             onPress={() => {
@@ -413,7 +487,8 @@ export function MouldingForm() {
           {error ? <Banner tone="danger" message={error} /> : null}
 
           <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
-            Shift is detected automatically from the current time.
+            Current shift (from your phone clock):{' '}
+            <AppText weight="700" style={{ color: colors.primary }}>Shift {shiftLabel(currentShift())}</AppText>
           </AppText>
           <Select
             label="Machine"
@@ -486,6 +561,7 @@ export function MouldingForm() {
           {goodPreview !== null ? (
             <Banner
               tone={goodPreview >= 0 ? 'info' : 'danger'}
+              persistent
               message={
                 goodPreview >= 0
                   ? `Good Pieces = (${shotsNum} − ${rejectedShotsNum}) × ${cavity} = ${goodPreview}`
@@ -509,7 +585,7 @@ export function MouldingForm() {
       {/* Order completed banner + recovery section (req #9) */}
       {cp.orderId && isProductionComplete ? (
         <Card style={{ marginBottom: spacing(4) }}>
-          <Banner tone="success" message="Production complete for this order." />
+          <Banner tone="success" persistent message="Production complete for this order." />
           <Pressable
             onPress={() => setShowRecovery((s) => !s)}
             style={{

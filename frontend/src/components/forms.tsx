@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, TextInput, View, type KeyboardTypeOptions } from 'react-native';
 
 import { useTheme } from '@/theme/ThemeProvider';
@@ -20,6 +20,7 @@ interface FieldProps {
   multiline?: boolean;
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
   secureTextEntry?: boolean;
+  editable?: boolean;
 }
 
 export function FormField({
@@ -32,6 +33,7 @@ export function FormField({
   multiline,
   autoCapitalize,
   secureTextEntry,
+  editable = true,
 }: FieldProps) {
   const { colors, radius, spacing } = useTheme();
   return (
@@ -49,6 +51,7 @@ export function FormField({
           padding: spacing(3),
           marginTop: 4,
           minHeight: multiline ? 72 : undefined,
+          opacity: editable ? 1 : 0.6,
         }}
         value={value}
         onChangeText={onChangeText}
@@ -58,6 +61,7 @@ export function FormField({
         multiline={multiline}
         autoCapitalize={autoCapitalize}
         secureTextEntry={secureTextEntry}
+        editable={editable}
       />
       {error ? (
         <AppText variant="caption" style={{ color: colors.status.danger.fg, marginTop: 4 }}>
@@ -276,9 +280,40 @@ export function MultiCheckbox({
 }
 
 // Inline result banner (used instead of Alert so it shows on web too).
-export function Banner({ tone, message }: { tone: 'success' | 'danger' | 'info'; message: string }) {
+// Reusable alert/snackbar. By default it AUTO-DISMISSES after ~3s so success/error/info
+// messages never linger until the next action (used app-wide). Pass `persistent` for live
+// hints that must stay (e.g. a running calculation preview). `onDismiss` lets the parent
+// clear its own state when the banner hides, so re-showing the same message works.
+export function Banner({
+  tone,
+  message,
+  persistent = false,
+  durationMs = 3000,
+  onDismiss,
+}: {
+  tone: 'success' | 'danger' | 'info';
+  message: string;
+  persistent?: boolean;
+  durationMs?: number;
+  onDismiss?: () => void;
+}) {
   const { colors, radius, spacing } = useTheme();
   const c = colors.status[tone];
+  const [visible, setVisible] = useState(true);
+
+  useEffect(() => {
+    // Re-show whenever the message changes, then start a fresh auto-dismiss timer.
+    setVisible(true);
+    if (persistent) return;
+    const t = setTimeout(() => {
+      setVisible(false);
+      onDismiss?.();
+    }, durationMs);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message, persistent, durationMs]);
+
+  if (!visible) return null;
   return (
     <View
       style={{

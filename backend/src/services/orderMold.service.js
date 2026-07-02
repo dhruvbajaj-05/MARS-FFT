@@ -3,8 +3,10 @@
 const mongoose = require('mongoose');
 const OrderMold = require('../models/OrderMold');
 const Order = require('../models/Order');
+const MouldingRecord = require('../models/MouldingRecord');
 const moldService = require('./mold.service');
-const { badRequest, notFound } = require('../utils/httpError');
+const reconcileService = require('./reconcile.service');
+const { badRequest, notFound, conflict } = require('../utils/httpError');
 
 // Shape an order-mold for client responses. requiredQuantity (= requiredShots × cavity)
 // is the per-order Component Store target this mold's part must reach to be Finished.
@@ -46,7 +48,12 @@ async function validateOrder({ orderId, customerId, productId }) {
 // Define or edit a mold for ONE order (Mould Setup). Upsert on (orderId, moldName) so
 // the setup is editable and idempotent. Saving also reinforces the product-level
 // MoldDefinition so future orders surface this mold/part/cavity as a suggestion.
-async function upsertOrderMold({ orderId, customerId, productId, moldName, partName, cavity, requiredShots, createdBy }) {
+//
+// EVERY field is editable — including the mold NAME (req #9). When `originalMoldName` is
+// supplied and differs from the new name, the existing setup row is RENAMED (and any
+// moulding records already pushed under the old name are re-tagged) so progress/history
+// stay attached to the mold.
+async function upsertOrderMold({ orderId, customerId, productId, moldName, partName, cavity, requiredShots, originalMoldName, createdBy }) {
   const order = await validateOrder({ orderId, customerId, productId });
   const cust = order.customerId.toString();
   const prod = order.productId.toString();
@@ -65,6 +72,33 @@ async function upsertOrderMold({ orderId, customerId, productId, moldName, partN
     : Number(requiredShots);
   if (!Number.isFinite(shots) || shots < 0) {
     throw badRequest('requiredShots must be a number >= 0', 'invalid_required_shots');
+  }
+
+  // Rename path: the engineer edited the mold NAME of an existing setup row.
+  const oldName = String(originalMoldName || '').trim();
+  if (oldName && oldName !== name) {
+    const existing = await OrderMold.findOne({ orderId, moldName: oldName });
+    if (existing) {
+      // Guard against colliding with a different mold that already uses the new name.
+      const clash = await OrderMold.findOne({ orderId, moldName: name });
+      if (clash) {
+        throw conflict(`A mold named "${name}" already exists for this order`, 'mold_name_conflict');
+      }
+      existing.moldName = name;
+      existing.partName = part;
+      existing.cavity = cav;
+      existing.requiredShots = shots;
+      await existing.save();
+      // Re-tag production already pushed under the old name so per-mold progress follows.
+      await MouldingRecord.updateMany(
+        { orderId, moldName: oldName },
+        { $set: { moldName: name } }
+      );
+      await moldService.upsertMold({ customerId: cust, productId: prod, moldName: name, partName: part, cavity: cav, requiredShots: shots, createdBy });
+      await reconcileService.reconcileProduct(cust, prod);
+      return toPublicOrderMold(existing);
+    }
+    // No row under the old name — fall through and treat as a normal create of `name`.
   }
 
   const mold = await OrderMold.findOneAndUpdate(
@@ -86,6 +120,10 @@ async function upsertOrderMold({ orderId, customerId, productId, moldName, partN
     requiredShots: shots,
     createdBy,
   });
+
+  // Required Quantity (= requiredShots × cavity) drives the Pending/Finished/Surplus split,
+  // so recompute the component store whenever an order's mold target changes.
+  await reconcileService.reconcileProduct(cust, prod);
 
   return toPublicOrderMold(mold);
 }

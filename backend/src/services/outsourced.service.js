@@ -3,13 +3,26 @@
 const mongoose = require('mongoose');
 const OutsourcedComponentItem = require('../models/OutsourcedComponentItem');
 const OutsourcedSurplusItem = require('../models/OutsourcedSurplusItem');
+const OutsourcedReceipt = require('../models/OutsourcedReceipt');
 const Order = require('../models/Order');
-const assortmentService = require('./assortment.service');
-const { badRequest, notFound, conflict } = require('../utils/httpError');
+const reconcileService = require('./reconcile.service');
+const { badRequest, notFound, forbidden } = require('../utils/httpError');
 
-// Outsourced Components store — purchased/external parts, tracked per OrderID and kept
-// fully separate from moulded inventory. Moulding Engineers manage the data (routes
-// enforce that); everyone else reads. A product-level Surplus mirror is also tracked.
+// Outsourced Components store — purchased/external parts (sticker, screw, spring, battery…),
+// kept fully separate from moulded inventory. Behaves EXACTLY like moulding inventory.
+//
+// Dead simple, per order (NO master BOM, NO product BOM, NO auto-loading):
+//   1. Add a component to the order: name + assortment (qty per finished set).
+//   2. Record received quantity. Multiple deliveries just ACCUMULATE onto the same
+//      component (each receipt is an immutable OutsourcedReceipt transaction) — exactly the
+//      way moulding production accumulates.
+//   • reconcile.service derives, per order+component: Required (orderQty × perSet =
+//     assortment), Finished (received capped at required), Pending (the shortfall), and
+//     product-level Surplus (overage). Surplus rolls forward to future orders automatically
+//     (oldest order consumes it first). No special logic.
+
+// Moulding engineers may edit/delete their own receipts within 12h (mirrors moulding).
+const EDIT_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 function assertId(value, name) {
   if (!value || !mongoose.Types.ObjectId.isValid(value)) {
@@ -47,38 +60,83 @@ async function validateChain({ customerId, productId, orderId }) {
   return order;
 }
 
-function toPublic(doc) {
+function toPublicComponent(doc, received = 0) {
   return {
     id: doc._id.toString(),
     customerId: doc.customerId.toString(),
     productId: doc.productId.toString(),
     orderId: doc.orderId ? doc.orderId.toString() : null,
     componentName: doc.componentName,
-    quantityOnHand: doc.quantityOnHand,
+    perSet: doc.perSet || 0,
+    requiredQuantity: doc.requiredQuantity || 0,
+    quantityOnHand: doc.quantityOnHand || 0,
+    procurementNeed: doc.procurementNeed || 0,
+    received,
     updatedAt: doc.updatedAt,
   };
 }
 
-// Read: this order's outsourced components + the product-level surplus + name suggestions.
+function toPublicSurplus(doc) {
+  return {
+    id: doc._id.toString(),
+    customerId: doc.customerId.toString(),
+    productId: doc.productId.toString(),
+    orderId: null,
+    componentName: doc.componentName,
+    perSet: 0,
+    requiredQuantity: 0,
+    quantityOnHand: doc.quantityOnHand || 0,
+    procurementNeed: 0,
+    received: 0,
+    updatedAt: doc.updatedAt,
+  };
+}
+
+function toPublicReceipt(doc) {
+  return {
+    id: doc._id.toString(),
+    customerId: doc.customerId.toString(),
+    productId: doc.productId.toString(),
+    orderId: doc.orderId.toString(),
+    componentName: doc.componentName,
+    quantityReceived: doc.quantityReceived,
+    perSet: doc.perSet || 0,
+    remarks: doc.remarks || null,
+    createdBy: doc.createdBy.toString(),
+    createdAt: doc.createdAt,
+    canEdit: (Date.now() - new Date(doc.createdAt).getTime()) < EDIT_WINDOW_MS,
+  };
+}
+
+// ---- Reads ------------------------------------------------------------------
+
+// This order's outsourced components (with derived Required/OnHand/Procurement) + the
+// product-level surplus + name suggestions + the receipt history for this order.
 async function listForOrder({ customerId, productId, orderId }) {
   assertId(customerId, 'customerId');
   assertId(productId, 'productId');
   assertId(orderId, 'orderId');
 
-  const [components, surplus, names] = await Promise.all([
+  const [components, surplus, names, receipts, receivedAgg] = await Promise.all([
     OutsourcedComponentItem.find({ customerId, productId, orderId }).sort({ componentName: 1 }).lean(),
-    OutsourcedSurplusItem.find({ customerId, productId, quantityOnHand: { $gt: 0 } })
-      .sort({ componentName: 1 })
-      .lean(),
+    OutsourcedSurplusItem.find({ customerId, productId, quantityOnHand: { $gt: 0 } }).sort({ componentName: 1 }).lean(),
     OutsourcedComponentItem.distinct('componentName', { customerId, productId }),
+    OutsourcedReceipt.find({ customerId, productId, orderId }).sort({ createdAt: -1 }).lean(),
+    OutsourcedReceipt.aggregate([
+      { $match: { customerId: new mongoose.Types.ObjectId(customerId), productId: new mongoose.Types.ObjectId(productId), orderId: new mongoose.Types.ObjectId(orderId) } },
+      { $group: { _id: '$componentName', received: { $sum: '$quantityReceived' } } },
+    ]),
   ]);
+
+  const receivedByComp = new Map(receivedAgg.map((r) => [r._id, r.received]));
 
   return {
     customerId: String(customerId),
     productId: String(productId),
     orderId: String(orderId),
-    components: components.map(toPublic),
-    surplus: surplus.map(toPublic),
+    components: components.map((c) => toPublicComponent(c, receivedByComp.get(c.componentName) || 0)),
+    surplus: surplus.map(toPublicSurplus),
+    receipts: receipts.map(toPublicReceipt),
     suggestions: names.sort((a, b) => a.localeCompare(b)),
   };
 }
@@ -91,203 +149,148 @@ async function suggestions({ customerId, productId }) {
   return { suggestions: names.sort((a, b) => a.localeCompare(b)) };
 }
 
-// Create or update a component (scope 'order' → order cell, 'surplus' → product level).
-// mode 'set' (default) writes the absolute quantity; 'add' increments it.
-async function upsert({ scope = 'order', customerId, productId, orderId, componentName, quantity, mode = 'set' }) {
+// ---- Order component editing (order-scoped) ---------------------------------
+
+// Add or update a component in THIS order (name + assortment/per-set). Changing perSet
+// recomputes Required (= orderQty × perSet), Finished, Pending and Surplus.
+async function setBomRow({ customerId, productId, orderId, componentName, perSet }) {
   const name = normalizeName(componentName);
-  const qty = normalizeQuantity(quantity);
-
-  if (scope === 'surplus') {
-    assertId(customerId, 'customerId');
-    assertId(productId, 'productId');
-    const update = mode === 'add' ? { $inc: { quantityOnHand: qty } } : { $set: { quantityOnHand: qty } };
-    const doc = await OutsourcedSurplusItem.findOneAndUpdate(
-      { customerId, productId, componentName: name },
-      update,
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-    return toPublic(doc);
-  }
-
+  const per = normalizeQuantity(perSet);
   await validateChain({ customerId, productId, orderId });
-  const update = mode === 'add' ? { $inc: { quantityOnHand: qty } } : { $set: { quantityOnHand: qty } };
-  const doc = await OutsourcedComponentItem.findOneAndUpdate(
+
+  await OutsourcedComponentItem.findOneAndUpdate(
     { customerId, productId, orderId, componentName: name },
-    update,
+    { $set: { perSet: per } },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
-  return toPublic(doc);
+
+  await reconcileService.reconcileOutsourced(customerId, productId);
+  const doc = await OutsourcedComponentItem.findOne({ customerId, productId, orderId, componentName: name }).lean();
+  return toPublicComponent(doc);
 }
 
-// Inc an order cell / surplus cell by a positive quantity (race-tolerant upsert).
-async function incCell(Model, filter, set, quantity) {
-  const update = { $inc: { quantityOnHand: quantity } };
-  if (set && Object.keys(set).length) update.$set = set;
-  try {
-    return await Model.findOneAndUpdate(filter, update, { upsert: true, new: true, setDefaultsOnInsert: true });
-  } catch (err) {
-    if (err && err.code === 11000) return Model.findOneAndUpdate(filter, update, { new: true });
-    throw err;
+// Remove a component from THIS order. Only allowed when it has no receipts (otherwise
+// deleting the receipts first keeps the audit trail intact).
+async function removeBomRow({ id }) {
+  assertId(id, 'id');
+  const doc = await OutsourcedComponentItem.findById(id);
+  if (!doc) return { id: String(id), deleted: false };
+  const receiptCount = await OutsourcedReceipt.countDocuments({
+    customerId: doc.customerId, productId: doc.productId, orderId: doc.orderId, componentName: doc.componentName,
+  });
+  if (receiptCount > 0) {
+    throw badRequest('Delete the received transactions for this component first', 'has_receipts');
   }
+  await OutsourcedComponentItem.deleteOne({ _id: doc._id });
+  await reconcileService.reconcileOutsourced(doc.customerId.toString(), doc.productId.toString());
+  return { id: String(id), deleted: true };
 }
 
-// RULE 3 — Outsourced allocation. The Moulding Engineer enters Quantity Received + the
-// Per-Set requirement. The system splits IMMEDIATELY: up to (orderSets × perSet) is
-// allocated to the OrderID cell; the remainder goes to the shared product surplus. The
-// per-set value is also recorded on the assortment (kind 'outsourced') so Assembly knows
-// how much to consume per set. Never all-to-order, never all-to-surplus.
-async function allocate({ customerId, productId, orderId, componentName, received, perSet, createdBy }) {
+// ---- Receipts (transaction-based inventory) --------------------------------
+
+// Record received outsourced stock for an order. Optionally (re)sets the component's
+// assortment (per-set). Multiple deliveries ACCUMULATE via separate receipts; the balance
+// (Finished / Pending / Surplus) is DERIVED by reconcile.
+async function createReceipt({ customerId, productId, orderId, componentName, quantityReceived, perSet, remarks, createdBy }) {
   const name = normalizeName(componentName);
-  const order = await validateChain({ customerId, productId, orderId });
-  const recv = Number(received);
-  if (!Number.isFinite(recv) || recv <= 0) throw badRequest('quantityReceived must be a number > 0', 'invalid_quantity');
-  const per = Number(perSet);
-  if (!Number.isFinite(per) || per < 0) throw badRequest('perSet must be a number >= 0', 'invalid_per_set');
+  await validateChain({ customerId, productId, orderId });
+  const qty = normalizeQuantity(quantityReceived, { allowZero: false });
+  const hasPerSet = perSet !== undefined && perSet !== null && perSet !== '';
+  const per = hasPerSet ? normalizeQuantity(perSet) : undefined;
 
-  const required = (order.orderQuantity || 0) * per;
-  const existing = await OutsourcedComponentItem.findOne({ customerId, productId, orderId, componentName: name }).lean();
-  const current = existing ? existing.quantityOnHand : 0;
-  const capacity = Math.max(0, required - current);
-  const toOrder = Math.min(recv, capacity);
-  const toSurplus = recv - toOrder;
+  // Ensure the order's component row exists (and refresh assortment/per-set if supplied).
+  await OutsourcedComponentItem.findOneAndUpdate(
+    { customerId, productId, orderId, componentName: name },
+    hasPerSet ? { $set: { perSet: per } } : { $setOnInsert: { perSet: 0 } },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
 
-  if (toOrder > 0) {
-    await incCell(OutsourcedComponentItem, { customerId, productId, orderId, componentName: name }, {}, toOrder);
-  } else {
-    // Ensure the order cell exists even when this receipt is all surplus (keeps it visible).
-    await incCell(OutsourcedComponentItem, { customerId, productId, orderId, componentName: name }, {}, 0);
-  }
-  if (toSurplus > 0) {
-    await incCell(OutsourcedSurplusItem, { customerId, productId, componentName: name }, {}, toSurplus);
-  }
+  const receipt = await OutsourcedReceipt.create({
+    customerId, productId, orderId, componentName: name,
+    quantityReceived: qty, perSet: per || 0,
+    remarks: remarks ? String(remarks).trim() : undefined,
+    createdBy,
+  });
 
-  // Record per-set on the assortment so Assembly consumes outsourced parts automatically.
-  if (per > 0) {
-    await assortmentService.mergePart({ customerId, productId, partName: name, perSet: per, kind: 'outsourced', updatedBy: createdBy });
-  }
-
-  return {
-    componentName: name,
-    requiredQuantity: required,
-    orderAllocation: current + toOrder,
-    addedToOrder: toOrder,
-    addedToSurplus: toSurplus,
-  };
+  await reconcileService.reconcileOutsourced(customerId, productId);
+  return toPublicReceipt(receipt);
 }
 
-function modelForScope(scope) {
-  return scope === 'surplus' ? OutsourcedSurplusItem : OutsourcedComponentItem;
+async function listReceipts({ customerId, productId, orderId }) {
+  assertId(customerId, 'customerId');
+  assertId(productId, 'productId');
+  assertId(orderId, 'orderId');
+  const receipts = await OutsourcedReceipt.find({ customerId, productId, orderId }).sort({ createdAt: -1 }).lean();
+  return { receipts: receipts.map(toPublicReceipt) };
 }
 
-// Adjust an existing row by a signed delta (e.g. +10 received, -3 correction). Clamped at 0.
-async function adjust({ id, scope = 'order', delta }) {
+async function updateReceipt({ id, quantityReceived, remarks, user }) {
   assertId(id, 'id');
-  const d = Number(delta);
-  if (!Number.isFinite(d)) throw badRequest('delta must be a number', 'invalid_quantity');
-  const Model = modelForScope(scope);
-  const doc = await Model.findById(id);
-  if (!doc) throw notFound('Outsourced component not found', 'outsourced_not_found');
-  doc.quantityOnHand = Math.max(0, doc.quantityOnHand + d);
-  await doc.save();
-  return toPublic(doc);
+  const receipt = await OutsourcedReceipt.findById(id);
+  if (!receipt) throw notFound('Receipt not found', 'receipt_not_found');
+  if (receipt.createdBy.toString() !== String(user.id)) {
+    throw forbidden('You can only edit your own receipts');
+  }
+  if (Date.now() - new Date(receipt.createdAt).getTime() > EDIT_WINDOW_MS) {
+    throw forbidden('Edit window has expired (12 hours after creation)', 'edit_window_expired');
+  }
+  if (quantityReceived !== undefined) {
+    receipt.quantityReceived = normalizeQuantity(quantityReceived, { allowZero: false });
+  }
+  if (remarks !== undefined) receipt.remarks = remarks ? String(remarks).trim() : undefined;
+  await receipt.save();
+  await reconcileService.reconcileOutsourced(receipt.customerId.toString(), receipt.productId.toString());
+  return toPublicReceipt(receipt);
 }
 
-// Set an existing row's absolute quantity.
-async function setQuantity({ id, scope = 'order', quantity }) {
+async function deleteReceipt({ id, user }) {
   assertId(id, 'id');
-  const qty = normalizeQuantity(quantity);
-  const Model = modelForScope(scope);
-  const doc = await Model.findByIdAndUpdate(id, { $set: { quantityOnHand: qty } }, { new: true });
-  if (!doc) throw notFound('Outsourced component not found', 'outsourced_not_found');
-  return toPublic(doc);
+  const receipt = await OutsourcedReceipt.findById(id);
+  if (!receipt) return { id: String(id), deleted: false };
+  if (receipt.createdBy.toString() !== String(user.id)) {
+    throw forbidden('You can only delete your own receipts');
+  }
+  if (Date.now() - new Date(receipt.createdAt).getTime() > EDIT_WINDOW_MS) {
+    throw forbidden('Delete window has expired (12 hours after creation)', 'delete_window_expired');
+  }
+  const { customerId, productId } = receipt;
+  await OutsourcedReceipt.deleteOne({ _id: receipt._id });
+  await reconcileService.reconcileOutsourced(customerId.toString(), productId.toString());
+  return { id: String(id), deleted: true };
 }
 
-// Idempotent delete — deleting an already-gone row is treated as success (no orphan
-// rows, no error state on double-tap). Removes the single matched cell only.
-async function remove({ id, scope = 'order' }) {
-  assertId(id, 'id');
-  const Model = modelForScope(scope);
-  const doc = await Model.findByIdAndDelete(id);
-  return { id: String(id), deleted: !!doc };
-}
-
-// ---- Assembly integration: consume order/surplus quantities, transfer on completion ----
+// ---- Assembly integration (reads only; consumption is derived by reconcile) ----
 
 const ComponentMatch = (customerId, productId, orderId) => ({ customerId, productId, orderId });
 
-// Map componentName → quantityOnHand for this order's outsourced components.
+// Map componentName → quantityOnHand for this order's outsourced components (pre-validation).
 async function getOrderQuantities({ customerId, productId, orderId }) {
   const rows = await OutsourcedComponentItem.find(ComponentMatch(customerId, productId, orderId)).lean();
   return new Map(rows.map((r) => [r.componentName, r.quantityOnHand]));
 }
 
-// Map componentName → quantityOnHand for the product-level outsourced surplus.
+// Map componentName → quantityOnHand for the product-level outsourced surplus (pre-validation).
 async function getSurplusQuantities({ customerId, productId }) {
   const rows = await OutsourcedSurplusItem.find({ customerId, productId }).lean();
   return new Map(rows.map((r) => [r.componentName, r.quantityOnHand]));
 }
 
-// Guarded decrement of an ORDER outsourced component (normal assembly consumption).
-async function consumeOrder({ customerId, productId, orderId, componentName, quantity }) {
-  const updated = await OutsourcedComponentItem.findOneAndUpdate(
-    { customerId, productId, orderId, componentName, quantityOnHand: { $gte: quantity } },
-    { $inc: { quantityOnHand: -quantity } },
-    { new: true }
-  );
-  if (!updated) throw conflict(`Insufficient outsourced stock for ${componentName}`, 'insufficient_outsourced');
-  return updated;
-}
-
-// Guarded decrement of an outsourced SURPLUS component (extra sets from surplus).
-async function consumeSurplus({ customerId, productId, componentName, quantity }) {
-  const updated = await OutsourcedSurplusItem.findOneAndUpdate(
-    { customerId, productId, componentName, quantityOnHand: { $gte: quantity } },
-    { $inc: { quantityOnHand: -quantity } },
-    { new: true }
-  );
-  if (!updated) throw conflict(`Insufficient outsourced surplus for ${componentName}`, 'insufficient_outsourced_surplus');
-  return updated;
-}
-
-// On assembly completion, move every remaining ORDER outsourced quantity into the
-// product-level outsourced surplus (matched + added), then zero the order cell.
-async function transferOrderToSurplus({ customerId, productId, orderId }) {
-  const rows = await OutsourcedComponentItem.find({ ...ComponentMatch(customerId, productId, orderId), quantityOnHand: { $gt: 0 } });
-  const moved = [];
-  for (const row of rows) {
-    const qty = row.quantityOnHand;
-    await OutsourcedSurplusItem.findOneAndUpdate(
-      { customerId, productId, componentName: row.componentName },
-      { $inc: { quantityOnHand: qty } },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    ).catch(async (err) => {
-      if (err && err.code === 11000) {
-        return OutsourcedSurplusItem.findOneAndUpdate(
-          { customerId, productId, componentName: row.componentName },
-          { $inc: { quantityOnHand: qty } },
-          { new: true }
-        );
-      }
-      throw err;
-    });
-    row.quantityOnHand = 0;
-    await row.save();
-    moved.push({ componentName: row.componentName, quantity: qty });
-  }
-  return moved;
+// Per-order outsourced BOM (componentName → perSet) — the snapshot assembly consumes against.
+async function getOrderBom({ customerId, productId, orderId }) {
+  const rows = await OutsourcedComponentItem.find(ComponentMatch(customerId, productId, orderId)).lean();
+  return rows.map((r) => ({ partName: r.componentName, perSet: r.perSet || 0, kind: 'outsourced' }));
 }
 
 module.exports = {
   listForOrder,
   suggestions,
-  upsert,
-  allocate,
-  adjust,
-  setQuantity,
-  remove,
+  setBomRow,
+  removeBomRow,
+  createReceipt,
+  listReceipts,
+  updateReceipt,
+  deleteReceipt,
   getOrderQuantities,
   getSurplusQuantities,
-  consumeOrder,
-  consumeSurplus,
-  transferOrderToSurplus,
+  getOrderBom,
 };

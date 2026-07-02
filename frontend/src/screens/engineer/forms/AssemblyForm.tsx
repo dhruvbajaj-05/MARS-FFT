@@ -8,6 +8,7 @@ import { AppText, Banner, Button, Card, FormField, Screen, Select } from '@/comp
 import { ApiError, friendlyMessage } from '@/services/apiError';
 import { useCustomerProduct } from '@/screens/engineer/useCustomerProduct';
 import { useTheme } from '@/theme/ThemeProvider';
+import { currentShift } from '@/utils/shift';
 
 type Row = { partName: string; perSet: string; kind: 'moulded' | 'outsourced' };
 
@@ -96,6 +97,7 @@ export function AssemblyForm() {
         assembledSets: Number(sets),
         rejectedQuantity: Number(rejected),
         remarks: remarks.trim() || undefined,
+        shift: currentShift(),
       }),
     onSuccess: (res) => {
       const extra = res.record.extraSets ?? 0;
@@ -313,12 +315,13 @@ export function AssemblyForm() {
           {extraSets > 0 ? (
             <Banner
               tone="info"
+              persistent
               message={`Over-assembly: ${normalSets} set(s) consume this order, ${extraSets} extra set(s) consume Product Surplus (moulded + outsourced). Surplus must be sufficient or the submission is rejected.`}
             />
           ) : null}
 
           {!hasAssortment ? (
-            <Banner tone="info" message="Define an assortment above before assembling sets." />
+            <Banner tone="info" persistent message="Define an assortment above before assembling sets." />
           ) : setsNum > 0 ? (
             <View style={{ marginBottom: spacing(3) }}>
               <AppText variant="caption" tone="muted" style={{ marginBottom: 4 }}>

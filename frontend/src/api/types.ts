@@ -453,6 +453,9 @@ export interface OrderMoldInput {
   partName: string;
   cavity: number;
   requiredShots?: number;
+  // When editing an existing setup row, the original mold name so the backend can rename it
+  // (instead of creating a duplicate). See req #9.
+  originalMoldName?: string;
 }
 
 // ---- Assembly assortments (parts-per-set / BOM) ----
@@ -541,21 +544,41 @@ export interface ComponentByOrderTree {
 }
 
 // ---- Outsourced Components (purchased/external parts; order-scoped, separate store) ----
+// Inventory is transaction-based: receipts are the source of truth, all quantities below are
+// DERIVED by the backend reconcile engine.
 export interface OutsourcedItem {
   id: string;
   customerId: string;
   productId: string;
   orderId: string | null;
   componentName: string;
-  quantityOnHand: number;
+  perSet: number; // per-order BOM snapshot (parts per assembled set)
+  requiredQuantity: number; // orderQuantity × perSet
+  quantityOnHand: number; // allocated to this order (received + surplus drawn − consumed)
+  procurementNeed: number; // still to PURCHASE after existing surplus is applied
+  received: number; // total received for this order+component (Σ receipts)
   updatedAt?: string;
+}
+export interface OutsourcedReceipt {
+  id: string;
+  customerId: string;
+  productId: string;
+  orderId: string;
+  componentName: string;
+  quantityReceived: number;
+  perSet: number;
+  remarks: string | null;
+  createdBy: string;
+  createdAt: string;
+  canEdit: boolean;
 }
 export interface OutsourcedStore {
   customerId: string;
   productId: string;
   orderId: string;
-  components: OutsourcedItem[]; // this order's outsourced components
+  components: OutsourcedItem[]; // this order's BOM/components (derived)
   surplus: OutsourcedItem[]; // product-level surplus (pooled across orders)
+  receipts: OutsourcedReceipt[]; // received-stock transaction history for this order
   suggestions: string[]; // remembered component names for the dropdown
 }
 

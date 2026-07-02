@@ -10,8 +10,9 @@ const moldService = require('./mold.service');
 const orderMoldService = require('./orderMold.service');
 const OrderMold = require('../models/OrderMold');
 const storeService = require('./store.service');
+const reconcileService = require('./reconcile.service');
 const rejectionReasonService = require('./rejectionReason.service');
-const { currentShift } = require('../utils/shift');
+const { resolveShift } = require('../utils/shift');
 const { ROLES } = require('../utils/roles');
 const { badRequest, notFound, forbidden, conflict } = require('../utils/httpError');
 const { parsePagination, buildList } = require('../utils/pagination');
@@ -172,7 +173,8 @@ function toPublicMouldingRecord(record) {
 // Validate + coerce numeric/enum fields.
 // Formula: goodParts = (shotsDone − rejectedShots) × cavity.
 function normalizeFields(input, cavity) {
-  const shift = currentShift();
+  // Shift comes from the engineer's phone clock (see utils/shift.js); server time is a fallback.
+  const shift = resolveShift(input.shift);
 
   const cav = Number(cavity);
   if (!Number.isFinite(cav) || cav < 1) {
@@ -269,7 +271,6 @@ async function createMouldingRecord({ payload, file, createdBy }) {
   const fields = normalizeFields(payload, cavity);
 
   const requiredShots = source ? source.requiredShots : Number(payload.requiredShots) || 0;
-  const requiredQuantity = (requiredShots || 0) * fields.cavity;
 
   // rejectionReasons: accept array (new) or single string (legacy).
   const rejectionReasons = Array.isArray(payload.rejectionReasons)
@@ -312,23 +313,9 @@ async function createMouldingRecord({ payload, file, createdBy }) {
     createdBy,
   });
 
-  if (fields.goodParts > 0) {
-    await storeService.applyStockIn({
-      storeType: storeService.STORE.COMPONENT,
-      customerId: payload.customerId,
-      productId: payload.productId,
-      orderId: payload.orderId,
-      partName,
-      moldName,
-      cavity: fields.cavity,
-      requiredQuantity,
-      quantity: fields.goodParts,
-      sourceModule: 'moulding',
-      referenceId: record._id,
-      remarks: `Moulding ${moldName} / ${partName}`,
-      createdBy,
-    });
-  }
+  // Recompute the whole product's component/surplus balances from the record history.
+  // (No incremental $inc — reconcile owns every balance, so create/edit/delete stay exact.)
+  await reconcileService.reconcileProduct(payload.customerId, payload.productId);
 
   if (file) {
     const { publicUrlFor } = require('../middleware/upload');
@@ -369,9 +356,7 @@ async function updateMouldingRecord(id, payload, user) {
     throw forbidden('Edit window has expired (12 hours after creation)', 'edit_window_expired');
   }
 
-  const prevGoodParts = record.goodParts;
-
-  // Update shot counts (with stock delta) when provided.
+  // Update shot counts when provided.
   if (payload.shotsDone !== undefined || payload.rejectedShots !== undefined) {
     const newShotsDone = payload.shotsDone !== undefined ? Number(payload.shotsDone) : record.shotsDone;
     const newRejectedShots = payload.rejectedShots !== undefined ? Number(payload.rejectedShots) : (record.rejectedShots ?? 0);
@@ -398,37 +383,9 @@ async function updateMouldingRecord(id, payload, user) {
 
   await record.save();
 
-  // Apply stock delta if goodParts changed.
-  const delta = record.goodParts - prevGoodParts;
-  if (delta > 0) {
-    await storeService.applyStockIn({
-      storeType: storeService.STORE.COMPONENT,
-      customerId: record.customerId.toString(),
-      productId: record.productId.toString(),
-      orderId: record.orderId.toString(),
-      partName: record.partName,
-      moldName: record.moldName,
-      cavity: record.cavity,
-      quantity: delta,
-      sourceModule: 'moulding_edit',
-      referenceId: record._id,
-      remarks: `Edit correction +${delta} ${record.partName}`,
-      createdBy: user.id,
-    });
-  } else if (delta < 0) {
-    await storeService.applyStockOut({
-      storeType: storeService.STORE.COMPONENT,
-      customerId: record.customerId.toString(),
-      productId: record.productId.toString(),
-      orderId: record.orderId.toString(),
-      partName: record.partName,
-      quantity: Math.abs(delta),
-      sourceModule: 'moulding_edit',
-      referenceId: record._id,
-      remarks: `Edit correction ${delta} ${record.partName}`,
-      createdBy: user.id,
-    });
-  }
+  // Recompute balances from the full record history — surplus is consumed before finished,
+  // finished before pending, automatically (see reconcile.service).
+  await reconcileService.reconcileProduct(record.customerId.toString(), record.productId.toString());
 
   return toPublicMouldingRecord(record);
 }
@@ -447,29 +404,12 @@ async function deleteMouldingRecord(id, user) {
     throw forbidden('Delete window has expired (12 hours after creation)', 'delete_window_expired');
   }
 
-  if (record.goodParts > 0) {
-    try {
-      await storeService.applyStockOut({
-        storeType: storeService.STORE.COMPONENT,
-        customerId: record.customerId.toString(),
-        productId: record.productId.toString(),
-        orderId: record.orderId.toString(),
-        partName: record.partName,
-        quantity: record.goodParts,
-        sourceModule: 'moulding_delete',
-        referenceId: record._id,
-        remarks: `Deleted moulding record — reversing ${record.goodParts} ${record.partName}`,
-        createdBy: user.id,
-      });
-    } catch (err) {
-      throw conflict(
-        'Cannot delete: these pieces may already be consumed. Contact admin.',
-        'stock_consumed'
-      );
-    }
-  }
-
+  const { customerId, productId } = record;
   await MouldingRecord.deleteOne({ _id: record._id });
+
+  // Recompute from the remaining records. If parts were already consumed by assembly, the
+  // shortfall surfaces correctly as increased Pending (no false "already consumed" error).
+  await reconcileService.reconcileProduct(customerId.toString(), productId.toString());
   return { deleted: true };
 }
 
@@ -502,6 +442,12 @@ async function recoverPieces({ orderId, productId, customerId, recoveries, creat
       createdBy,
     });
     results.push({ partName, goodPieces: qty });
+  }
+
+  // Recovery is a product-surplus source (read from the ledger by reconcile) — recompute
+  // so the surplus reflects the recovered pieces exactly.
+  if (results.length > 0) {
+    await reconcileService.reconcileProduct(customerId, productId);
   }
   return { recovered: results };
 }

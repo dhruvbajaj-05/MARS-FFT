@@ -790,6 +790,7 @@ async function ensureStoreIndexes() {
     // Outsourced Components store (separate from moulded inventory).
     await require('../models/OutsourcedComponentItem').syncIndexes();
     await require('../models/OutsourcedSurplusItem').syncIndexes();
+    await require('../models/OutsourcedReceipt').syncIndexes();
   } catch (err) {
     console.warn('[store] syncIndexes warning:', err.message);
   }

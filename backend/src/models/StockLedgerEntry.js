@@ -20,6 +20,7 @@ const TRANSACTION_TYPES = ['IN', 'OUT'];
 const SOURCE_MODULES = [
   'moulding', 'assembly', 'qc', 'dispatch', 'adjustment',
   'moulding_recovery', 'moulding_edit', 'moulding_delete', 'order_surplus_consumption',
+  'reconcile',
 ];
 
 const stockLedgerEntrySchema = new mongoose.Schema(

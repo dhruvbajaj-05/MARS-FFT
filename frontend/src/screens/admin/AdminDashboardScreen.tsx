@@ -38,16 +38,14 @@ export function AdminDashboardScreen() {
 
   const dashboard = useQuery({ queryKey: queryKeys.admin.dashboard, queryFn: adminApi.dashboard });
   const depts = useQuery({ queryKey: queryKeys.admin.departments, queryFn: adminApi.departments });
-  const prodSummary = useQuery({ queryKey: queryKeys.admin.productionSummary, queryFn: adminApi.productionSummary });
   const delayed = useQuery({ queryKey: queryKeys.admin.delayed({}), queryFn: () => adminApi.delayedOrders({}) });
 
   const isRefreshing =
-    dashboard.isRefetching || depts.isRefetching || prodSummary.isRefetching || delayed.isRefetching;
+    dashboard.isRefetching || depts.isRefetching || delayed.isRefetching;
 
   function refetchAll() {
     dashboard.refetch();
     depts.refetch();
-    prodSummary.refetch();
     delayed.refetch();
   }
 
@@ -56,7 +54,6 @@ export function AdminDashboardScreen() {
 
   const d = dashboard.data;
   const deptData = depts.data?.departments ?? [];
-  const prod = prodSummary.data;
   const delayedCount = delayed.data?.pagination.total ?? 0;
 
   return (
@@ -200,35 +197,6 @@ export function AdminDashboardScreen() {
             <AppText variant="h2" style={{ color: item.color }}>
               {item.value}
             </AppText>
-            <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
-              {item.label}
-            </AppText>
-          </Pressable>
-        ))}
-      </View>
-
-      {/* ── Production Snapshot ── */}
-      <AppText variant="h3" style={{ marginBottom: spacing(3) }}>Production Snapshot</AppText>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(3), marginBottom: spacing(4) }}>
-        {[
-          { label: 'Moulded', value: prod?.totalMouldingProduction ?? 0, dept: 'moulding' },
-          { label: 'Assembled', value: prod?.totalAssemblyProduction ?? 0, dept: 'assembly' },
-          { label: 'QC Passed', value: prod?.totalQcAccepted ?? 0, dept: 'qc' },
-          { label: 'Dispatched', value: prod?.totalDispatchQuantity ?? 0, dept: 'dispatch' },
-        ].map((item) => (
-          <Pressable
-            key={item.label}
-            onPress={() => navigation.navigate('AdminFactory', { screen: 'FactoryMonitor', params: { dept: item.dept } })}
-            style={{
-              width: '47%',
-              backgroundColor: colors.surface,
-              borderRadius: radius.md,
-              padding: spacing(3),
-              borderWidth: 1,
-              borderColor: colors.border,
-            }}
-          >
-            <AppText variant="h3">{fmt(item.value)}</AppText>
             <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
               {item.label}
             </AppText>

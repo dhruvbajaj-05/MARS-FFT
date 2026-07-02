@@ -19,7 +19,8 @@ export interface AssemblyInput {
   orderId: string;
   assemblyLine: string;
   operatorCount: number;
-  // shift is auto-detected server-side (no longer sent).
+  // Shift computed from the engineer's phone clock (see utils/shift.ts); server time is a fallback.
+  shift?: 'A' | 'B' | 'C';
   assembledSets?: number; // normal sets (consume the order)
   extraSets?: number; // extra sets from surplus (consume the product surplus pools)
   fromSurplus?: boolean; // true → this is an extra-from-surplus record

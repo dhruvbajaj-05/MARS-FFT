@@ -11,7 +11,8 @@ const storeService = require('./store.service');
 const orderService = require('./order.service');
 const outsourcedService = require('./outsourced.service');
 const assortmentService = require('./assortment.service');
-const { currentShift } = require('../utils/shift');
+const reconcileService = require('./reconcile.service');
+const { resolveShift } = require('../utils/shift');
 const { ROLES } = require('../utils/roles');
 const { badRequest, notFound, forbidden, conflict } = require('../utils/httpError');
 const { parsePagination, buildList } = require('../utils/pagination');
@@ -130,8 +131,8 @@ function toPublicAssemblyRecord(record) {
 // Updated workflow: the engineer enters Assembled SETS; the system derives component
 // consumption from the product assortment. assembledQuantity mirrors assembledSets.
 function normalizeFields(input) {
-  // Shift is auto-detected from server time (manual selection removed).
-  const numbers = { shift: currentShift() };
+  // Shift comes from the engineer's phone clock (see utils/shift.js); server time is a fallback.
+  const numbers = { shift: resolveShift(input.shift) };
   for (const key of ['operatorCount', 'rejectedQuantity']) {
     const value = Number(input[key]);
     if (!Number.isFinite(value) || value < 0) {
@@ -231,16 +232,20 @@ async function createAssemblyRecord({ payload, files, submittedBy }) {
   const normalSets = Math.min(totalSets, remainingRequired);
   const extraSets = totalSets - normalSets;
 
-  // Resolve the assortment and split it by source (moulded vs outsourced) — never mixed.
+  // Resolve consumption sources — never mixed:
+  //   moulded    → from the product's master Assortment (parts-per-set).
+  //   outsourced → from THIS ORDER's BOM snapshot (perSet frozen at order creation), so
+  //                changing the master BOM never retroactively changes an in-flight order.
   const assortmentParts = await assortmentService.getAssortmentParts(customerId, productId);
-  if (totalSets > 0 && assortmentParts.length === 0) {
+  const moulded = assortmentParts.filter((p) => (p.kind || 'moulded') === 'moulded');
+  const outsourced = (await outsourcedService.getOrderBom({ customerId, productId, orderId }))
+    .filter((p) => p.perSet > 0);
+  if (totalSets > 0 && moulded.length === 0 && outsourced.length === 0) {
     throw badRequest(
-      'No assortment defined for this product. Define parts-per-set before assembling sets.',
+      'No assortment/BOM defined for this product. Define parts-per-set before assembling sets.',
       'missing_assortment'
     );
   }
-  const moulded = assortmentParts.filter((p) => (p.kind || 'moulded') === 'moulded');
-  const outsourced = assortmentParts.filter((p) => p.kind === 'outsourced');
 
   // ---- ATOMIC PRE-VALIDATION: order portion AND surplus portion, before any deduction.
   // (Rule 6/10: no partial consumption, no inventory loss.) Gather every shortage first.
@@ -275,10 +280,14 @@ async function createAssemblyRecord({ payload, files, submittedBy }) {
     throw conflict(`Insufficient stock to assemble ${totalSets} set(s): ${shortages.join(', ')}`, 'insufficient_stock');
   }
 
-  // Snapshot total consumption per part (order + surplus portions combined) for the record.
-  const consumption = assortmentParts
-    .map((p) => ({ partName: p.partName, perSet: p.perSet, quantity: p.perSet * totalSets, kind: p.kind || 'moulded' }))
-    .filter((c) => c.quantity > 0);
+  // Snapshot total consumption per part for the record — this is the SOURCE OF TRUTH that
+  // reconcile reads to derive Component/Outsourced store balances (normal sets → order
+  // bucket, extra sets → product surplus). moulded uses master perSet, outsourced the
+  // order snapshot perSet.
+  const consumption = [
+    ...moulded.map((p) => ({ partName: p.partName, perSet: p.perSet, quantity: p.perSet * totalSets, kind: 'moulded' })),
+    ...outsourced.map((p) => ({ partName: p.partName, perSet: p.perSet, quantity: p.perSet * totalSets, kind: 'outsourced' })),
+  ].filter((c) => c.quantity > 0);
 
   const record = await AssemblyRecord.create({
     orderId,
@@ -299,43 +308,19 @@ async function createAssemblyRecord({ payload, files, submittedBy }) {
     submittedBy,
   });
 
-  // ---- Deduct: order portion from order inventory, extra portion from product surplus ----
-  for (const p of moulded) {
-    if (normalSets > 0 && p.perSet > 0) {
-      await storeService.applyStockOut({
-        storeType: storeService.STORE.COMPONENT,
-        customerId, productId, orderId, partName: p.partName, quantity: p.perSet * normalSets,
-        sourceModule: 'assembly', referenceId: record._id,
-        remarks: `Assembly consumed ${p.perSet * normalSets} ${p.partName} (${normalSets} sets × ${p.perSet})`,
-        createdBy: submittedBy,
-      });
-    }
-    if (extraSets > 0 && p.perSet > 0) {
-      await storeService.consumeSurplus({
-        customerId, productId, partName: p.partName, quantity: p.perSet * extraSets,
-        referenceId: record._id, remarks: `Over-assembly consumed ${p.perSet * extraSets} ${p.partName} from product surplus`, createdBy: submittedBy,
-      });
-    }
-  }
-  for (const p of outsourced) {
-    if (normalSets > 0 && p.perSet > 0) {
-      await outsourcedService.consumeOrder({ customerId, productId, orderId, componentName: p.partName, quantity: p.perSet * normalSets });
-    }
-    if (extraSets > 0 && p.perSet > 0) {
-      await outsourcedService.consumeSurplus({ customerId, productId, componentName: p.partName, quantity: p.perSet * extraSets });
-    }
-  }
-
-  // ---- ORDER COMPLETION: when cumulative normal sets reach the order's required sets,
-  // move every REMAINING order part (moulded cells + outsourced order items) into product
-  // surplus, then complete assembly so the order leaves active views. History preserved.
+  // ---- ORDER COMPLETION: when cumulative normal sets reach the order's required sets, mark
+  // assembly complete FIRST so reconcile rolls the order's remaining components into product
+  // surplus (completed orders release their on-hand). History preserved.
   let completion = null;
   if (order.orderQuantity > 0 && alreadyDone + normalSets >= order.orderQuantity) {
-    const movedMoulded = await storeService.transferOrderComponentsToSurplus({ customerId, productId, orderId, createdBy: submittedBy });
-    const movedOutsourced = await outsourcedService.transferOrderToSurplus({ customerId, productId, orderId });
     await orderService.completeAssembly(orderId);
-    completion = { completed: true, movedToSurplus: { moulded: movedMoulded, outsourced: movedOutsourced } };
+    completion = { completed: true };
   }
+
+  // Consumption is now recorded on the AssemblyRecord; recompute the whole product's stores
+  // from history (order buckets, product surplus, outsourced) — no incremental deductions.
+  await reconcileService.reconcileProduct(customerId, productId);
+  await reconcileService.reconcileOutsourced(customerId, productId);
 
   // Attach uploaded photos (if any). MediaAsset.ownerId needs the record to exist
   // first, so we create the record, then the media, then link — within this request.
@@ -393,10 +378,12 @@ function buildFilter(query) {
   return filter;
 }
 
-// List the calling engineer's own assembly records (GET /assembly/mine).
-async function listMyRecords(submittedBy, query = {}) {
+// List assembly records for the whole department — every assembly engineer sees all
+// records, not just their own (shared visibility, req #8). Optional customer/product/order
+// filters still apply.
+async function listMyRecords(_submittedBy, query = {}) {
   const { page, limit, skip } = parsePagination(query);
-  const filter = { ...buildFilter(query), submittedBy };
+  const filter = buildFilter(query);
 
   const [items, total] = await Promise.all([
     AssemblyRecord.find(filter).populate('photos').sort({ createdAt: -1 }).skip(skip).limit(limit),
@@ -420,14 +407,15 @@ async function listAllRecords(query = {}) {
   return buildList(items.map(toPublicAssemblyRecord), total, page, limit);
 }
 
-// Fetch one record. Admin may read any; an assembly engineer may read only their own.
+// Fetch one record. Admin and any assembly engineer may read any record (shared dept
+// visibility, req #8). The route guard already restricts this to admin + assembly roles.
 async function getRecordById(id, user) {
   const record = await AssemblyRecord.findById(id).populate('photos');
   if (!record) {
     throw notFound('Assembly record not found', 'assembly_record_not_found');
   }
-  if (user.role !== ROLES.ADMIN && record.submittedBy.toString() !== String(user.id)) {
-    throw forbidden('You can only access your own assembly records');
+  if (user.role !== ROLES.ADMIN && user.role !== ROLES.ASSEMBLY_ENGINEER) {
+    throw forbidden('Access denied');
   }
   return toPublicAssemblyRecord(record);
 }

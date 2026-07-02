@@ -1,27 +1,23 @@
-import { useRoute } from '@react-navigation/native';
 import { useQuery } from '@tanstack/react-query';
 import React, { useMemo, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, View } from 'react-native';
+import { Pressable, RefreshControl, View } from 'react-native';
 
-import { adminApi, type AdminRecordParams } from '@/api/endpoints/admin';
+import { adminApi } from '@/api/endpoints/admin';
 import { queryKeys } from '@/api/queryKeys';
 import type {
   AdminAssemblyRecord,
   AdminDispatchRecord,
   AdminMouldingRecord,
+  AdminOrderRow,
   AdminQCRecord,
+  Paginated,
 } from '@/api/types';
+
+type AnyRecord = AdminMouldingRecord | AdminAssemblyRecord | AdminQCRecord | AdminDispatchRecord;
 import { AppText, Card, Screen } from '@/components';
 import { useTheme } from '@/theme/ThemeProvider';
 
 type Dept = 'moulding' | 'assembly' | 'qc' | 'dispatch';
-
-const TABS: { key: Dept; label: string }[] = [
-  { key: 'moulding', label: 'Moulding' },
-  { key: 'assembly', label: 'Assembly' },
-  { key: 'qc', label: 'QC' },
-  { key: 'dispatch', label: 'Dispatch' },
-];
 
 function fmt(n: number) {
   return n.toLocaleString();
@@ -31,25 +27,46 @@ function shortDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
+// A big, prominent metric tile used in the moulding record card.
+function Metric({ label, value, color, align = 'flex-start' }: { label: string; value: string; color?: string; align?: 'flex-start' | 'center' | 'flex-end' }) {
+  const { colors } = useTheme();
+  return (
+    <View style={{ flex: 1, alignItems: align }}>
+      <AppText variant="caption" tone="muted" style={{ marginBottom: 2 }}>{label}</AppText>
+      <AppText weight="700" style={{ fontSize: 22, color: color ?? colors.text }}>{value}</AppText>
+    </View>
+  );
+}
+
 function MouldingCard({ r }: { r: AdminMouldingRecord }) {
   const { colors, spacing, radius } = useTheme();
   return (
-    <Card style={{ marginBottom: spacing(3) }}>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing(1) }}>
-        <AppText weight="600" style={{ flex: 1 }} numberOfLines={1}>
-          {r.customer ?? '—'}
+    <Card style={{ marginBottom: spacing(4), padding: spacing(4) }}>
+      {/* Header: mould name is the headline, order code on the right */}
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing(1) }}>
+        <AppText variant="h3" style={{ flex: 1 }} numberOfLines={1}>
+          {r.moldName}
         </AppText>
-        <AppText variant="caption" style={{ color: colors.primary, marginLeft: spacing(2) }}>
-          {r.orderCode ?? '—'}
-        </AppText>
+        <View
+          style={{
+            backgroundColor: colors.status.info.bg,
+            borderRadius: radius.sm,
+            paddingHorizontal: spacing(2),
+            paddingVertical: spacing(1),
+            marginLeft: spacing(2),
+          }}
+        >
+          <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg }}>
+            {r.orderCode ?? '—'}
+          </AppText>
+        </View>
       </View>
-      <AppText tone="muted" variant="caption" style={{ marginBottom: spacing(2) }}>
-        {r.product ?? '—'}  ·  {r.partName}
+      <AppText tone="muted" style={{ marginBottom: spacing(3) }}>
+        {r.customer ?? '—'}  ·  {r.product ?? '—'}  ·  {r.partName}
       </AppText>
 
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2), marginBottom: spacing(2) }}>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2), marginBottom: spacing(3) }}>
         {[
-          { label: 'Mould', value: r.moldName },
           { label: 'Machine', value: r.machineNumber },
           { label: 'Shift', value: `Shift ${r.shift}` },
           { label: 'Cavity', value: String(r.cavity) },
@@ -59,42 +76,42 @@ function MouldingCard({ r }: { r: AdminMouldingRecord }) {
             style={{
               backgroundColor: colors.surfaceAlt,
               borderRadius: radius.sm,
-              paddingHorizontal: spacing(2),
-              paddingVertical: spacing(1),
+              paddingHorizontal: spacing(3),
+              paddingVertical: spacing(2),
             }}
           >
             <AppText variant="caption" tone="muted">{chip.label} </AppText>
-            <AppText variant="caption" weight="600">{chip.value}</AppText>
+            <AppText variant="caption" weight="700">{chip.value}</AppText>
           </View>
         ))}
       </View>
 
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-        <View>
-          <AppText variant="caption" tone="muted">Shots Done</AppText>
-          <AppText weight="700">{fmt(r.shotsDone)}</AppText>
-        </View>
-        <View style={{ alignItems: 'center' }}>
-          <AppText variant="caption" tone="muted">Rejected Shots</AppText>
-          <AppText weight="700" style={{ color: r.rejectedShots > 0 ? colors.status.danger.fg : colors.status.success.fg }}>
-            {fmt(r.rejectedShots)}
-          </AppText>
-        </View>
-        <View style={{ alignItems: 'flex-end' }}>
-          <AppText variant="caption" tone="muted">Good Parts</AppText>
-          <AppText weight="700" style={{ color: colors.status.success.fg }}>
-            {fmt(r.goodParts)}
-          </AppText>
-        </View>
+      {/* Big metric tiles */}
+      <View
+        style={{
+          flexDirection: 'row',
+          backgroundColor: colors.surfaceAlt,
+          borderRadius: radius.md ?? 12,
+          padding: spacing(3),
+        }}
+      >
+        <Metric label="Shots Done" value={fmt(r.shotsDone)} />
+        <Metric
+          label="Rejected"
+          value={fmt(r.rejectedShots)}
+          color={r.rejectedShots > 0 ? colors.status.danger.fg : colors.status.success.fg}
+          align="center"
+        />
+        <Metric label="Good Parts" value={fmt(r.goodParts)} color={colors.status.success.fg} align="flex-end" />
       </View>
 
       {r.rejectionReasons.length > 0 && (
-        <AppText variant="caption" tone="muted" style={{ marginTop: spacing(2) }}>
+        <AppText variant="caption" style={{ color: colors.status.danger.fg, marginTop: spacing(3) }}>
           Defects: {r.rejectionReasons.join(', ')}
         </AppText>
       )}
 
-      <AppText variant="caption" tone="muted" style={{ marginTop: spacing(2) }}>
+      <AppText variant="caption" tone="muted" style={{ marginTop: spacing(3) }}>
         {shortDate(r.createdAt)}
       </AppText>
     </Card>
@@ -278,169 +295,257 @@ function DispatchCard({ r }: { r: AdminDispatchRecord }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Grouped Production Records: Customer → Product → Order → Stage → Records.
+// Orders (with per-stage counts + customer/product identity) come from a single
+// adminApi.orders() call and are grouped client-side. The records themselves are
+// LAZY-loaded per (order, stage) only when that stage node is expanded, so hundreds
+// of records never load at once.
+// ---------------------------------------------------------------------------
+
+const STAGES: { key: Dept; label: string; countKey: keyof AdminOrderRow }[] = [
+  { key: 'moulding', label: 'Moulding Records', countKey: 'mouldingCount' },
+  { key: 'assembly', label: 'Assembly Records', countKey: 'assemblyCount' },
+  { key: 'qc', label: 'QC Records', countKey: 'qcCount' },
+  { key: 'dispatch', label: 'Dispatch Records', countKey: 'dispatchCount' },
+];
+
+// Lazily fetch + render one order's records for one stage. Mounted only when expanded.
+function StageRecords({ orderId, stage }: { orderId: string; stage: Dept }) {
+  const { spacing, colors } = useTheme();
+  const params = { orderId, limit: 100 };
+  const q = useQuery({
+    queryKey: queryKeys.admin.records[stage](params),
+    queryFn: (): Promise<Paginated<AnyRecord>> =>
+      stage === 'moulding'
+        ? adminApi.mouldingRecords(params)
+        : stage === 'assembly'
+          ? adminApi.assemblyRecords(params)
+          : stage === 'qc'
+            ? adminApi.qcRecords(params)
+            : adminApi.dispatchRecords(params),
+  });
+
+  if (q.isLoading) {
+    return <AppText tone="muted" variant="caption" style={{ paddingVertical: spacing(2) }}>Loading…</AppText>;
+  }
+  if (q.isError) {
+    return (
+      <AppText variant="caption" style={{ color: colors.status.danger.fg, paddingVertical: spacing(2) }}>
+        Failed to load records.
+      </AppText>
+    );
+  }
+  const rows = q.data?.data ?? [];
+  if (rows.length === 0) {
+    return <AppText tone="muted" variant="caption" style={{ paddingVertical: spacing(2) }}>No records.</AppText>;
+  }
+  return (
+    <View style={{ paddingTop: spacing(2) }}>
+      {stage === 'moulding' && (rows as AdminMouldingRecord[]).map((r) => <MouldingCard key={r.id} r={r} />)}
+      {stage === 'assembly' && (rows as AdminAssemblyRecord[]).map((r) => <AssemblyCard key={r.id} r={r} />)}
+      {stage === 'qc' && (rows as AdminQCRecord[]).map((r) => <QCCard key={r.id} r={r} />)}
+      {stage === 'dispatch' && (rows as AdminDispatchRecord[]).map((r) => <DispatchCard key={r.id} r={r} />)}
+    </View>
+  );
+}
+
+// A tappable row with a disclosure chevron used at every level of the tree.
+function DisclosureRow({
+  open,
+  title,
+  subtitle,
+  right,
+  depth = 0,
+  disabled,
+  onPress,
+}: {
+  open: boolean;
+  title: string;
+  subtitle?: string;
+  right?: string;
+  depth?: number;
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  const { spacing, colors } = useTheme();
+  return (
+    <Pressable
+      onPress={disabled ? undefined : onPress}
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: spacing(2),
+        paddingLeft: spacing(2 + depth * 3),
+        paddingRight: spacing(2),
+        opacity: disabled ? 0.4 : 1,
+      }}
+    >
+      <AppText style={{ width: 18, color: colors.textMuted }}>{disabled ? '·' : open ? '▾' : '▸'}</AppText>
+      <View style={{ flex: 1 }}>
+        <AppText weight="600">{title}</AppText>
+        {subtitle ? (
+          <AppText variant="caption" tone="muted">{subtitle}</AppText>
+        ) : null}
+      </View>
+      {right ? (
+        <AppText variant="caption" weight="600" tone="muted" style={{ marginLeft: spacing(2) }}>{right}</AppText>
+      ) : null}
+    </Pressable>
+  );
+}
+
+interface ProductGroup {
+  productId: string;
+  product: string;
+  orders: AdminOrderRow[];
+}
+interface CustomerGroup {
+  customerId: string;
+  customer: string;
+  products: ProductGroup[];
+}
+
 export function FactoryMonitorScreen() {
   const { spacing, colors, radius } = useTheme();
-  const route = useRoute<any>();
-  const initialDept: Dept = route.params?.dept ?? 'moulding';
-  const [activeTab, setActiveTab] = useState<Dept>(initialDept);
-  const [page, setPage] = useState(1);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
-  const params: AdminRecordParams = useMemo(() => ({ page, limit: 30 }), [page]);
+  const toggle = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  const isOpen = (key: string) => expanded.has(key);
 
-  const mouldingQ = useQuery({
-    queryKey: queryKeys.admin.records.moulding(params),
-    queryFn: () => adminApi.mouldingRecords(params),
-    enabled: activeTab === 'moulding',
-  });
-  const assemblyQ = useQuery({
-    queryKey: queryKeys.admin.records.assembly(params),
-    queryFn: () => adminApi.assemblyRecords(params),
-    enabled: activeTab === 'assembly',
-  });
-  const qcQ = useQuery({
-    queryKey: queryKeys.admin.records.qc(params),
-    queryFn: () => adminApi.qcRecords(params),
-    enabled: activeTab === 'qc',
-  });
-  const dispatchQ = useQuery({
-    queryKey: queryKeys.admin.records.dispatch(params),
-    queryFn: () => adminApi.dispatchRecords(params),
-    enabled: activeTab === 'dispatch',
+  const ordersQ = useQuery({
+    queryKey: queryKeys.admin.orders({ page: 1, limit: 200 }),
+    queryFn: () => adminApi.orders({ page: 1, limit: 200 }),
   });
 
-  const activeQuery =
-    activeTab === 'moulding'
-      ? mouldingQ
-      : activeTab === 'assembly'
-        ? assemblyQ
-        : activeTab === 'qc'
-          ? qcQ
-          : dispatchQ;
-
-  function switchTab(tab: Dept) {
-    setActiveTab(tab);
-    setPage(1);
-  }
-
-  const totalPages = activeQuery.data?.pagination.pages ?? 1;
-  const totalCount = activeQuery.data?.pagination.total ?? 0;
+  // Group orders that have at least one record into Customer → Product → Order.
+  const groups = useMemo<CustomerGroup[]>(() => {
+    const rows = ordersQ.data?.data ?? [];
+    const withRecords = rows.filter(
+      (o) => (o.mouldingCount ?? 0) + (o.assemblyCount ?? 0) + (o.qcCount ?? 0) + (o.dispatchCount ?? 0) > 0,
+    );
+    const custMap = new Map<string, CustomerGroup>();
+    for (const o of withRecords) {
+      const custId = o.customerId ?? 'unknown';
+      const prodId = o.productId ?? 'unknown';
+      if (!custMap.has(custId)) {
+        custMap.set(custId, { customerId: custId, customer: o.customer ?? 'Unknown customer', products: [] });
+      }
+      const cust = custMap.get(custId)!;
+      let prod = cust.products.find((p) => p.productId === prodId);
+      if (!prod) {
+        prod = { productId: prodId, product: o.product ?? 'Unknown product', orders: [] };
+        cust.products.push(prod);
+      }
+      prod.orders.push(o);
+    }
+    return Array.from(custMap.values());
+  }, [ordersQ.data]);
 
   return (
     <Screen
       scroll
-      refreshControl={<RefreshControl refreshing={activeQuery.isRefetching} onRefresh={activeQuery.refetch} />}
+      refreshControl={<RefreshControl refreshing={ordersQ.isRefetching} onRefresh={ordersQ.refetch} />}
     >
-      <AppText variant="h2" style={{ marginBottom: spacing(3) }}>
+      <AppText variant="h2" style={{ marginBottom: spacing(1) }}>
         Production Records
       </AppText>
+      <AppText tone="muted" variant="caption" style={{ marginBottom: spacing(4) }}>
+        Customer → Product → Order → Stage. Expand to drill into records.
+      </AppText>
 
-      {/* Department Tabs */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={{ marginBottom: spacing(4) }}
-        contentContainerStyle={{ gap: spacing(2) }}
-      >
-        {TABS.map((tab) => {
-          const active = tab.key === activeTab;
-          return (
-            <Pressable
-              key={tab.key}
-              onPress={() => switchTab(tab.key)}
-              style={{
-                paddingHorizontal: spacing(4),
-                paddingVertical: spacing(2),
-                borderRadius: radius.pill,
-                backgroundColor: active ? colors.primary : colors.surface,
-                borderWidth: 1,
-                borderColor: active ? colors.primary : colors.border,
-              }}
-            >
-              <AppText
-                weight="600"
-                style={{ color: active ? colors.primaryText : colors.text, fontSize: 14 }}
-              >
-                {tab.label}
-              </AppText>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
-
-      {/* Record count */}
-      {!activeQuery.isLoading && (
-        <AppText tone="muted" variant="caption" style={{ marginBottom: spacing(3) }}>
-          {totalCount} record{totalCount !== 1 ? 's' : ''}
-        </AppText>
-      )}
-
-      {/* Loading state */}
-      {activeQuery.isLoading && (
-        <AppText tone="muted" style={{ textAlign: 'center', marginTop: spacing(8) }}>
-          Loading records…
-        </AppText>
-      )}
-
-      {/* Error state */}
-      {activeQuery.isError && (
+      {ordersQ.isLoading ? (
+        <AppText tone="muted" style={{ textAlign: 'center', marginTop: spacing(8) }}>Loading…</AppText>
+      ) : ordersQ.isError ? (
         <AppText style={{ color: colors.status.danger.fg, textAlign: 'center', marginTop: spacing(8) }}>
-          Failed to load records.
+          Failed to load orders.
         </AppText>
-      )}
-
-      {/* Records */}
-      {activeTab === 'moulding' &&
-        (mouldingQ.data?.data ?? []).map((r) => <MouldingCard key={r.id} r={r} />)}
-      {activeTab === 'assembly' &&
-        (assemblyQ.data?.data ?? []).map((r) => <AssemblyCard key={r.id} r={r} />)}
-      {activeTab === 'qc' &&
-        (qcQ.data?.data ?? []).map((r) => <QCCard key={r.id} r={r} />)}
-      {activeTab === 'dispatch' &&
-        (dispatchQ.data?.data ?? []).map((r) => <DispatchCard key={r.id} r={r} />)}
-
-      {!activeQuery.isLoading && totalCount === 0 && !activeQuery.isError && (
+      ) : groups.length === 0 ? (
         <View style={{ alignItems: 'center', marginTop: spacing(8) }}>
           <AppText style={{ fontSize: 36 }}>📭</AppText>
-          <AppText tone="muted" style={{ marginTop: spacing(2) }}>No records yet</AppText>
+          <AppText tone="muted" style={{ marginTop: spacing(2) }}>No production records yet</AppText>
         </View>
-      )}
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <View style={{ flexDirection: 'row', justifyContent: 'center', gap: spacing(3), marginTop: spacing(4) }}>
-          <Pressable
-            onPress={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page === 1}
-            style={{
-              paddingHorizontal: spacing(4),
-              paddingVertical: spacing(2),
-              borderRadius: radius.md,
-              backgroundColor: page === 1 ? colors.surfaceAlt : colors.primary,
-            }}
-          >
-            <AppText style={{ color: page === 1 ? colors.textMuted : colors.primaryText }}>
-              ‹ Prev
-            </AppText>
-          </Pressable>
-          <View style={{ justifyContent: 'center' }}>
-            <AppText tone="muted">
-              {page} / {totalPages}
-            </AppText>
-          </View>
-          <Pressable
-            onPress={() => setPage((p) => Math.min(totalPages, p + 1))}
-            disabled={page === totalPages}
-            style={{
-              paddingHorizontal: spacing(4),
-              paddingVertical: spacing(2),
-              borderRadius: radius.md,
-              backgroundColor: page === totalPages ? colors.surfaceAlt : colors.primary,
-            }}
-          >
-            <AppText style={{ color: page === totalPages ? colors.textMuted : colors.primaryText }}>
-              Next ›
-            </AppText>
-          </Pressable>
+      ) : (
+        <View style={{ gap: spacing(3) }}>
+          {groups.map((cust) => {
+            const custKey = `cust:${cust.customerId}`;
+            const orderCount = cust.products.reduce((s, p) => s + p.orders.length, 0);
+            return (
+              <Card key={custKey} style={{ padding: 0, overflow: 'hidden' }}>
+                <DisclosureRow
+                  open={isOpen(custKey)}
+                  title={cust.customer}
+                  right={`${orderCount} order${orderCount !== 1 ? 's' : ''}`}
+                  onPress={() => toggle(custKey)}
+                />
+                {isOpen(custKey) &&
+                  cust.products.map((prod) => {
+                    const prodKey = `prod:${cust.customerId}|${prod.productId}`;
+                    return (
+                      <View key={prodKey} style={{ borderTopWidth: 1, borderTopColor: colors.border }}>
+                        <DisclosureRow
+                          open={isOpen(prodKey)}
+                          title={prod.product}
+                          subtitle={`${prod.orders.length} order${prod.orders.length !== 1 ? 's' : ''}`}
+                          depth={1}
+                          onPress={() => toggle(prodKey)}
+                        />
+                        {isOpen(prodKey) &&
+                          prod.orders.map((order) => {
+                            const orderKey = `order:${order.id}`;
+                            return (
+                              <View key={orderKey} style={{ borderTopWidth: 1, borderTopColor: colors.border }}>
+                                <DisclosureRow
+                                  open={isOpen(orderKey)}
+                                  title={order.orderCode ?? 'Order'}
+                                  subtitle={`${order.orderQuantity} sets · ${order.lifecycleStatus ?? order.status}`}
+                                  depth={2}
+                                  onPress={() => toggle(orderKey)}
+                                />
+                                {isOpen(orderKey) &&
+                                  STAGES.map((stg) => {
+                                    const count = (order[stg.countKey] as number | undefined) ?? 0;
+                                    const stageKey = `stage:${order.id}|${stg.key}`;
+                                    return (
+                                      <View key={stageKey}>
+                                        <DisclosureRow
+                                          open={isOpen(stageKey)}
+                                          title={stg.label}
+                                          right={String(count)}
+                                          depth={3}
+                                          disabled={count === 0}
+                                          onPress={() => toggle(stageKey)}
+                                        />
+                                        {isOpen(stageKey) && count > 0 ? (
+                                          <View
+                                            style={{
+                                              paddingLeft: spacing(2 + 4 * 3),
+                                              paddingRight: spacing(3),
+                                              paddingBottom: spacing(2),
+                                              backgroundColor: colors.surfaceAlt,
+                                              borderRadius: radius.sm,
+                                            }}
+                                          >
+                                            <StageRecords orderId={order.id} stage={stg.key} />
+                                          </View>
+                                        ) : null}
+                                      </View>
+                                    );
+                                  })}
+                              </View>
+                            );
+                          })}
+                      </View>
+                    );
+                  })}
+              </Card>
+            );
+          })}
         </View>
       )}
     </Screen>

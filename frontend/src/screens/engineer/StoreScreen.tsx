@@ -4,7 +4,7 @@ import { Pressable, RefreshControl, StyleSheet, View } from 'react-native';
 
 import { outsourcedApi, storeApi } from '@/api/endpoints/store';
 import { queryKeys } from '@/api/queryKeys';
-import type { ComponentOrderNode, ComponentPart, OutsourcedItem } from '@/api/types';
+import type { ComponentOrderNode, ComponentPart, OutsourcedItem, OutsourcedReceipt } from '@/api/types';
 import { AppText, Banner, Button, Card, FormField, QueryBoundary, Screen, Select } from '@/components';
 import { useCurrentUser } from '@/hooks/useAuth';
 import { ROLES } from '@/types/roles';
@@ -108,69 +108,105 @@ function SurplusCard({ surplus }: { surplus: ComponentPart[] }) {
   );
 }
 
-// One editable outsourced row: name + quantity, with Save (set absolute) + Delete.
-// Read-only roles get just the name + quantity.
-function OutsourcedRow({
+// One BOM/component row: shows the derived Required / On hand / Purchase-need for this
+// order. Moulding engineers can edit the per-set value (order-scoped snapshot only).
+function OutsourcedComponentRow({
   item,
-  scope,
   canEdit,
   onChanged,
 }: {
   item: OutsourcedItem;
-  scope: 'order' | 'surplus';
   canEdit: boolean;
   onChanged: () => void;
 }) {
   const { spacing, colors } = useTheme();
-  const [qty, setQty] = useState(String(item.quantityOnHand));
+  const [per, setPer] = useState(String(item.perSet));
+  const dirty = per !== String(item.perSet);
 
   const save = useMutation({
-    mutationFn: () => outsourcedApi.update(item.id, { quantity: Number(qty), scope }),
+    mutationFn: () =>
+      outsourcedApi.setBom({
+        customerId: item.customerId,
+        productId: item.productId,
+        orderId: item.orderId!,
+        componentName: item.componentName,
+        perSet: Number(per),
+      }),
     onSuccess: onChanged,
   });
-  const del = useMutation({
-    mutationFn: () => outsourcedApi.remove(item.id, scope),
-    onSuccess: onChanged,
-  });
-
-  if (!canEdit) {
-    return (
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 }}>
-        <AppText weight="600">{item.componentName}</AppText>
-        <AppText weight="600">{item.quantityOnHand}</AppText>
-      </View>
-    );
-  }
 
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing(2), paddingVertical: spacing(1) }}>
-      <AppText weight="600" style={{ flex: 1 }}>
-        {item.componentName}
-      </AppText>
-      <View style={{ width: 84 }}>
-        <FormField label="" value={qty} onChangeText={setQty} keyboardType="number-pad" />
+    <View style={{ borderColor: colors.border, borderTopWidth: StyleSheet.hairlineWidth, paddingVertical: spacing(2) }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <AppText weight="700" style={{ flex: 1 }}>{item.componentName}</AppText>
+        {item.procurementNeed > 0 ? (
+          <AppText weight="700" style={{ color: colors.status.danger.fg }}>Pending {item.procurementNeed}</AppText>
+        ) : (
+          <AppText weight="700" style={{ color: colors.status.success.fg }}>Complete</AppText>
+        )}
       </View>
-      <Pressable
-        onPress={() => save.mutate()}
-        disabled={save.isPending || qty === '' || Number(qty) < 0}
-        style={{ backgroundColor: colors.surfaceAlt, borderRadius: 8, paddingVertical: spacing(1), paddingHorizontal: spacing(2) }}
-      >
-        <AppText variant="caption" weight="600">Save</AppText>
-      </Pressable>
-      <Pressable
-        onPress={() => del.mutate()}
-        disabled={del.isPending}
-        style={{ paddingVertical: spacing(1), paddingHorizontal: spacing(2) }}
-      >
-        <AppText variant="caption" weight="600" style={{ color: colors.status.danger.fg }}>Delete</AppText>
-      </Pressable>
+      {/* Finished / Pending mirror moulding inventory: Finished = received capped at Required,
+          Pending = the shortfall still to receive. Surplus is shown product-level below. */}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(3), marginTop: 2 }}>
+        <AppText variant="caption" tone="muted">Required {item.requiredQuantity}</AppText>
+        <AppText variant="caption" tone="muted">Received {item.received}</AppText>
+        <AppText variant="caption" style={{ color: colors.status.success.fg }}>Finished {item.quantityOnHand}</AppText>
+        <AppText variant="caption" style={{ color: item.procurementNeed > 0 ? colors.status.danger.fg : colors.textMuted }}>
+          Pending {item.procurementNeed}
+        </AppText>
+      </View>
+      {canEdit ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing(2), marginTop: spacing(1) }}>
+          <AppText variant="caption" tone="muted">Assortment (per set)</AppText>
+          <View style={{ width: 72 }}>
+            <FormField label="" value={per} onChangeText={setPer} keyboardType="number-pad" />
+          </View>
+          {dirty ? (
+            <Pressable
+              onPress={() => save.mutate()}
+              disabled={save.isPending || per === '' || Number(per) < 0}
+              style={{ backgroundColor: colors.surfaceAlt, borderRadius: 8, paddingVertical: spacing(1), paddingHorizontal: spacing(2) }}
+            >
+              <AppText variant="caption" weight="600">Save per-set</AppText>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : (
+        <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>Assortment {item.perSet} per set</AppText>
+      )}
     </View>
   );
 }
 
-// Outsourced Components: purchased/external parts for the selected OrderID, plus a
-// product-level surplus pool. Separate from moulded inventory. Moulding Engineers can
-// add / edit / delete / adjust; everyone else is read-only.
+// One received-stock transaction, with delete (Moulding, within the edit window).
+function ReceiptRow({ receipt, canEdit, onChanged }: { receipt: OutsourcedReceipt; canEdit: boolean; onChanged: () => void }) {
+  const { spacing, colors } = useTheme();
+  const del = useMutation({
+    mutationFn: () => outsourcedApi.deleteReceipt(receipt.id),
+    onSuccess: onChanged,
+  });
+  return (
+    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 }}>
+      <View style={{ flex: 1 }}>
+        <AppText variant="caption">
+          <AppText variant="caption" weight="700">{receipt.componentName}</AppText> +{receipt.quantityReceived}
+        </AppText>
+        <AppText variant="caption" tone="muted">{new Date(receipt.createdAt).toLocaleString()}</AppText>
+      </View>
+      {canEdit && receipt.canEdit ? (
+        <Pressable onPress={() => del.mutate()} disabled={del.isPending} style={{ paddingVertical: spacing(1), paddingHorizontal: spacing(2) }}>
+          <AppText variant="caption" weight="600" style={{ color: colors.status.danger.fg }}>Delete</AppText>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+// Outsourced Components: purchased/external parts for the selected OrderID. The BOM is
+// auto-populated from the product's master Assortment when the order is created, and is
+// editable per order without changing the master. Inventory is transaction-based: each
+// receipt is recorded, and Required / On hand / Purchase-need + product surplus are derived
+// (existing surplus is consumed before any procurement is required).
 function OutsourcedSection({
   customerId,
   productId,
@@ -199,20 +235,21 @@ function OutsourcedSection({
     queryClient.invalidateQueries({ queryKey: ['assembly', 'assortment'] });
   };
 
-  // RULE 3 — enter Quantity Received + Per-Set; the server splits into order allocation
-  // (orderSets × perSet) and product surplus (the remainder), immediately.
+  // Record a received-stock transaction. perSet is optional — supplied only to (re)set the
+  // BOM value for a component that isn't in the order yet. Allocation + procurement are
+  // derived server-side (surplus is consumed before procurement).
   const add = useMutation({
     mutationFn: () =>
-      outsourcedApi.allocate({
+      outsourcedApi.receive({
         customerId,
         productId,
         orderId,
         componentName: name.trim(),
-        received: Number(received),
-        perSet: Number(perSet),
+        quantityReceived: Number(received),
+        ...(perSet !== '' ? { perSet: Number(perSet) } : {}),
       }),
-    onSuccess: (a) => {
-      setAddOk(`${a.componentName}: ${a.addedToOrder} → order (need ${a.requiredQuantity}), ${a.addedToSurplus} → product surplus.`);
+    onSuccess: (r) => {
+      setAddOk(`Received ${r.quantityReceived} ${r.componentName}.`);
       setName('');
       setReceived('');
       setPerSet('');
@@ -223,8 +260,10 @@ function OutsourcedSection({
   const addError = add.error instanceof ApiError ? friendlyMessage(add.error) : null;
   const components = query.data?.components ?? [];
   const surplus = query.data?.surplus ?? [];
+  const receipts = query.data?.receipts ?? [];
   const suggestions = query.data?.suggestions ?? [];
-  const canAdd = !!name.trim() && received !== '' && Number(received) > 0 && perSet !== '' && Number(perSet) >= 0;
+  const trimmedName = name.trim();
+  const canAdd = !!trimmedName && received !== '' && Number(received) > 0;
 
   return (
     <Card style={{ marginTop: spacing(3) }}>
@@ -232,16 +271,19 @@ function OutsourcedSection({
         Outsourced Components
       </AppText>
       <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
-        Purchased / external parts (axle, sticker sheet, screw pack…). Tracked separately from moulded parts.
+        Purchased / external parts (sticker, screw, spring, battery…). Add a component with its
+        assortment, then record received quantities. Multiple deliveries add up. Any leftover
+        surplus is used by future orders before you need to buy more.
       </AppText>
 
-      <AppText variant="caption" tone="muted" style={{ marginBottom: 2 }}>For this order</AppText>
       {components.length === 0 ? (
-        <AppText tone="muted" variant="caption" style={{ marginBottom: spacing(2) }}>None added yet.</AppText>
+        <AppText tone="muted" variant="caption" style={{ marginBottom: spacing(2) }}>
+          No outsourced components added to this order yet.
+        </AppText>
       ) : (
         <View style={{ marginBottom: spacing(2) }}>
           {components.map((c) => (
-            <OutsourcedRow key={c.id} item={c} scope="order" canEdit={canEdit} onChanged={invalidate} />
+            <OutsourcedComponentRow key={c.id} item={c} canEdit={canEdit} onChanged={invalidate} />
           ))}
         </View>
       )}
@@ -250,7 +292,10 @@ function OutsourcedSection({
         <View style={{ marginBottom: spacing(2) }}>
           <AppText variant="caption" tone="muted" style={{ marginBottom: 2 }}>Surplus (product-level, pooled across orders)</AppText>
           {surplus.map((c) => (
-            <OutsourcedRow key={c.id} item={c} scope="surplus" canEdit={canEdit} onChanged={invalidate} />
+            <View key={c.id} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
+              <AppText weight="600">{c.componentName}</AppText>
+              <AppText weight="600" style={{ color: colors.status.info.fg }}>+{c.quantityOnHand}</AppText>
+            </View>
           ))}
         </View>
       ) : null}
@@ -258,7 +303,7 @@ function OutsourcedSection({
       {canEdit ? (
         <View style={{ borderTopColor: colors.border, borderTopWidth: StyleSheet.hairlineWidth, paddingTop: spacing(2) }}>
           <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>
-            Receive stock — quantity is split automatically: (order sets × per-set) to this order, the rest to product surplus.
+            Add a component or record a delivery. Deliveries for the same component accumulate.
           </AppText>
           {addOk ? <Banner tone="success" message={addOk} /> : null}
           {addError ? <Banner tone="danger" message={addError} /> : null}
@@ -275,10 +320,19 @@ function OutsourcedSection({
               ))}
             </View>
           ) : null}
-          <FormField label="Component name" value={name} onChangeText={setName} placeholder="e.g. Axle" />
-          <FormField label="Quantity received" value={received} onChangeText={setReceived} keyboardType="number-pad" placeholder="e.g. 12000" />
-          <FormField label="Required per set" value={perSet} onChangeText={setPerSet} keyboardType="number-pad" placeholder="e.g. 2" />
-          <Button label="Receive & Allocate" loading={add.isPending} disabled={!canAdd} onPress={() => { setAddOk(null); add.mutate(); }} />
+          <FormField label="Component name" value={name} onChangeText={setName} placeholder="e.g. Sticker" />
+          <FormField label="Quantity received" value={received} onChangeText={setReceived} keyboardType="number-pad" placeholder="e.g. 5000" />
+          <FormField label="Assortment (qty per finished set)" value={perSet} onChangeText={setPerSet} keyboardType="number-pad" placeholder="e.g. 1" />
+          <Button label="Save" loading={add.isPending} disabled={!canAdd} onPress={() => { setAddOk(null); add.mutate(); }} />
+
+          {receipts.length > 0 ? (
+            <View style={{ marginTop: spacing(3) }}>
+              <AppText variant="caption" tone="muted" style={{ marginBottom: 2 }}>Received transactions</AppText>
+              {receipts.map((r) => (
+                <ReceiptRow key={r.id} receipt={r} canEdit={canEdit} onChanged={invalidate} />
+              ))}
+            </View>
+          ) : null}
         </View>
       ) : null}
     </Card>

@@ -304,10 +304,11 @@ function buildFilter(query) {
   return filter;
 }
 
-// List the calling engineer's own QC records (GET /qc/mine).
-async function listMyRecords(submittedBy, query = {}) {
+// List QC records for the whole department — every QC engineer sees all records, not just
+// their own (shared visibility, req #8). Optional customer/product/order filters still apply.
+async function listMyRecords(_submittedBy, query = {}) {
   const { page, limit, skip } = parsePagination(query);
-  const filter = { ...buildFilter(query), submittedBy };
+  const filter = buildFilter(query);
 
   const [items, total] = await Promise.all([
     QCRecord.find(filter).populate('photos').sort({ createdAt: -1 }).skip(skip).limit(limit),
@@ -337,8 +338,8 @@ async function getRecordById(id, user) {
   if (!record) {
     throw notFound('QC record not found', 'qc_record_not_found');
   }
-  if (user.role !== ROLES.ADMIN && record.submittedBy.toString() !== String(user.id)) {
-    throw forbidden('You can only access your own QC records');
+  if (user.role !== ROLES.ADMIN && user.role !== ROLES.QC_ENGINEER) {
+    throw forbidden('Access denied');
   }
   return toPublicQCRecord(record);
 }

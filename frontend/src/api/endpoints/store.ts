@@ -6,10 +6,9 @@ import type {
   FinishedGoodsBalance,
   FinishedGoodsTree,
   OutsourcedItem,
+  OutsourcedReceipt,
   OutsourcedStore,
 } from '@/api/types';
-
-type OutsourcedScope = 'order' | 'surplus';
 
 // Read-only store views (Phases 2 / 4). Balances are mutated only by department
 // submissions on the backend; these endpoints just display them.
@@ -45,45 +44,39 @@ export const storeApi = {
 };
 
 // Outsourced Components store. Reads for component viewers; writes for Moulding Engineers.
+// Dead simple, per order (no master/product BOM): add a component (name + assortment) and
+// record received quantities. Multiple deliveries accumulate. Finished / Pending / Surplus
+// are derived by the backend reconcile engine — exactly like moulding inventory.
 export const outsourcedApi = {
   list: (params: { customerId: string; productId: string; orderId: string }) =>
     apiClient.get<OutsourcedStore>('/store/outsourced', { params }).then((r) => r.data),
 
-  // Create/upsert. scope 'order' (default) writes the order cell; 'surplus' the product
-  // pool. mode 'set' (default) sets the absolute quantity; 'add' increments it.
-  create: (body: {
-    customerId: string;
-    productId: string;
-    orderId?: string;
-    componentName: string;
-    quantity: number;
-    scope?: OutsourcedScope;
-    mode?: 'set' | 'add';
-  }) => apiClient.post<{ item: OutsourcedItem }>('/store/outsourced', body).then((r) => r.data.item),
+  // Add/update a component's assortment (per-set) for THIS order (Moulding only).
+  setBom: (body: { customerId: string; productId: string; orderId: string; componentName: string; perSet: number }) =>
+    apiClient.post<{ item: OutsourcedItem }>('/store/outsourced/bom', body).then((r) => r.data.item),
 
-  // Allocate received stock for an order: splits into order allocation + product surplus
-  // using the per-set requirement (Moulding only).
-  allocate: (body: {
+  removeBom: (id: string) =>
+    apiClient
+      .delete<{ id: string; deleted: boolean }>(`/store/outsourced/bom/${id}`)
+      .then((r) => r.data),
+
+  // Record received stock (a transaction; multiple deliveries accumulate). perSet is
+  // optional — supply it to set the component's assortment at the same time (Moulding only).
+  receive: (body: {
     customerId: string;
     productId: string;
     orderId: string;
     componentName: string;
-    received: number;
-    perSet: number;
-  }) =>
-    apiClient
-      .post<{ allocation: { componentName: string; requiredQuantity: number; orderAllocation: number; addedToOrder: number; addedToSurplus: number } }>(
-        '/store/outsourced/allocate',
-        body,
-      )
-      .then((r) => r.data.allocation),
+    quantityReceived: number;
+    perSet?: number;
+    remarks?: string;
+  }) => apiClient.post<{ receipt: OutsourcedReceipt }>('/store/outsourced/receipt', body).then((r) => r.data.receipt),
 
-  // Edit: pass { quantity } to set absolutely, or { delta } to adjust.
-  update: (id: string, body: { quantity?: number; delta?: number; scope?: OutsourcedScope }) =>
-    apiClient.patch<{ item: OutsourcedItem }>(`/store/outsourced/${id}`, body).then((r) => r.data.item),
+  updateReceipt: (id: string, body: { quantityReceived?: number; remarks?: string }) =>
+    apiClient.patch<{ receipt: OutsourcedReceipt }>(`/store/outsourced/receipt/${id}`, body).then((r) => r.data.receipt),
 
-  remove: (id: string, scope: OutsourcedScope = 'order') =>
+  deleteReceipt: (id: string) =>
     apiClient
-      .delete<{ id: string; deleted: boolean }>(`/store/outsourced/${id}`, { params: { scope } })
+      .delete<{ id: string; deleted: boolean }>(`/store/outsourced/receipt/${id}`)
       .then((r) => r.data),
 };

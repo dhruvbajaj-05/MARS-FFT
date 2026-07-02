@@ -8,37 +8,37 @@ const { ROLES } = require('../utils/roles');
 
 // Outsourced Components — a Component Store section for purchased/external parts.
 //   READ  → admin + moulding + assembly (same audience as the Component Store).
-//   WRITE → Moulding Engineers ONLY (add / edit / delete / adjust). Everyone else
+//   WRITE → Moulding Engineers ONLY (BOM edits + received transactions). Everyone else
 //           is read-only, enforced here.
+//
+// Inventory is transaction-based: each receipt is an immutable record; balances (order
+// allocation, product surplus, procurement need) are DERIVED by reconcile on every write.
 const router = express.Router();
 
 const VIEWERS = [ROLES.ADMIN, ROLES.MOULDING_ENGINEER, ROLES.ASSEMBLY_ENGINEER];
 
-// This order's outsourced components + product-level surplus + name suggestions.
+// This order's outsourced BOM/components + product-level surplus + receipts + suggestions.
 router.get('/', ...protect(...VIEWERS), outsourcedController.list);
 router.get('/suggestions', ...protect(...VIEWERS), outsourcedController.suggestions);
+router.get('/receipts', ...protect(...VIEWERS), outsourcedController.listReceipts);
 
-// Create / upsert a component (Moulding only).
+// Order BOM snapshot editing (Moulding only) — never mutates the master Assortment.
 router.post(
-  '/',
+  '/bom',
   ...protect(ROLES.MOULDING_ENGINEER),
-  requireBody(['customerId', 'productId', 'componentName', 'quantity']),
-  outsourcedController.create
+  requireBody(['customerId', 'productId', 'orderId', 'componentName', 'perSet']),
+  outsourcedController.setBomRow
 );
+router.delete('/bom/:id', ...protect(ROLES.MOULDING_ENGINEER), validateObjectId('id'), outsourcedController.removeBomRow);
 
-// Allocate received stock for an order — splits into order allocation + surplus by the
-// per-set requirement (Moulding only).
+// Received-stock transactions (Moulding only).
 router.post(
-  '/allocate',
+  '/receipt',
   ...protect(ROLES.MOULDING_ENGINEER),
-  requireBody(['customerId', 'productId', 'orderId', 'componentName', 'received', 'perSet']),
-  outsourcedController.allocate
+  requireBody(['customerId', 'productId', 'orderId', 'componentName', 'quantityReceived']),
+  outsourcedController.createReceipt
 );
-
-// Edit (set quantity) or adjust (delta) an existing component (Moulding only).
-router.patch('/:id', ...protect(ROLES.MOULDING_ENGINEER), validateObjectId('id'), outsourcedController.update);
-
-// Delete a component (Moulding only).
-router.delete('/:id', ...protect(ROLES.MOULDING_ENGINEER), validateObjectId('id'), outsourcedController.remove);
+router.patch('/receipt/:id', ...protect(ROLES.MOULDING_ENGINEER), validateObjectId('id'), outsourcedController.updateReceipt);
+router.delete('/receipt/:id', ...protect(ROLES.MOULDING_ENGINEER), validateObjectId('id'), outsourcedController.deleteReceipt);
 
 module.exports = router;

@@ -6,7 +6,7 @@ const Product = require('../models/Product');
 const Counter = require('../models/Counter');
 const { notFound, badRequest } = require('../utils/httpError');
 const { parsePagination, buildList } = require('../utils/pagination');
-const storeService = require('./store.service');
+const reconcileService = require('./reconcile.service');
 
 const ORDER_CODE_SEQ = 'orderCode';
 const ORDER_CODE_PREFIX = 'FFT-';
@@ -71,18 +71,15 @@ async function createOrder({ customerId, productId, orderQuantity, createdBy }) 
     createdBy,
   });
 
-  // Auto-consume any product-level surplus into this order's component store so the
-  // engineer only needs to produce the remaining quantity (req #11).
+  // Reconcile so any existing product surplus (moulded + outsourced) is drawn down against
+  // this new order's requirement FIRST (oldest order wins), leaving only the shortfall to be
+  // produced/purchased. Outsourced components are added per-order by the engineer (no master
+  // BOM). Best-effort — never block order creation.
   try {
-    await storeService.consumeSurplusForNewOrder({
-      customerId: order.customerId.toString(),
-      productId: order.productId.toString(),
-      orderId: order._id.toString(),
-      createdBy,
-    });
+    await reconcileService.reconcileProduct(order.customerId.toString(), order.productId.toString());
+    await reconcileService.reconcileOutsourced(order.customerId.toString(), order.productId.toString());
   } catch (e) {
-    // Surplus consumption is best-effort; never block order creation.
-    console.warn('[order] surplus auto-consumption failed:', e.message);
+    console.warn('[order] reconcile failed:', e.message);
   }
 
   return toPublicOrder(order);

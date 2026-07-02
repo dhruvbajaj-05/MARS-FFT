@@ -197,6 +197,8 @@ function MouldingRecords() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.dept('moulding').mine({}) });
       qc.invalidateQueries({ queryKey: ['moulding'] });
+      // Deleting re-derives Finished/Surplus/Pending on the backend — refresh the store view.
+      qc.invalidateQueries({ queryKey: ['store'] });
     },
     onError: (err) => {
       const msg = err instanceof ApiError ? friendlyMessage(err) : 'Delete failed';
@@ -220,8 +222,12 @@ function MouldingRecords() {
 
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}>
-      <AppText variant="h2" style={{ marginBottom: spacing(3) }}>
+      <AppText variant="h2" style={{ marginBottom: spacing(1) }}>
         Moulding Records
+      </AppText>
+      <AppText tone="muted" variant="caption" style={{ marginBottom: spacing(3) }}>
+        Team-wide — every moulding engineer's production. You can edit/delete only your own
+        entries (within 12h).
       </AppText>
 
       <Card style={{ marginBottom: spacing(4) }}>
@@ -343,6 +349,9 @@ function MouldingRecords() {
                                 <AppText variant="caption" tone="muted">
                                   {cg.records.length} {cg.records.length === 1 ? 'entry' : 'entries'}
                                 </AppText>
+                                <AppText variant="caption" style={{ color: colors.primary, marginTop: 1 }}>
+                                  {isCavOpen ? 'hide' : 'edit / delete'}
+                                </AppText>
                                 <AppText style={{ fontSize: 20, color: colors.textMuted, marginTop: 2 }}>
                                   {isCavOpen ? '▾' : '▸'}
                                 </AppText>
@@ -402,7 +411,7 @@ function MouldingRecords() {
                                     )}
                                   </View>
 
-                                  {/* Edit / Delete — only while window is open */}
+                                  {/* Edit / Delete — big, obvious action buttons while the 12h window is open */}
                                   {canModify ? (
                                     <View style={{ flexDirection: 'row', gap: spacing(2) }}>
                                       <Pressable
@@ -410,13 +419,15 @@ function MouldingRecords() {
                                         style={{
                                           flex: 1,
                                           backgroundColor: colors.status.info.bg,
-                                          borderRadius: 8,
-                                          paddingVertical: spacing(2),
+                                          borderRadius: 10,
+                                          borderWidth: 1,
+                                          borderColor: colors.status.info.fg,
+                                          paddingVertical: spacing(3),
                                           alignItems: 'center',
                                         }}
                                       >
-                                        <AppText weight="600" style={{ color: colors.status.info.fg }}>
-                                          {isEditing ? 'Cancel Edit' : 'Edit'}
+                                        <AppText weight="700" style={{ color: colors.status.info.fg, fontSize: 15 }}>
+                                          {isEditing ? '✕  Cancel Edit' : '✎  Edit'}
                                         </AppText>
                                       </Pressable>
                                       <Pressable
@@ -424,13 +435,15 @@ function MouldingRecords() {
                                         style={{
                                           flex: 1,
                                           backgroundColor: colors.status.danger.bg,
-                                          borderRadius: 8,
-                                          paddingVertical: spacing(2),
+                                          borderRadius: 10,
+                                          borderWidth: 1,
+                                          borderColor: colors.status.danger.fg,
+                                          paddingVertical: spacing(3),
                                           alignItems: 'center',
                                         }}
                                       >
-                                        <AppText weight="600" style={{ color: colors.status.danger.fg }}>
-                                          Delete
+                                        <AppText weight="700" style={{ color: colors.status.danger.fg, fontSize: 15 }}>
+                                          🗑  Delete
                                         </AppText>
                                       </Pressable>
                                     </View>
@@ -445,6 +458,8 @@ function MouldingRecords() {
                                         setEditingRecordId(null);
                                         qc.invalidateQueries({ queryKey: queryKeys.dept('moulding').mine({}) });
                                         qc.invalidateQueries({ queryKey: ['moulding'] });
+                                        // Edits re-derive Finished/Surplus/Pending — refresh the store view.
+                                        qc.invalidateQueries({ queryKey: ['store'] });
                                       }}
                                     />
                                   ) : null}
@@ -490,8 +505,11 @@ function FlatRecords({ dept }: { dept: ReturnType<typeof departmentForRole> }) {
 
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}>
-      <AppText variant="h2" style={{ marginBottom: spacing(3) }}>
-        My {dept?.recordNoun ?? 'Record'}s
+      <AppText variant="h2" style={{ marginBottom: spacing(1) }}>
+        {dept?.recordNoun ?? 'Record'}s
+      </AppText>
+      <AppText tone="muted" variant="caption" style={{ marginBottom: spacing(3) }}>
+        Team-wide — all {dept?.recordNoun?.toLowerCase() ?? 'record'}s from your department.
       </AppText>
       <QueryBoundary
         isLoading={query.isLoading}

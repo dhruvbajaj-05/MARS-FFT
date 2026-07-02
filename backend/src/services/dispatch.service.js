@@ -276,10 +276,11 @@ function buildFilter(query) {
   return filter;
 }
 
-// List the calling engineer's own dispatch records (GET /packing-dispatch/mine).
-async function listMyRecords(submittedBy, query = {}) {
+// List dispatch records for the whole department — every dispatch engineer sees all
+// records, not just their own (shared visibility, req #8). Optional filters still apply.
+async function listMyRecords(_submittedBy, query = {}) {
   const { page, limit, skip } = parsePagination(query);
-  const filter = { ...buildFilter(query), submittedBy };
+  const filter = buildFilter(query);
 
   const [items, total] = await Promise.all([
     PackingDispatchRecord.find(filter)
@@ -313,8 +314,8 @@ async function getRecordById(id, user) {
   if (!record) {
     throw notFound('Dispatch record not found', 'dispatch_record_not_found');
   }
-  if (user.role !== ROLES.ADMIN && record.submittedBy.toString() !== String(user.id)) {
-    throw forbidden('You can only access your own dispatch records');
+  if (user.role !== ROLES.ADMIN && user.role !== ROLES.PACKING_DISPATCH_ENGINEER) {
+    throw forbidden('Access denied');
   }
   return toPublicDispatchRecord(record);
 }

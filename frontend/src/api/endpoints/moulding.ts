@@ -29,6 +29,8 @@ export interface MouldingInput {
   requiredShots?: number;
   rejectionReasons?: string[];
   comments?: string;
+  // Shift computed from the engineer's phone clock (see utils/shift.ts).
+  shift?: 'A' | 'B' | 'C';
 }
 
 export interface MoldInput {
