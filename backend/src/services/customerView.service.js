@@ -9,6 +9,8 @@ const AssemblyRecord = require('../models/AssemblyRecord');
 const QCRecord = require('../models/QCRecord');
 const PackingDispatchRecord = require('../models/PackingDispatchRecord');
 
+const OrderMold = require('../models/OrderMold');
+
 const mouldingService = require('./moulding.service');
 const assemblyService = require('./assembly.service');
 const qcService = require('./qc.service');
@@ -454,6 +456,391 @@ async function getFinishedGoods(user) {
   };
 }
 
+// ===========================================================================
+// PRODUCT-FIRST customer portal (Home → Product → Order dashboard)
+// ===========================================================================
+
+const pct = (n, d) => (d > 0 ? Math.min(100, Math.round((n / d) * 100)) : 0);
+// One-decimal percentage for rejection/quality rates.
+const ratePct = (bad, total) => (total > 0 ? Math.round((bad / total) * 1000) / 10 : 0);
+
+// Customer-facing stage label for one department, from its progress.
+function stageStatus(hasRecords, progressPct) {
+  if (!hasRecords) return 'Not started';
+  if (progressPct >= 100) return 'Completed';
+  return 'In progress';
+}
+
+// Group a record collection by productId → { count, lastAt }.
+async function countByProduct(model, customerId) {
+  const rows = await model.aggregate([
+    { $match: { customerId } },
+    { $group: { _id: '$productId', count: { $sum: 1 }, lastAt: { $max: '$createdAt' } } },
+  ]);
+  return new Map(rows.map((r) => [String(r._id), r]));
+}
+
+// ---------------------------------------------------------------------------
+// GET /customer/products — the Home grid: every product with a headline summary
+// ---------------------------------------------------------------------------
+async function getProducts(user) {
+  const customerId = customerScope(user);
+
+  const [customer, products] = await Promise.all([
+    Customer.findById(customerId).select('name').lean(),
+    Product.find({ customerId, status: { $ne: 'Archived' } }).sort({ name: 1 }).lean(),
+  ]);
+  const customerName = customer ? customer.name : null;
+  if (products.length === 0) return { customer: customerName, products: [] };
+
+  const [ordersAgg, dispatchAgg, mCount, aCount, qCount, dCount] = await Promise.all([
+    Order.aggregate([
+      { $match: { customerId } },
+      {
+        $group: {
+          _id: '$productId',
+          total: { $sum: 1 },
+          active: { $sum: { $cond: [{ $eq: ['$status', 'Active'] }, 1, 0] } },
+          orderedQty: { $sum: '$orderQuantity' },
+          lastOrderAt: { $max: '$createdAt' },
+        },
+      },
+    ]),
+    PackingDispatchRecord.aggregate([
+      { $match: { customerId } },
+      { $group: { _id: '$productId', dispatched: { $sum: '$packedQuantity' }, lastAt: { $max: '$dispatchDate' } } },
+    ]),
+    countByProduct(MouldingRecord, customerId),
+    countByProduct(AssemblyRecord, customerId),
+    countByProduct(QCRecord, customerId),
+    countByProduct(PackingDispatchRecord, customerId),
+  ]);
+
+  const ordersByProduct = new Map(ordersAgg.map((r) => [String(r._id), r]));
+  const dispatchByProduct = new Map(dispatchAgg.map((r) => [String(r._id), r]));
+
+  const rows = products.map((p) => {
+    const id = String(p._id);
+    const o = ordersByProduct.get(id) || { total: 0, active: 0, orderedQty: 0, lastOrderAt: null };
+    const d = dispatchByProduct.get(id) || { dispatched: 0, lastAt: null };
+    const progressPct = pct(d.dispatched, o.orderedQty);
+
+    // Latest activity across all departments + order creation.
+    const candidates = [
+      o.lastOrderAt,
+      mCount.get(id)?.lastAt,
+      aCount.get(id)?.lastAt,
+      qCount.get(id)?.lastAt,
+      dCount.get(id)?.lastAt,
+    ].filter(Boolean);
+    const lastUpdatedAt = candidates.length
+      ? new Date(Math.max(...candidates.map((t) => new Date(t).getTime())))
+      : null;
+
+    // Current stage = furthest department reached, unless fully shipped.
+    let status = 'Pending';
+    if (o.orderedQty > 0 && d.dispatched >= o.orderedQty) status = 'Completed';
+    else if (dCount.get(id)) status = 'Dispatching';
+    else if (qCount.get(id)) status = 'In QC';
+    else if (aCount.get(id)) status = 'In Assembly';
+    else if (mCount.get(id)) status = 'In Moulding';
+    else if (o.total > 0) status = 'Order placed';
+
+    return {
+      id,
+      name: p.name,
+      partName: p.partName || null,
+      totalOrders: o.total,
+      activeOrders: o.active,
+      progressPct,
+      status,
+      lastUpdatedAt,
+    };
+  });
+
+  return { customer: customerName, products: rows };
+}
+
+// ---------------------------------------------------------------------------
+// GET /customer/products/:id/orders — every OrderID for one product
+// ---------------------------------------------------------------------------
+async function getProductOrders(user, productId) {
+  const customerId = customerScope(user);
+  const product = await Product.findOne({ _id: productId, customerId }).select('name partName').lean();
+  if (!product) throw notFound('Product not found', 'product_not_found');
+
+  const orders = await Order.aggregate([
+    { $match: { customerId, productId: new mongoose.Types.ObjectId(productId) } },
+    { $sort: { createdAt: -1 } },
+    sumLookup(MouldingRecord, 'goodParts', 'moulding'),
+    sumLookup(AssemblyRecord, 'assembledQuantity', 'assembly'),
+    sumLookup(QCRecord, 'acceptedQuantity', 'qc'),
+    sumLookup(PackingDispatchRecord, 'packedQuantity', 'dispatch'),
+    {
+      $addFields: {
+        mouldingCount: { $ifNull: [{ $arrayElemAt: ['$moulding.count', 0] }, 0] },
+        assemblyCount: { $ifNull: [{ $arrayElemAt: ['$assembly.count', 0] }, 0] },
+        qcCount: { $ifNull: [{ $arrayElemAt: ['$qc.count', 0] }, 0] },
+        dispatchCount: { $ifNull: [{ $arrayElemAt: ['$dispatch.count', 0] }, 0] },
+        dispatchedQuantity: { $ifNull: [{ $arrayElemAt: ['$dispatch.total', 0] }, 0] },
+      },
+    },
+  ]);
+
+  const data = orders.map((o) => {
+    const qty = o.orderQuantity || 0;
+    return {
+      id: String(o._id),
+      orderCode: o.orderCode || formatOrderNumber(o._id),
+      orderQuantity: qty,
+      dispatchedQuantity: o.dispatchedQuantity,
+      progressPct: pct(o.dispatchedQuantity, qty),
+      status: deriveOverallStatus(o),
+      stageReached: {
+        moulding: o.mouldingCount > 0,
+        assembly: o.assemblyCount > 0,
+        qc: o.qcCount > 0,
+        dispatch: o.dispatchCount > 0,
+      },
+      createdAt: o.createdAt,
+    };
+  });
+
+  return {
+    product: { id: String(product._id), name: product.name, partName: product.partName || null },
+    orders: data,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// GET /customer/orders/:id/dashboard — the complete manufacturing dashboard
+// ---------------------------------------------------------------------------
+async function getOrderDashboard(user, orderId) {
+  const customerId = customerScope(user);
+  const order = await loadOwnedOrder(orderId, customerId);
+  const oid = new mongoose.Types.ObjectId(orderId);
+
+  const [product, customer, orderMolds, mouldAgg, asmAgg, qcAgg, dispatchRecs, qcPhotoDocs, timelineDates] =
+    await Promise.all([
+      Product.findById(order.productId).select('name partName').lean(),
+      Customer.findById(order.customerId).select('name').lean(),
+      OrderMold.find({ orderId: oid }).lean(),
+      // Per-mould production, latest-first so $first captures the latest machine/shift.
+      MouldingRecord.aggregate([
+        { $match: { orderId: oid } },
+        { $sort: { createdAt: -1 } },
+        {
+          $group: {
+            _id: '$moldName',
+            goodParts: { $sum: '$goodParts' },
+            producedQuantity: { $sum: '$productionQuantity' },
+            shotsDone: { $sum: '$shotsDone' },
+            rejectedShots: { $sum: '$rejectedShots' },
+            cavity: { $first: '$cavity' },
+            machine: { $first: '$machineNumber' },
+            shift: { $first: '$shift' },
+            lastAt: { $first: '$createdAt' },
+          },
+        },
+      ]),
+      AssemblyRecord.aggregate([
+        { $match: { orderId: oid } },
+        {
+          $group: {
+            _id: null,
+            assembledGood: { $sum: '$assembledQuantity' },
+            rejected: { $sum: '$rejectedQuantity' },
+            operators: { $sum: '$operatorCount' },
+            runs: { $sum: 1 },
+            lastAt: { $max: '$createdAt' },
+          },
+        },
+      ]),
+      QCRecord.aggregate([
+        { $match: { orderId: oid } },
+        {
+          $group: {
+            _id: null,
+            accepted: { $sum: '$acceptedQuantity' },
+            rejected: { $sum: '$rejectedQuantity' },
+            inspected: { $sum: '$sampleSize' },
+            runs: { $sum: 1 },
+            lastAt: { $max: '$createdAt' },
+          },
+        },
+      ]),
+      PackingDispatchRecord.find({ orderId: oid, customerId }).sort({ dispatchDate: 1 }).lean(),
+      QCRecord.find({ orderId: oid, customerId }).populate('photos').lean(),
+      // Earliest activity per stage for the timeline.
+      Promise.all([
+        OrderMold.findOne({ orderId: oid }).sort({ createdAt: 1 }).select('createdAt').lean(),
+        MouldingRecord.findOne({ orderId: oid }).sort({ createdAt: 1 }).select('createdAt').lean(),
+        AssemblyRecord.findOne({ orderId: oid }).sort({ createdAt: 1 }).select('createdAt').lean(),
+        QCRecord.findOne({ orderId: oid }).sort({ createdAt: 1 }).select('createdAt').lean(),
+        PackingDispatchRecord.findOne({ orderId: oid }).sort({ dispatchDate: 1 }).select('dispatchDate').lean(),
+      ]),
+    ]);
+
+  const orderQty = order.orderQuantity || 0;
+
+  // ---- Moulding: per mould + overall roll-up -------------------------------
+  const producedByMold = new Map(mouldAgg.map((m) => [m._id, m]));
+  const moldNames = new Set([...orderMolds.map((m) => m.moldName), ...mouldAgg.map((m) => m._id)]);
+  const molds = [...moldNames].map((name) => {
+    const def = orderMolds.find((m) => m.moldName === name);
+    const prod = producedByMold.get(name) || {};
+    const cavity = (def && def.cavity) || prod.cavity || 1;
+    const required = def ? (def.requiredShots || 0) * (def.cavity || 1) : 0;
+    const good = prod.goodParts || 0;
+    const produced = prod.producedQuantity || 0;
+    const rejected = Math.max(0, produced - good);
+    return {
+      moldName: name,
+      partName: (def && def.partName) || null,
+      machine: prod.machine || null,
+      lastShift: prod.shift || null,
+      cavity,
+      required,
+      produced,
+      goodParts: good,
+      pending: Math.max(0, required - good),
+      surplus: Math.max(0, good - required),
+      rejectedParts: rejected,
+      rejectionRate: ratePct(rejected, produced),
+      progressPct: pct(good, required),
+      lastUpdatedAt: prod.lastAt || null,
+    };
+  }).sort((a, b) => a.moldName.localeCompare(b.moldName));
+
+  const mTotals = molds.reduce(
+    (a, m) => {
+      a.required += m.required; a.produced += m.produced; a.good += m.goodParts;
+      a.rejected += m.rejectedParts; a.surplus += m.surplus; return a;
+    },
+    { required: 0, produced: 0, good: 0, rejected: 0, surplus: 0 }
+  );
+  const mLastAt = molds.reduce((max, m) => {
+    const t = m.lastUpdatedAt ? new Date(m.lastUpdatedAt).getTime() : 0;
+    return t > max ? t : max;
+  }, 0);
+  const moulding = {
+    progressPct: pct(mTotals.good, mTotals.required),
+    requiredQuantity: mTotals.required,
+    producedQuantity: mTotals.produced,
+    remainingQuantity: Math.max(0, mTotals.required - mTotals.good),
+    surplus: mTotals.surplus,
+    goodParts: mTotals.good,
+    rejectedParts: mTotals.rejected,
+    rejectionRate: ratePct(mTotals.rejected, mTotals.produced),
+    lastUpdatedAt: mLastAt ? new Date(mLastAt) : null,
+    status: stageStatus(molds.some((m) => m.produced > 0), pct(mTotals.good, mTotals.required)),
+    molds,
+  };
+
+  // ---- Assembly ------------------------------------------------------------
+  const a = asmAgg[0] || { assembledGood: 0, rejected: 0, operators: 0, runs: 0, lastAt: null };
+  const assembly = {
+    progressPct: pct(a.assembledGood, orderQty),
+    requiredQuantity: orderQty,
+    goodAssemblies: a.assembledGood,
+    pending: Math.max(0, orderQty - a.assembledGood),
+    rejected: a.rejected,
+    rejectionRate: ratePct(a.rejected, a.assembledGood + a.rejected),
+    operators: a.operators || 0,
+    status: stageStatus(a.runs > 0, pct(a.assembledGood, orderQty)),
+    lastUpdatedAt: a.lastAt || null,
+  };
+
+  // ---- Quality control -----------------------------------------------------
+  const q = qcAgg[0] || { accepted: 0, rejected: 0, inspected: 0, runs: 0, lastAt: null };
+  const defectMap = new Map();
+  const qcPhotos = [];
+  for (const rec of qcPhotoDocs) {
+    for (const def of rec.defects || []) {
+      defectMap.set(def.defectType, (defectMap.get(def.defectType) || 0) + def.quantity);
+    }
+    for (const ph of rec.photos || []) {
+      const m = toMedia(ph);
+      if (m) qcPhotos.push(m);
+    }
+  }
+  const qc = {
+    progressPct: pct(q.inspected, a.assembledGood || orderQty),
+    passed: q.accepted,
+    failed: q.rejected,
+    inspected: q.inspected,
+    pendingInspection: Math.max(0, (a.assembledGood || 0) - q.inspected),
+    passRate: ratePct(q.accepted, q.accepted + q.rejected),
+    defects: [...defectMap.entries()].map(([type, quantity]) => ({ type, quantity })).sort((x, y) => y.quantity - x.quantity),
+    photos: qcPhotos,
+    status: stageStatus(q.runs > 0, pct(q.inspected, a.assembledGood || orderQty)),
+    lastUpdatedAt: q.lastAt || null,
+  };
+
+  // ---- Dispatch ------------------------------------------------------------
+  const shipments = dispatchRecs.map((r) => ({
+    dispatchDate: r.dispatchDate,
+    quantity: r.packedQuantity,
+    cartonCount: r.cartonCount,
+    transporter: r.transporterName || null,
+    vehicleNumber: r.vehicleNumber || null,
+    lrNumber: r.lrNumber || null,
+    invoiceNumber: r.invoiceNumber || null,
+  }));
+  const dispatched = shipments.reduce((s, x) => s + x.quantity, 0);
+  const cartons = shipments.reduce((s, x) => s + x.cartonCount, 0);
+  const dispatch = {
+    progressPct: pct(dispatched, orderQty),
+    dispatchedQuantity: dispatched,
+    remainingQuantity: Math.max(0, orderQty - dispatched),
+    cartonCount: cartons,
+    shipmentCount: shipments.length,
+    lastDispatchDate: shipments.length ? shipments[shipments.length - 1].dispatchDate : null,
+    status:
+      orderQty > 0 && dispatched >= orderQty ? 'Completed' : stageStatus(shipments.length > 0, pct(dispatched, orderQty)),
+    shipments,
+  };
+
+  // ---- Timeline (derived earliest dates) -----------------------------------
+  const [moldSetupAt, prodAt, asmStartAt, qcStartAt, packAt] = timelineDates;
+  const step = (label, at, done) => ({ label, at: at || null, done: !!done });
+  const timeline = [
+    step('Order Created', order.createdAt, true),
+    step('Mould Setup Complete', moldSetupAt?.createdAt, !!moldSetupAt),
+    step('Production Started', prodAt?.createdAt, !!prodAt),
+    step('Assembly Started', asmStartAt?.createdAt, !!asmStartAt),
+    step('QC Started', qcStartAt?.createdAt, !!qcStartAt),
+    step('Packing Started', packAt?.dispatchDate, !!packAt),
+    step('Dispatched', dispatch.lastDispatchDate, dispatch.status === 'Completed'),
+  ];
+
+  return {
+    order: {
+      id: String(order._id),
+      orderCode: order.orderCode || formatOrderNumber(order._id),
+      product: product ? product.name : null,
+      partName: product ? product.partName || null : null,
+      customer: customer ? customer.name : null,
+      orderQuantity: orderQty,
+      overallProgressPct: dispatch.progressPct,
+      status: dispatch.status === 'Completed' ? 'Completed' : deriveOverallStatus({
+        orderQuantity: orderQty,
+        dispatchedQuantity: dispatched,
+        dispatchCount: shipments.length,
+        qcCount: q.runs,
+        assemblyCount: a.runs,
+        mouldingCount: molds.filter((m) => m.produced > 0).length,
+      }),
+      createdAt: order.createdAt,
+    },
+    moulding,
+    assembly,
+    qc,
+    dispatch,
+    timeline,
+  };
+}
+
 module.exports = {
   getDashboard,
   listOrders,
@@ -461,4 +848,7 @@ module.exports = {
   getOrderProgress,
   getComponentAvailability,
   getFinishedGoods,
+  getProducts,
+  getProductOrders,
+  getOrderDashboard,
 };

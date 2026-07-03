@@ -325,6 +325,126 @@ export interface CustomerOrderProgress {
   };
 }
 
+// ---- Customer portal: product-first (Home → Product → Order dashboard) ----
+export interface CustomerProduct {
+  id: string;
+  name: string;
+  partName: string | null;
+  totalOrders: number;
+  activeOrders: number;
+  progressPct: number;
+  status: string;
+  lastUpdatedAt: string | null;
+}
+export interface CustomerProductsResponse {
+  customer: string | null;
+  products: CustomerProduct[];
+}
+export interface CustomerProductOrderRow {
+  id: string;
+  orderCode: string;
+  orderQuantity: number;
+  dispatchedQuantity: number;
+  progressPct: number;
+  status: string;
+  stageReached: { moulding: boolean; assembly: boolean; qc: boolean; dispatch: boolean };
+  createdAt: string;
+}
+export interface CustomerProductOrders {
+  product: { id: string; name: string; partName: string | null };
+  orders: CustomerProductOrderRow[];
+}
+
+export interface CustomerMoldRow {
+  moldName: string;
+  partName: string | null;
+  machine: string | null;
+  lastShift: string | null;
+  cavity: number;
+  required: number;
+  produced: number;
+  goodParts: number;
+  pending: number;
+  surplus: number;
+  rejectedParts: number;
+  rejectionRate: number;
+  progressPct: number;
+  lastUpdatedAt: string | null;
+}
+export interface CustomerTimelineStep {
+  label: string;
+  at: string | null;
+  done: boolean;
+}
+export interface CustomerOrderDashboard {
+  order: {
+    id: string;
+    orderCode: string;
+    product: string | null;
+    partName: string | null;
+    customer: string | null;
+    orderQuantity: number;
+    overallProgressPct: number;
+    status: string;
+    createdAt: string;
+  };
+  moulding: {
+    progressPct: number;
+    requiredQuantity: number;
+    producedQuantity: number;
+    remainingQuantity: number;
+    surplus: number;
+    goodParts: number;
+    rejectedParts: number;
+    rejectionRate: number;
+    lastUpdatedAt: string | null;
+    status: string;
+    molds: CustomerMoldRow[];
+  };
+  assembly: {
+    progressPct: number;
+    requiredQuantity: number;
+    goodAssemblies: number;
+    pending: number;
+    rejected: number;
+    rejectionRate: number;
+    operators: number;
+    status: string;
+    lastUpdatedAt: string | null;
+  };
+  qc: {
+    progressPct: number;
+    passed: number;
+    failed: number;
+    inspected: number;
+    pendingInspection: number;
+    passRate: number;
+    defects: { type: string; quantity: number }[];
+    photos: Media[];
+    status: string;
+    lastUpdatedAt: string | null;
+  };
+  dispatch: {
+    progressPct: number;
+    dispatchedQuantity: number;
+    remainingQuantity: number;
+    cartonCount: number;
+    shipmentCount: number;
+    lastDispatchDate: string | null;
+    status: string;
+    shipments: {
+      dispatchDate: string;
+      quantity: number;
+      cartonCount: number;
+      transporter: string | null;
+      vehicleNumber: string | null;
+      lrNumber: string | null;
+      invoiceNumber: string | null;
+    }[];
+  };
+  timeline: CustomerTimelineStep[];
+}
+
 // ---- Admin dashboard (Phase 9) ----
 export interface AdminDashboard {
   totalCustomers: number;

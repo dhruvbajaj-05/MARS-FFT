@@ -21,8 +21,25 @@ router.get('/components', ...protect(ROLES.CUSTOMER), customerViewController.com
 // This customer's Finished Goods availability (Product → quantity).
 router.get('/finished-goods', ...protect(ROLES.CUSTOMER), customerViewController.finishedGoods);
 
+// Product-first portal: Home grid of products, then a product's OrderIDs.
+router.get('/products', ...protect(ROLES.CUSTOMER), customerViewController.products);
+router.get(
+  '/products/:id/orders',
+  ...protect(ROLES.CUSTOMER),
+  validateObjectId('id'),
+  customerViewController.productOrders
+);
+
 // This customer's orders (paginated) with an end-to-end status summary.
 router.get('/orders', ...protect(ROLES.CUSTOMER), customerViewController.listOrders);
+
+// One order: the complete manufacturing dashboard (moulding/assembly/qc/dispatch/timeline).
+router.get(
+  '/orders/:id/dashboard',
+  ...protect(ROLES.CUSTOMER),
+  validateObjectId('id'),
+  customerViewController.orderDashboard
+);
 
 // One order: details + QC summary + dispatch summary + photos.
 router.get(

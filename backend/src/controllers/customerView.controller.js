@@ -46,6 +46,36 @@ async function getOrderProgress(req, res, next) {
   }
 }
 
+// GET /api/v1/customer/products  (customer) — Home grid: products + headline summary.
+async function products(req, res, next) {
+  try {
+    const result = await customerViewService.getProducts(req.user);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/customer/products/:id/orders  (customer) — a product's OrderIDs.
+async function productOrders(req, res, next) {
+  try {
+    const result = await customerViewService.getProductOrders(req.user, req.params.id);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/customer/orders/:id/dashboard  (customer) — full manufacturing dashboard.
+async function orderDashboard(req, res, next) {
+  try {
+    const result = await customerViewService.getOrderDashboard(req.user, req.params.id);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /api/v1/customer/components  (customer) — Component Store availability.
 async function components(req, res, next) {
   try {
@@ -66,4 +96,14 @@ async function finishedGoods(req, res, next) {
   }
 }
 
-module.exports = { dashboard, listOrders, getOrder, getOrderProgress, components, finishedGoods };
+module.exports = {
+  dashboard,
+  listOrders,
+  getOrder,
+  getOrderProgress,
+  components,
+  finishedGoods,
+  products,
+  productOrders,
+  orderDashboard,
+};

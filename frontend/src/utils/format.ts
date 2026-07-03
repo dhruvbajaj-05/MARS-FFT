@@ -29,3 +29,20 @@ export function clampPct(n: number): number {
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(100, Math.round(n)));
 }
+
+// Friendly relative "last updated" label (e.g. "Updated 5m ago"). Falls back to a
+// short date once past a month.
+export function relativeTime(value: string | null | undefined, prefix = 'Updated'): string {
+  if (!value) return 'No activity yet';
+  const d = new Date(value);
+  const ms = Date.now() - d.getTime();
+  if (!Number.isFinite(ms) || ms < 0) return `${prefix} just now`;
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return `${prefix} just now`;
+  if (mins < 60) return `${prefix} ${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${prefix} ${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${prefix} ${days}d ago`;
+  return `${prefix} ${d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`;
+}

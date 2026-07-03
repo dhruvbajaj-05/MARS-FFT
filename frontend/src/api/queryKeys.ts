@@ -39,6 +39,9 @@ export const queryKeys = {
     orders: (params?: unknown) => ['customer', 'orders', params ?? {}] as const,
     order: (id: string) => ['customer', 'order', id] as const,
     progress: (id: string) => ['customer', 'order', id, 'progress'] as const,
+    products: ['customer', 'products'] as const,
+    productOrders: (productId: string) => ['customer', 'product', productId, 'orders'] as const,
+    orderDashboard: (id: string) => ['customer', 'order', id, 'dashboard'] as const,
   },
 
   admin: {

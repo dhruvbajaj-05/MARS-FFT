@@ -1,9 +1,12 @@
 import { apiClient } from '@/api/client';
 import type {
   CustomerDashboard,
+  CustomerOrderDashboard,
   CustomerOrderDetails,
   CustomerOrderProgress,
   CustomerOrderRow,
+  CustomerProductOrders,
+  CustomerProductsResponse,
   Paginated,
 } from '@/api/types';
 
@@ -15,4 +18,12 @@ export const customerApi = {
     apiClient.get<CustomerOrderDetails>(`/customer/orders/${id}`).then((r) => r.data),
   orderProgress: (id: string) =>
     apiClient.get<CustomerOrderProgress>(`/customer/orders/${id}/progress`).then((r) => r.data),
+
+  // Product-first portal (Home → Product → Order dashboard).
+  products: () =>
+    apiClient.get<CustomerProductsResponse>('/customer/products').then((r) => r.data),
+  productOrders: (productId: string) =>
+    apiClient.get<CustomerProductOrders>(`/customer/products/${productId}/orders`).then((r) => r.data),
+  orderDashboard: (id: string) =>
+    apiClient.get<CustomerOrderDashboard>(`/customer/orders/${id}/dashboard`).then((r) => r.data),
 };
