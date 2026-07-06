@@ -39,4 +39,9 @@ export const dispatchApi = {
       .then((r) => r.data),
   get: (id: string) =>
     apiClient.get<{ record: DispatchRecord }>(`/packing-dispatch/${id}`).then((r) => r.data.record),
+  // Edit / delete own record within the 12-hour window (adjusts Finished Goods).
+  update: (id: string, input: Partial<Omit<DispatchInput, 'customerId' | 'productId' | 'orderId'>>) =>
+    apiClient.patch<{ record: DispatchRecord }>(`/packing-dispatch/${id}`, input).then((r) => r.data.record),
+  remove: (id: string) =>
+    apiClient.delete<{ deleted: boolean }>(`/packing-dispatch/${id}`).then((r) => r.data),
 };

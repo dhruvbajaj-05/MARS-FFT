@@ -60,14 +60,27 @@ async function completeAssembly(req, res, next) {
   }
 }
 
-// POST /api/v1/orders/:id/archive  (admin) — retire an order from active lists.
-async function archive(req, res, next) {
+// PATCH /api/v1/orders/:id  (admin) — edit order quantity (and product/customer when unused)
+async function update(req, res, next) {
   try {
-    const order = await orderService.archiveOrder(req.params.id);
+    const order = await orderService.updateOrder(req.params.id, {
+      orderQuantity: req.body.orderQuantity,
+      productId: req.body.productId,
+      customerId: req.body.customerId,
+    });
     res.status(200).json({ order });
   } catch (err) {
     next(err);
   }
 }
 
-module.exports = { create, list, getById, completeProduction, completeAssembly, archive };
+// DELETE /api/v1/orders/:id  (admin) — hard delete. Blocked (409) when records exist.
+async function remove(req, res, next) {
+  try {
+    res.status(200).json(await orderService.deleteOrder(req.params.id));
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { create, list, getById, completeProduction, completeAssembly, update, remove };

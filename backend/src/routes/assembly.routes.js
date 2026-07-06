@@ -73,4 +73,18 @@ router.get(
   assemblyController.getById
 );
 
+// Edit / delete one — assembly engineer (own, within the 12h window; enforced in the service).
+router.patch(
+  '/:id',
+  ...protect(ROLES.ASSEMBLY_ENGINEER),
+  validateObjectId('id'),
+  assemblyController.update
+);
+router.delete(
+  '/:id',
+  ...protect(ROLES.ASSEMBLY_ENGINEER),
+  validateObjectId('id'),
+  assemblyController.remove
+);
+
 module.exports = router;

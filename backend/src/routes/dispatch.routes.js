@@ -51,4 +51,18 @@ router.get(
   dispatchController.getById
 );
 
+// Edit / delete one — dispatch engineer (own, within the 12h window; enforced in the service).
+router.patch(
+  '/:id',
+  ...protect(ROLES.PACKING_DISPATCH_ENGINEER),
+  validateObjectId('id'),
+  dispatchController.update
+);
+router.delete(
+  '/:id',
+  ...protect(ROLES.PACKING_DISPATCH_ENGINEER),
+  validateObjectId('id'),
+  dispatchController.remove
+);
+
 module.exports = router;

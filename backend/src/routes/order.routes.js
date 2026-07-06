@@ -27,9 +27,8 @@ router.get(
   orderController.getById
 );
 
-// Lifecycle transitions — admin only. Active → Completed (per phase) → Archived.
-// Nothing is deleted; these only flip the order's workspace flags so its data moves to
-// history while staying queryable by OrderID.
+// Workspace transitions — admin only. Active → Completed (per phase). These flip the
+// order's workspace flags so its data moves to history while staying queryable by OrderID.
 router.post(
   '/:id/complete-production',
   ...protect(ROLES.ADMIN),
@@ -42,11 +41,9 @@ router.post(
   validateObjectId('id'),
   orderController.completeAssembly
 );
-router.post(
-  '/:id/archive',
-  ...protect(ROLES.ADMIN),
-  validateObjectId('id'),
-  orderController.archive
-);
+
+// Edit / hard-delete — admin only. Delete is blocked while production records exist.
+router.patch('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), orderController.update);
+router.delete('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), orderController.remove);
 
 module.exports = router;

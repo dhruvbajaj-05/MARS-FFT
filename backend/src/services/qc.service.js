@@ -8,8 +8,41 @@ const Product = require('../models/Product');
 const assemblyService = require('./assembly.service');
 const storeService = require('./store.service');
 const { ROLES } = require('../utils/roles');
-const { badRequest, notFound, forbidden } = require('../utils/httpError');
+const { badRequest, notFound, forbidden, conflict } = require('../utils/httpError');
 const { parsePagination, buildList } = require('../utils/pagination');
+
+// Engineer may edit/delete within 12 hours of record creation (mirrors moulding).
+const EDIT_WINDOW_MS = 12 * 60 * 60 * 1000;
+
+// Move Finished Goods by the change in approved units (QC feeds the Finished Goods store
+// with a raw ledger entry, so edits/deletes must reverse it). A guarded decrement that
+// fails means those units were already dispatched — surface a clear 409.
+async function adjustFinishedGoods(record, delta, createdBy, remarks) {
+  if (!delta) return;
+  try {
+    if (delta > 0) {
+      await storeService.applyStockIn({
+        storeType: storeService.STORE.FINISHED_GOODS,
+        customerId: record.customerId, productId: record.productId,
+        quantity: delta, sourceModule: 'qc', referenceId: record._id, remarks, createdBy,
+      });
+    } else {
+      await storeService.applyStockOut({
+        storeType: storeService.STORE.FINISHED_GOODS,
+        customerId: record.customerId, productId: record.productId,
+        quantity: -delta, sourceModule: 'qc', referenceId: record._id, remarks, createdBy,
+      });
+    }
+  } catch (err) {
+    if (err && err.code === 'insufficient_stock') {
+      throw conflict(
+        'Some of these approved units have already been dispatched, so this QC record can no longer be changed or removed.',
+        'qc_already_dispatched'
+      );
+    }
+    throw err;
+  }
+}
 
 // ---- Order-level QC status (computed at read time; never stored).
 // QC inspects Assembly good output, so progress is measured against assembled units:
@@ -116,6 +149,7 @@ function toPublicQCRecord(record) {
     submittedBy: record.submittedBy.toString(),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    canEdit: (Date.now() - new Date(record.createdAt).getTime()) < EDIT_WINDOW_MS,
   };
 }
 
@@ -290,6 +324,77 @@ async function createQCRecord({ payload, files, submittedBy }) {
   return { record: toPublicQCRecord(record), orderStatus, finishedGoods };
 }
 
+// Edit a QC record within the 12-hour window (own record only). Adjusts Finished Goods
+// by the change in approved (accepted) units.
+async function updateQCRecord(id, payload, user) {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw badRequest('Invalid id', 'invalid_id');
+  const record = await QCRecord.findById(id);
+  if (!record) throw notFound('QC record not found', 'qc_record_not_found');
+  if (record.submittedBy.toString() !== String(user.id)) {
+    throw forbidden('You can only edit your own QC records');
+  }
+  if (Date.now() - new Date(record.createdAt).getTime() > EDIT_WINDOW_MS) {
+    throw forbidden('Edit window has expired (12 hours after creation)', 'edit_window_expired');
+  }
+
+  const merged = {
+    sampleSize: payload.sampleSize !== undefined ? payload.sampleSize : record.sampleSize,
+    acceptedQuantity: payload.acceptedQuantity !== undefined ? payload.acceptedQuantity : record.acceptedQuantity,
+    rejectedQuantity: payload.rejectedQuantity !== undefined ? payload.rejectedQuantity : record.rejectedQuantity,
+    defectCount: payload.defectCount !== undefined ? payload.defectCount : record.defectCount,
+    inspectionDate: payload.inspectionDate !== undefined ? payload.inspectionDate : record.inspectionDate,
+  };
+  const fields = normalizeFields(merged);
+  const defects = payload.defects !== undefined ? parseDefects(payload.defects) : record.defects;
+  const defectUnits = defects.reduce((sum, d) => sum + d.quantity, 0);
+  if (defectUnits > fields.rejectedQuantity) {
+    throw badRequest('Sum of defects[].quantity cannot exceed rejectedQuantity', 'inconsistent_defects');
+  }
+
+  const oldAccepted = record.acceptedQuantity;
+
+  record.sampleSize = fields.sampleSize;
+  record.acceptedQuantity = fields.acceptedQuantity;
+  record.rejectedQuantity = fields.rejectedQuantity;
+  record.defectCount = fields.defectCount;
+  record.inspectionDate = fields.inspectionDate;
+  record.defects = defects;
+  if (payload.inspectionType !== undefined) record.inspectionType = String(payload.inspectionType).trim();
+  if (payload.correctiveAction !== undefined) {
+    record.correctiveAction = payload.correctiveAction ? String(payload.correctiveAction).trim() : undefined;
+  }
+  if (payload.remarks !== undefined) {
+    record.remarks = payload.remarks ? String(payload.remarks).trim() : undefined;
+  }
+
+  // Reverse the finished-goods delta BEFORE persisting field changes, so a "already
+  // dispatched" block leaves the record untouched.
+  await adjustFinishedGoods(record, fields.acceptedQuantity - oldAccepted, user.id, `QC edit (${record.inspectionType})`);
+  await record.save();
+
+  return toPublicQCRecord(record);
+}
+
+// Delete a QC record within the 12-hour window (own record only). Reverses the approved
+// units that were pushed into Finished Goods.
+async function deleteQCRecord(id, user) {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw badRequest('Invalid id', 'invalid_id');
+  const record = await QCRecord.findById(id);
+  if (!record) throw notFound('QC record not found', 'qc_record_not_found');
+  if (record.submittedBy.toString() !== String(user.id)) {
+    throw forbidden('You can only delete your own QC records');
+  }
+  if (Date.now() - new Date(record.createdAt).getTime() > EDIT_WINDOW_MS) {
+    throw forbidden('Delete window has expired (12 hours after creation)', 'delete_window_expired');
+  }
+
+  if (record.acceptedQuantity > 0) {
+    await adjustFinishedGoods(record, -record.acceptedQuantity, user.id, 'QC record deleted');
+  }
+  await QCRecord.deleteOne({ _id: record._id });
+  return { deleted: true };
+}
+
 // Shared filter builder for list queries.
 function buildFilter(query) {
   const filter = {};
@@ -346,6 +451,8 @@ async function getRecordById(id, user) {
 
 module.exports = {
   createQCRecord,
+  updateQCRecord,
+  deleteQCRecord,
   listMyRecords,
   listAllRecords,
   getRecordById,

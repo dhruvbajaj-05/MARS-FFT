@@ -47,4 +47,18 @@ router.get(
   qcController.getById
 );
 
+// Edit / delete one — QC engineer (own, within the 12h window; enforced in the service).
+router.patch(
+  '/:id',
+  ...protect(ROLES.QC_ENGINEER),
+  validateObjectId('id'),
+  qcController.update
+);
+router.delete(
+  '/:id',
+  ...protect(ROLES.QC_ENGINEER),
+  validateObjectId('id'),
+  qcController.remove
+);
+
 module.exports = router;

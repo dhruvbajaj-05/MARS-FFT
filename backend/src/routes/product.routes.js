@@ -22,7 +22,10 @@ router.get('/', ...protect(ROLES.ADMIN, ...ENGINEER_ROLES), productController.li
 // Get one — admin only.
 router.get('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), productController.getById);
 
-// Delete/archive — admin only. Products with production history are archived (preserved).
+// Edit — admin only.
+router.patch('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), productController.update);
+
+// Delete — admin only. Blocked when the product has production history; else removed.
 router.delete('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), productController.remove);
 
 module.exports = router;

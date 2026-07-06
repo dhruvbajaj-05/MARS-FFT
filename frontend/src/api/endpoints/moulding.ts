@@ -79,6 +79,10 @@ export const mouldingApi = {
   delete: (id: string) =>
     apiClient.delete<{ deleted: boolean }>(`/moulding/${id}`).then((r) => r.data),
 
+  // Alias for the shared DepartmentApi shape (same as delete).
+  remove: (id: string) =>
+    apiClient.delete<{ deleted: boolean }>(`/moulding/${id}`).then((r) => r.data),
+
   // Submit recovered good pieces from rejected shots → product surplus.
   recover: (input: RecoverInput) =>
     apiClient

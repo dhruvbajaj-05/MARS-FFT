@@ -95,8 +95,83 @@ async function getUserById(id) {
   return toPublicUser(user);
 }
 
-// Set a user's active flag. Soft-deactivation replaces deletion in V1 (no delete).
-// `actingUserId` guards against an admin locking themselves out.
+// Edit a user (admin). Any subset of {name, email, role, customerId, password, isActive}
+// may be supplied. Re-validates email uniqueness, the customer-link rule, and password
+// strength (only when a new password is provided).
+async function updateUser(id, { name, email, role, customerId, password, isActive }) {
+  const user = await User.findById(id);
+  if (!user) {
+    throw notFound('User not found', 'user_not_found');
+  }
+
+  if (name !== undefined) user.name = String(name).trim();
+
+  if (email !== undefined) {
+    const normalizedEmail = String(email).toLowerCase().trim();
+    if (!EMAIL_REGEX.test(normalizedEmail)) {
+      throw badRequest('A valid email is required', 'invalid_email');
+    }
+    if (normalizedEmail !== user.email) {
+      const exists = await User.exists({ email: normalizedEmail, _id: { $ne: user._id } });
+      if (exists) throw conflict('A user with this email already exists', 'email_taken');
+      user.email = normalizedEmail;
+    }
+  }
+
+  // Role / customer-link changes must keep the customer rule consistent.
+  const nextRole = role !== undefined ? role : user.role;
+  if (role !== undefined) {
+    if (!ALL_ROLES.includes(role)) {
+      throw badRequest(`role must be one of: ${ALL_ROLES.join(', ')}`, 'invalid_role');
+    }
+    user.role = role;
+  }
+  if (nextRole === ROLES.CUSTOMER) {
+    const nextCustomerId = customerId !== undefined ? customerId : user.customerId;
+    if (!nextCustomerId) {
+      throw badRequest('customerId is required when role is "customer"', 'customer_id_required');
+    }
+    const customerExists = await Customer.exists({ _id: nextCustomerId });
+    if (!customerExists) {
+      throw badRequest('customerId does not reference an existing customer', 'invalid_customer');
+    }
+    user.customerId = nextCustomerId;
+  } else {
+    if (customerId) {
+      throw badRequest('customerId must be omitted for non-customer roles', 'customer_id_forbidden');
+    }
+    user.customerId = null;
+  }
+
+  if (password !== undefined && password !== null && password !== '') {
+    if (typeof password !== 'string' || password.length < MIN_PASSWORD_LENGTH) {
+      throw badRequest(`password must be at least ${MIN_PASSWORD_LENGTH} characters`, 'weak_password');
+    }
+    user.passwordHash = await hashPassword(password);
+  }
+
+  if (isActive !== undefined) {
+    user.isActive = isActive === true || isActive === 'true';
+  }
+
+  await user.save();
+  return toPublicUser(user);
+}
+
+// Hard-delete a user (admin). An admin cannot delete their own account.
+async function deleteUser(id, actingUserId) {
+  if (String(id) === String(actingUserId)) {
+    throw badRequest('You cannot delete your own account', 'self_deletion');
+  }
+  const user = await User.findById(id);
+  if (!user) {
+    throw notFound('User not found', 'user_not_found');
+  }
+  await User.deleteOne({ _id: id });
+  return { id: String(id), deleted: true };
+}
+
+// Set a user's active flag. `actingUserId` guards against an admin locking themselves out.
 async function setUserActive(id, isActive, actingUserId) {
   if (!isActive && String(id) === String(actingUserId)) {
     throw badRequest('You cannot deactivate your own account', 'self_deactivation');
@@ -121,5 +196,7 @@ module.exports = {
   createUser,
   listUsers,
   getUserById,
+  updateUser,
+  deleteUser,
   setUserActive,
 };

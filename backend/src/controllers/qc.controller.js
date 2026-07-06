@@ -58,4 +58,23 @@ async function getById(req, res, next) {
   }
 }
 
-module.exports = { create, listMine, listAll, status, getById };
+// PATCH /api/v1/qc/:id  (qc_engineer: own, within 12h)
+async function update(req, res, next) {
+  try {
+    const record = await qcService.updateQCRecord(req.params.id, req.body, req.user);
+    res.status(200).json({ record });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// DELETE /api/v1/qc/:id  (qc_engineer: own, within 12h)
+async function remove(req, res, next) {
+  try {
+    res.status(200).json(await qcService.deleteQCRecord(req.params.id, req.user));
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { create, listMine, listAll, status, getById, update, remove };

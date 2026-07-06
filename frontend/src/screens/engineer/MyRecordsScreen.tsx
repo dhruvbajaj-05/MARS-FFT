@@ -481,10 +481,11 @@ function MouldingRecords() {
   );
 }
 
-// ---- Other departments: flat list ----
+// ---- Other departments: flat list with edit/delete (within the 12h window) ----
 type AnyRecord = {
   id: string;
   createdAt: string;
+  canEdit?: boolean;
   orderId?: string;
   assembledSets?: number;
   extraSets?: number;
@@ -492,10 +493,103 @@ type AnyRecord = {
   assembledQuantity?: number;
   acceptedQuantity?: number;
   packedQuantity?: number;
+  [key: string]: unknown;
 };
+
+type FieldSpec = { name: string; label: string; numeric?: boolean; multiline?: boolean };
+
+// Editable fields per department (mirrors what each backend edit accepts).
+const EDIT_FIELDS: Record<string, FieldSpec[]> = {
+  assembly: [
+    { name: 'assembledSets', label: 'Assembled Sets (total)', numeric: true },
+    { name: 'assemblyLine', label: 'Assembly Line' },
+    { name: 'operatorCount', label: 'Operators', numeric: true },
+    { name: 'rejectedQuantity', label: 'Rejected', numeric: true },
+    { name: 'remarks', label: 'Remarks', multiline: true },
+  ],
+  qc: [
+    { name: 'inspectionType', label: 'Inspection Type' },
+    { name: 'sampleSize', label: 'Sample Size', numeric: true },
+    { name: 'acceptedQuantity', label: 'Accepted', numeric: true },
+    { name: 'rejectedQuantity', label: 'Rejected', numeric: true },
+    { name: 'defectCount', label: 'Defect Count', numeric: true },
+    { name: 'remarks', label: 'Remarks', multiline: true },
+  ],
+  dispatch: [
+    { name: 'packedQuantity', label: 'Packed Quantity', numeric: true },
+    { name: 'cartonCount', label: 'Cartons', numeric: true },
+    { name: 'transporterName', label: 'Transporter' },
+    { name: 'vehicleNumber', label: 'Vehicle No.' },
+    { name: 'lrNumber', label: 'LR No.' },
+    { name: 'invoiceNumber', label: 'Invoice No.' },
+    { name: 'dispatchRemarks', label: 'Remarks', multiline: true },
+  ],
+};
+
+// The assembly "assembled sets" total is stored split as normal + extra on the record.
+function initialFieldValue(deptKey: string, spec: FieldSpec, r: AnyRecord): string {
+  if (deptKey === 'assembly' && spec.name === 'assembledSets') {
+    return String((r.assembledSets ?? 0) + (r.extraSets ?? 0));
+  }
+  const v = r[spec.name];
+  return v === undefined || v === null ? '' : String(v);
+}
+
+function FlatRecordEditPanel({
+  dept,
+  record,
+  onClose,
+  onSaved,
+}: {
+  dept: NonNullable<ReturnType<typeof departmentForRole>>;
+  record: AnyRecord;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { spacing } = useTheme();
+  const specs = EDIT_FIELDS[dept.key] ?? [];
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    Object.fromEntries(specs.map((s) => [s.name, initialFieldValue(dept.key, s, record)])),
+  );
+
+  const save = useMutation({
+    mutationFn: () => {
+      const input: Record<string, unknown> = {};
+      for (const s of specs) input[s.name] = s.numeric ? Number(values[s.name]) : values[s.name];
+      return dept.api.update(record.id, input);
+    },
+    onSuccess: () => {
+      onSaved();
+      onClose();
+    },
+  });
+  const error = save.error instanceof ApiError ? friendlyMessage(save.error) : null;
+
+  return (
+    <View style={{ marginTop: spacing(2) }}>
+      {error ? <Banner tone="danger" message={error} /> : null}
+      {specs.map((s) => (
+        <FormField
+          key={s.name}
+          label={s.label}
+          value={values[s.name] ?? ''}
+          onChangeText={(v) => setValues((prev) => ({ ...prev, [s.name]: v }))}
+          keyboardType={s.numeric ? 'number-pad' : 'default'}
+          multiline={s.multiline}
+        />
+      ))}
+      <View style={{ flexDirection: 'row', gap: spacing(2) }}>
+        <Button label="Save" loading={save.isPending} onPress={() => save.mutate()} style={{ flex: 1 }} />
+        <Button label="Cancel" variant="secondary" disabled={save.isPending} onPress={onClose} style={{ flex: 1 }} />
+      </View>
+    </View>
+  );
+}
 
 function FlatRecords({ dept }: { dept: ReturnType<typeof departmentForRole> }) {
   const { spacing } = useTheme();
+  const qc = useQueryClient();
+  const [editingId, setEditingId] = useState<string | null>(null);
   const params = { page: 1, limit: 50 };
   const query = useQuery({
     queryKey: queryKeys.dept(dept?.key ?? 'none').mine(params),
@@ -503,13 +597,35 @@ function FlatRecords({ dept }: { dept: ReturnType<typeof departmentForRole> }) {
     enabled: !!dept,
   });
 
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: queryKeys.dept(dept?.key ?? 'none').mine({}) });
+    if (dept?.key) qc.invalidateQueries({ queryKey: [dept.key] });
+    // Edits/deletes re-derive Finished Goods / component stores — refresh the store view.
+    qc.invalidateQueries({ queryKey: ['store'] });
+  };
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => dept!.api.remove(id),
+    onSuccess: invalidate,
+    onError: (err) => {
+      Alert.alert('Error', err instanceof ApiError ? friendlyMessage(err) : 'Delete failed');
+    },
+  });
+
+  const confirmDelete = (r: AnyRecord) =>
+    Alert.alert('Delete Record', `Delete this ${dept?.recordNoun?.toLowerCase() ?? 'record'}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => deleteMutation.mutate(r.id) },
+    ]);
+
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}>
       <AppText variant="h2" style={{ marginBottom: spacing(1) }}>
         {dept?.recordNoun ?? 'Record'}s
       </AppText>
       <AppText tone="muted" variant="caption" style={{ marginBottom: spacing(3) }}>
-        Team-wide — all {dept?.recordNoun?.toLowerCase() ?? 'record'}s from your department.
+        Team-wide — all {dept?.recordNoun?.toLowerCase() ?? 'record'}s from your department. You can
+        edit/delete only your own entries (within 12h).
       </AppText>
       <QueryBoundary
         isLoading={query.isLoading}
@@ -529,6 +645,27 @@ function FlatRecords({ dept }: { dept: ReturnType<typeof departmentForRole> }) {
                   <AppText variant="caption" tone="muted">
                     {new Date(r.createdAt).toLocaleString()}
                   </AppText>
+
+                  {r.canEdit && editingId !== r.id ? (
+                    <View style={{ flexDirection: 'row', gap: spacing(2), marginTop: spacing(2) }}>
+                      <Button label="Edit" variant="secondary" onPress={() => setEditingId(r.id)} />
+                      <Button
+                        label="Delete"
+                        variant="danger"
+                        loading={deleteMutation.isPending}
+                        onPress={() => confirmDelete(r)}
+                      />
+                    </View>
+                  ) : null}
+
+                  {dept && editingId === r.id ? (
+                    <FlatRecordEditPanel
+                      dept={dept}
+                      record={r}
+                      onClose={() => setEditingId(null)}
+                      onSaved={invalidate}
+                    />
+                  ) : null}
                 </Card>
               ))}
             </View>

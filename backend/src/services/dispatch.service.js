@@ -8,8 +8,41 @@ const Product = require('../models/Product');
 const qcService = require('./qc.service');
 const storeService = require('./store.service');
 const { ROLES } = require('../utils/roles');
-const { badRequest, notFound, forbidden } = require('../utils/httpError');
+const { badRequest, notFound, forbidden, conflict } = require('../utils/httpError');
 const { parsePagination, buildList } = require('../utils/pagination');
+
+// Engineer may edit/delete within 12 hours of record creation (mirrors moulding).
+const EDIT_WINDOW_MS = 12 * 60 * 60 * 1000;
+
+// Apply a change in dispatched (packed) quantity to the Finished Goods store. Dispatch is
+// a stock-OUT, so a positive delta removes MORE stock (guarded — may exceed on-hand) and a
+// negative delta / deletion returns stock.
+async function applyDispatchDelta(record, delta, createdBy, remarks) {
+  if (!delta) return;
+  try {
+    if (delta > 0) {
+      await storeService.applyStockOut({
+        storeType: storeService.STORE.FINISHED_GOODS,
+        customerId: record.customerId, productId: record.productId,
+        quantity: delta, sourceModule: 'dispatch', referenceId: record._id, remarks, createdBy,
+      });
+    } else {
+      await storeService.applyStockIn({
+        storeType: storeService.STORE.FINISHED_GOODS,
+        customerId: record.customerId, productId: record.productId,
+        quantity: -delta, sourceModule: 'dispatch', referenceId: record._id, remarks, createdBy,
+      });
+    }
+  } catch (err) {
+    if (err && err.code === 'insufficient_stock') {
+      throw conflict(
+        `Dispatch quantity exceeds available finished goods for this product.`,
+        'exceeds_finished_goods'
+      );
+    }
+    throw err;
+  }
+}
 
 // ---- Order-level dispatch status (computed at read time; never stored).
 // Dispatch ships QC-approved (accepted) units, so progress is measured against the
@@ -109,6 +142,7 @@ function toPublicDispatchRecord(record) {
     submittedBy: record.submittedBy.toString(),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    canEdit: (Date.now() - new Date(record.createdAt).getTime()) < EDIT_WINDOW_MS,
   };
 }
 
@@ -262,6 +296,66 @@ async function createDispatchRecord({ payload, files, submittedBy }) {
   return { record: toPublicDispatchRecord(record), orderStatus, finishedGoods };
 }
 
+// Edit a dispatch record within the 12-hour window (own record only). Adjusts Finished
+// Goods by the change in dispatched quantity.
+async function updateDispatchRecord(id, payload, user) {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw badRequest('Invalid id', 'invalid_id');
+  const record = await PackingDispatchRecord.findById(id);
+  if (!record) throw notFound('Dispatch record not found', 'dispatch_record_not_found');
+  if (record.submittedBy.toString() !== String(user.id)) {
+    throw forbidden('You can only edit your own dispatch records');
+  }
+  if (Date.now() - new Date(record.createdAt).getTime() > EDIT_WINDOW_MS) {
+    throw forbidden('Edit window has expired (12 hours after creation)', 'edit_window_expired');
+  }
+
+  const merged = {
+    packedQuantity: payload.packedQuantity !== undefined ? payload.packedQuantity : record.packedQuantity,
+    cartonCount: payload.cartonCount !== undefined ? payload.cartonCount : record.cartonCount,
+    dispatchDate: payload.dispatchDate !== undefined ? payload.dispatchDate : record.dispatchDate,
+  };
+  const fields = normalizeFields(merged);
+
+  const oldPacked = record.packedQuantity;
+
+  record.packedQuantity = fields.packedQuantity;
+  record.cartonCount = fields.cartonCount;
+  record.dispatchDate = fields.dispatchDate;
+  for (const key of ['transporterName', 'vehicleNumber', 'lrNumber', 'invoiceNumber']) {
+    if (payload[key] !== undefined) record[key] = String(payload[key]).trim();
+  }
+  if (payload.dispatchRemarks !== undefined) {
+    record.dispatchRemarks = payload.dispatchRemarks ? String(payload.dispatchRemarks).trim() : undefined;
+  }
+
+  // Reverse the finished-goods delta BEFORE persisting, so an over-dispatch block leaves
+  // the record untouched.
+  await applyDispatchDelta(record, fields.packedQuantity - oldPacked, user.id, `Dispatch edit (${record.invoiceNumber})`);
+  await record.save();
+
+  return toPublicDispatchRecord(record);
+}
+
+// Delete a dispatch record within the 12-hour window (own record only). Returns the
+// dispatched units to the Finished Goods store.
+async function deleteDispatchRecord(id, user) {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw badRequest('Invalid id', 'invalid_id');
+  const record = await PackingDispatchRecord.findById(id);
+  if (!record) throw notFound('Dispatch record not found', 'dispatch_record_not_found');
+  if (record.submittedBy.toString() !== String(user.id)) {
+    throw forbidden('You can only delete your own dispatch records');
+  }
+  if (Date.now() - new Date(record.createdAt).getTime() > EDIT_WINDOW_MS) {
+    throw forbidden('Delete window has expired (12 hours after creation)', 'delete_window_expired');
+  }
+
+  if (record.packedQuantity > 0) {
+    await applyDispatchDelta(record, -record.packedQuantity, user.id, 'Dispatch record deleted');
+  }
+  await PackingDispatchRecord.deleteOne({ _id: record._id });
+  return { deleted: true };
+}
+
 // Shared filter builder for list queries.
 function buildFilter(query) {
   const filter = {};
@@ -322,6 +416,8 @@ async function getRecordById(id, user) {
 
 module.exports = {
   createDispatchRecord,
+  updateDispatchRecord,
+  deleteDispatchRecord,
   listMyRecords,
   listAllRecords,
   getRecordById,

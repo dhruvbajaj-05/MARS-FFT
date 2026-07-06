@@ -24,8 +24,42 @@ const STATUS_FILTER_OPTIONS: SelectOption[] = [
   { label: 'All', value: '' },
   { label: 'Active', value: 'Active' },
   { label: 'Completed', value: 'Completed' },
-  { label: 'Archived', value: 'Archived' },
 ];
+
+// Inline edit panel for a single order (order quantity).
+function OrderEditPanel({ order, onClose }: { order: Order; onClose: () => void }) {
+  const { spacing } = useTheme();
+  const qc = useQueryClient();
+  const [quantity, setQuantity] = useState(String(order.orderQuantity));
+
+  const save = useMutation({
+    mutationFn: () => masterApi.updateOrder(order.id, { orderQuantity: Number(quantity) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['orders'] });
+      qc.invalidateQueries({ queryKey: ['admin'] });
+      onClose();
+    },
+  });
+  const error = save.error instanceof ApiError ? friendlyMessage(save.error) : null;
+  const qtyNum = Number(quantity);
+  const canSave = Number.isFinite(qtyNum) && qtyNum >= 0;
+
+  return (
+    <View style={{ marginTop: spacing(2) }}>
+      {error ? <Banner tone="danger" message={error} /> : null}
+      <FormField
+        label="Order quantity (Sets)"
+        value={quantity}
+        onChangeText={setQuantity}
+        keyboardType="number-pad"
+      />
+      <View style={{ flexDirection: 'row', gap: spacing(2) }}>
+        <Button label="Save" loading={save.isPending} disabled={!canSave} onPress={() => save.mutate()} style={{ flex: 1 }} />
+        <Button label="Cancel" variant="secondary" disabled={save.isPending} onPress={onClose} style={{ flex: 1 }} />
+      </View>
+    </View>
+  );
+}
 
 // Admin → Create + manage Orders. Every order gets a unique OrderID (FFT-#####); admin
 // can filter by Customer / Product / OrderID and drive the lifecycle (Complete
@@ -47,6 +81,10 @@ export function OrdersScreen() {
   const [fProductId, setFProductId] = useState<string | null>(null);
   const [fOrderCode, setFOrderCode] = useState('');
   const [fStatus, setFStatus] = useState<string | null>('');
+
+  // ---- Per-row edit / delete ----
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const customers = useQuery({
     queryKey: queryKeys.customers({ page: 1, limit: 100 }),
@@ -98,13 +136,18 @@ export function OrdersScreen() {
   });
 
   const lifecycle = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: 'production' | 'assembly' | 'archive' }) =>
-      action === 'production'
-        ? masterApi.completeProduction(id)
-        : action === 'assembly'
-          ? masterApi.completeAssembly(id)
-          : masterApi.archiveOrder(id),
+    mutationFn: ({ id, action }: { id: string; action: 'production' | 'assembly' }) =>
+      action === 'production' ? masterApi.completeProduction(id) : masterApi.completeAssembly(id),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['orders'] });
+      qc.invalidateQueries({ queryKey: ['admin'] });
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: (id: string) => masterApi.deleteOrder(id),
+    onSuccess: () => {
+      setConfirmDeleteId(null);
       qc.invalidateQueries({ queryKey: ['orders'] });
       qc.invalidateQueries({ queryKey: ['admin'] });
     },
@@ -118,6 +161,7 @@ export function OrdersScreen() {
 
   const error = create.error instanceof ApiError ? friendlyMessage(create.error) : null;
   const lifecycleError = lifecycle.error instanceof ApiError ? friendlyMessage(lifecycle.error) : null;
+  const deleteError = remove.error instanceof ApiError ? friendlyMessage(remove.error) : null;
 
   const customerOptions: SelectOption[] = (customers.data?.data ?? []).map((c) => ({ label: c.name, value: c.id }));
   const filterCustomerOptions: SelectOption[] = [
@@ -226,6 +270,7 @@ export function OrdersScreen() {
         All orders
       </AppText>
       {lifecycleError ? <Banner tone="danger" message={lifecycleError} /> : null}
+      {deleteError ? <Banner tone="danger" message={deleteError} /> : null}
       <QueryBoundary
         isLoading={orders.isLoading}
         isError={orders.isError}
@@ -271,45 +316,80 @@ export function OrdersScreen() {
                       </AppText>
                     </Pressable>
 
-                    {o.status !== 'Archived' ? (
-                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(3), marginTop: spacing(2) }}>
-                        {o.productionStatus !== 'Completed' ? (
-                          <Pressable
-                            onPress={() =>
-                              confirm(
-                                'Complete Production',
-                                `Complete production for ${o.orderCode ?? 'this order'}? The moulding workspace will clear and its data moves to history. Records are preserved.`,
-                                () => lifecycle.mutate({ id: o.id, action: 'production' }),
-                              )
-                            }
-                          >
-                            <AppText weight="600" style={{ color: colors.primary }}>Complete Production</AppText>
-                          </Pressable>
-                        ) : null}
-                        {o.assemblyStatus !== 'Completed' ? (
-                          <Pressable
-                            onPress={() =>
-                              confirm(
-                                'Complete Assembly',
-                                `Complete assembly for ${o.orderCode ?? 'this order'}? The assembly workspace will clear and its data moves to history. Records are preserved.`,
-                                () => lifecycle.mutate({ id: o.id, action: 'assembly' }),
-                              )
-                            }
-                          >
-                            <AppText weight="600" style={{ color: colors.primary }}>Complete Assembly</AppText>
-                          </Pressable>
-                        ) : null}
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(3), marginTop: spacing(2) }}>
+                      {o.productionStatus !== 'Completed' ? (
                         <Pressable
                           onPress={() =>
                             confirm(
-                              'Archive Order',
-                              `Archive ${o.orderCode ?? 'this order'}? It will be retired from active lists but remains queryable.`,
-                              () => lifecycle.mutate({ id: o.id, action: 'archive' }),
+                              'Complete Production',
+                              `Complete production for ${o.orderCode ?? 'this order'}? The moulding workspace will clear and its data moves to history. Records are preserved.`,
+                              () => lifecycle.mutate({ id: o.id, action: 'production' }),
                             )
                           }
                         >
-                          <AppText weight="600" style={{ color: colors.textMuted }}>Archive</AppText>
+                          <AppText weight="600" style={{ color: colors.primary }}>Complete Production</AppText>
                         </Pressable>
+                      ) : null}
+                      {o.assemblyStatus !== 'Completed' ? (
+                        <Pressable
+                          onPress={() =>
+                            confirm(
+                              'Complete Assembly',
+                              `Complete assembly for ${o.orderCode ?? 'this order'}? The assembly workspace will clear and its data moves to history. Records are preserved.`,
+                              () => lifecycle.mutate({ id: o.id, action: 'assembly' }),
+                            )
+                          }
+                        >
+                          <AppText weight="600" style={{ color: colors.primary }}>Complete Assembly</AppText>
+                        </Pressable>
+                      ) : null}
+                    </View>
+
+                    {editingId !== o.id && confirmDeleteId !== o.id ? (
+                      <View style={{ flexDirection: 'row', gap: spacing(2), marginTop: spacing(2) }}>
+                        <Button
+                          label="Edit"
+                          variant="secondary"
+                          onPress={() => {
+                            setConfirmDeleteId(null);
+                            setEditingId(o.id);
+                          }}
+                        />
+                        <Button
+                          label="Delete"
+                          variant="danger"
+                          onPress={() => {
+                            setEditingId(null);
+                            setConfirmDeleteId(o.id);
+                          }}
+                        />
+                      </View>
+                    ) : null}
+
+                    {editingId === o.id ? <OrderEditPanel order={o} onClose={() => setEditingId(null)} /> : null}
+
+                    {confirmDeleteId === o.id ? (
+                      <View style={{ marginTop: spacing(2) }}>
+                        <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
+                          Delete {o.orderCode ?? 'this order'}? This cannot be undone. Orders with production
+                          records are protected and cannot be deleted.
+                        </AppText>
+                        <View style={{ flexDirection: 'row', gap: spacing(2) }}>
+                          <Button
+                            label="Confirm delete"
+                            variant="danger"
+                            loading={remove.isPending}
+                            onPress={() => remove.mutate(o.id)}
+                            style={{ flex: 1 }}
+                          />
+                          <Button
+                            label="Cancel"
+                            variant="secondary"
+                            disabled={remove.isPending}
+                            onPress={() => setConfirmDeleteId(null)}
+                            style={{ flex: 1 }}
+                          />
+                        </View>
                       </View>
                     ) : null}
                   </Card>

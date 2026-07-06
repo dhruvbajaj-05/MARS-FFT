@@ -53,6 +53,24 @@ async function getCustomerById(id) {
   return toPublicCustomer(customer);
 }
 
+// Edit a customer (admin only).
+async function updateCustomer(id, { name }) {
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw badRequest('Invalid customer id', 'invalid_id');
+  }
+  const customer = await Customer.findById(id);
+  if (!customer) {
+    throw notFound('Customer not found', 'customer_not_found');
+  }
+  if (name !== undefined) {
+    const trimmed = String(name).trim();
+    if (!trimmed) throw badRequest('Customer name is required', 'missing_name');
+    customer.name = trimmed;
+  }
+  await customer.save();
+  return toPublicCustomer(customer);
+}
+
 // Safe-delete a customer (admin only). A customer that owns any manufacturing data —
 // products, orders (and therefore moulding/assembly/QC/dispatch records + store stock
 // hanging off those orders) or portal users — is NEVER physically removed, so production
@@ -94,6 +112,7 @@ module.exports = {
   createCustomer,
   listCustomers,
   getCustomerById,
+  updateCustomer,
   deleteCustomer,
   toPublicCustomer,
 };

@@ -9,6 +9,33 @@ import { AppText, Banner, Button, Card, FormField, QueryBoundary, Screen } from 
 import { ApiError, friendlyMessage } from '@/services/apiError';
 import { useTheme } from '@/theme/ThemeProvider';
 
+// Inline edit panel for a single customer (name).
+function CustomerEditPanel({ customer, onClose }: { customer: Customer; onClose: () => void }) {
+  const { spacing } = useTheme();
+  const qc = useQueryClient();
+  const [name, setName] = useState(customer.name);
+
+  const save = useMutation({
+    mutationFn: () => masterApi.updateCustomer(customer.id, name.trim()),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['customers'] });
+      onClose();
+    },
+  });
+  const error = save.error instanceof ApiError ? friendlyMessage(save.error) : null;
+
+  return (
+    <View style={{ marginTop: spacing(2) }}>
+      {error ? <Banner tone="danger" message={error} /> : null}
+      <FormField label="Customer / Company name" value={name} onChangeText={setName} />
+      <View style={{ flexDirection: 'row', gap: spacing(2) }}>
+        <Button label="Save" loading={save.isPending} disabled={!name.trim()} onPress={() => save.mutate()} style={{ flex: 1 }} />
+        <Button label="Cancel" variant="secondary" disabled={save.isPending} onPress={onClose} style={{ flex: 1 }} />
+      </View>
+    </View>
+  );
+}
+
 // Admin → Create Customers. Create form + live list (proves rows land in MongoDB).
 export function CustomersScreen() {
   const { spacing } = useTheme();
@@ -17,6 +44,7 @@ export function CustomersScreen() {
   const [ok, setOk] = useState<string | null>(null);
   // Two-step delete confirmation (inline, web-safe — Alert.alert does not render on web).
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const params = { page: 1, limit: 100 };
@@ -98,18 +126,35 @@ export function CustomersScreen() {
                         {c.id}
                       </AppText>
                     </View>
-                    {confirmId !== c.id ? (
-                      <Button
-                        label="Delete"
-                        variant="danger"
-                        onPress={() => {
-                          setOk(null);
-                          setDeleteError(null);
-                          setConfirmId(c.id);
-                        }}
-                      />
+                    {confirmId !== c.id && editingId !== c.id ? (
+                      <View style={{ flexDirection: 'row', gap: spacing(2) }}>
+                        <Button
+                          label="Edit"
+                          variant="secondary"
+                          onPress={() => {
+                            setOk(null);
+                            setDeleteError(null);
+                            setConfirmId(null);
+                            setEditingId(c.id);
+                          }}
+                        />
+                        <Button
+                          label="Delete"
+                          variant="danger"
+                          onPress={() => {
+                            setOk(null);
+                            setDeleteError(null);
+                            setEditingId(null);
+                            setConfirmId(c.id);
+                          }}
+                        />
+                      </View>
                     ) : null}
                   </View>
+
+                  {editingId === c.id ? (
+                    <CustomerEditPanel customer={c} onClose={() => setEditingId(null)} />
+                  ) : null}
 
                   {confirmId === c.id ? (
                     <View style={{ marginTop: spacing(2) }}>

@@ -16,6 +16,8 @@ export interface DepartmentApi {
   listMine: (params?: any) => Promise<any>;
   status: (orderId: string) => Promise<any>;
   get: (id: string) => Promise<any>;
+  update: (id: string, input: any) => Promise<any>;
+  remove: (id: string) => Promise<any>;
 }
 export interface DepartmentDescriptor {
   key: DeptKey;

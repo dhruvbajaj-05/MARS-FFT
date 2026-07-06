@@ -54,7 +54,6 @@ export interface Machine {
   id: string;
   name: string;
   category: MachineCategory;
-  status: 'Active' | 'Archived';
   createdAt?: string;
 }
 // Order lifecycle (revised workflow). Overall status drives working-screen vs history;
@@ -163,6 +162,7 @@ export interface AssemblyRecord {
   submittedBy: string;
   createdAt: string;
   updatedAt: string;
+  canEdit?: boolean;
 }
 export interface QCDefect {
   defectType: string;
@@ -187,6 +187,7 @@ export interface QCRecord {
   submittedBy: string;
   createdAt: string;
   updatedAt: string;
+  canEdit?: boolean;
 }
 export interface DispatchRecord {
   id: string;
@@ -206,6 +207,7 @@ export interface DispatchRecord {
   submittedBy: string;
   createdAt: string;
   updatedAt: string;
+  canEdit?: boolean;
 }
 
 // ---- Computed order status (per department /status endpoints) ----

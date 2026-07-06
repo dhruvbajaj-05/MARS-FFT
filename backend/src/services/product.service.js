@@ -4,7 +4,7 @@ const Product = require('../models/Product');
 const Customer = require('../models/Customer');
 const Order = require('../models/Order');
 const MouldingRecord = require('../models/MouldingRecord');
-const { notFound, badRequest } = require('../utils/httpError');
+const { notFound, badRequest, conflict } = require('../utils/httpError');
 const { parsePagination, buildList } = require('../utils/pagination');
 
 // Shape a product document for client responses.
@@ -45,10 +45,6 @@ async function listProducts(query = {}) {
   if (query.customerId) {
     filter.customerId = query.customerId;
   }
-  // Active-only by default (dropdowns); pass includeArchived=true to see archived too.
-  if (String(query.includeArchived) !== 'true') {
-    filter.status = { $ne: 'Archived' };
-  }
   if (query.search && String(query.search).trim() !== '') {
     filter.name = { $regex: String(query.search).trim(), $options: 'i' };
   }
@@ -70,9 +66,26 @@ async function getProductById(id) {
   return toPublicProduct(product);
 }
 
-// Delete a product (admin). If it has ANY production history (orders or moulding records)
-// it is ARCHIVED instead of removed, so historical OrderID tracking is never broken.
-// Hard delete is only allowed for a product that was never used.
+// Edit a product (admin).
+async function updateProduct(id, { name, partName }) {
+  const product = await Product.findById(id);
+  if (!product) {
+    throw notFound('Product not found', 'product_not_found');
+  }
+  if (name !== undefined) {
+    const trimmed = String(name).trim();
+    if (!trimmed) throw badRequest('Product name is required', 'missing_name');
+    product.name = trimmed;
+  }
+  if (partName !== undefined) {
+    product.partName = partName ? String(partName).trim() : undefined;
+  }
+  await product.save();
+  return toPublicProduct(product);
+}
+
+// Delete a product (admin). Blocked (409) when it has ANY production history (orders or
+// moulding records) so historical OrderID tracking is never broken; otherwise hard-deleted.
 async function deleteProduct(id) {
   const product = await Product.findById(id);
   if (!product) {
@@ -83,25 +96,27 @@ async function deleteProduct(id) {
     Order.countDocuments({ productId: id }),
     MouldingRecord.countDocuments({ productId: id }),
   ]);
-  const hasHistory = orderCount > 0 || mouldingCount > 0;
 
-  if (hasHistory) {
-    if (product.status !== 'Archived') {
-      product.status = 'Archived';
-      product.archivedAt = new Date();
-      await product.save();
-    }
-    return { id: String(id), archived: true, deleted: false };
+  if (orderCount > 0 || mouldingCount > 0) {
+    const parts = [];
+    if (orderCount > 0) parts.push(`${orderCount} order(s)`);
+    if (mouldingCount > 0) parts.push(`${mouldingCount} moulding record(s)`);
+    throw conflict(
+      `Cannot delete "${product.name}" — it still has ${parts.join(', ')}. ` +
+        'Manufacturing history must be preserved. Delete those first.',
+      'product_in_use'
+    );
   }
 
   await Product.deleteOne({ _id: id });
-  return { id: String(id), archived: false, deleted: true };
+  return { id: String(id), deleted: true };
 }
 
 module.exports = {
   createProduct,
   listProducts,
   getProductById,
+  updateProduct,
   deleteProduct,
   toPublicProduct,
 };

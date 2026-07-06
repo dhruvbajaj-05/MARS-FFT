@@ -22,6 +22,9 @@ router.get('/', ...protect(ROLES.ADMIN, ...ENGINEER_ROLES), customerController.l
 // Get one — admin only.
 router.get('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), customerController.getById);
 
+// Edit — admin only.
+router.patch('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), customerController.update);
+
 // Delete — admin only. Safe delete: blocked when the customer owns manufacturing data.
 router.delete('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), customerController.remove);
 

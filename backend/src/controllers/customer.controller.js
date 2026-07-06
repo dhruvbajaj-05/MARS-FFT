@@ -35,6 +35,16 @@ async function getById(req, res, next) {
   }
 }
 
+// PATCH /api/v1/customers/:id  (admin) — edit name
+async function update(req, res, next) {
+  try {
+    const customer = await customerService.updateCustomer(req.params.id, { name: req.body.name });
+    res.status(200).json({ customer });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // DELETE /api/v1/customers/:id  (admin) — safe delete. Blocked (409) when the customer
 // owns products/orders/portal users so manufacturing history is preserved.
 async function remove(req, res, next) {
@@ -46,4 +56,4 @@ async function remove(req, res, next) {
   }
 }
 
-module.exports = { create, list, getById, remove };
+module.exports = { create, list, getById, update, remove };

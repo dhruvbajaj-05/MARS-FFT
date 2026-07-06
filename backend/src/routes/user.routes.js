@@ -24,6 +24,10 @@ router.get('/', ...protect(ROLES.ADMIN), userController.list);
 // Get one.
 router.get('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), userController.getById);
 
+// Edit / hard-delete a user.
+router.patch('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), userController.update);
+router.delete('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), userController.remove);
+
 // Soft-deactivate / reactivate (V1 has no hard delete — accounts are deactivated).
 router.post(
   '/:id/deactivate',

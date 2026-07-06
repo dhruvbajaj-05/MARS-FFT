@@ -19,6 +19,35 @@ import {
 import { ApiError, friendlyMessage } from '@/services/apiError';
 import { useTheme } from '@/theme/ThemeProvider';
 
+// Inline edit panel for a single product (name + part name).
+function ProductEditPanel({ product, onClose }: { product: Product; onClose: () => void }) {
+  const { spacing } = useTheme();
+  const qc = useQueryClient();
+  const [name, setName] = useState(product.name);
+  const [partName, setPartName] = useState(product.partName ?? '');
+
+  const save = useMutation({
+    mutationFn: () => masterApi.updateProduct(product.id, { name: name.trim(), partName: partName.trim() }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['products'] });
+      onClose();
+    },
+  });
+  const error = save.error instanceof ApiError ? friendlyMessage(save.error) : null;
+
+  return (
+    <View style={{ marginTop: spacing(2) }}>
+      {error ? <Banner tone="danger" message={error} /> : null}
+      <FormField label="Product name" value={name} onChangeText={setName} />
+      <FormField label="Part name (optional)" value={partName} onChangeText={setPartName} />
+      <View style={{ flexDirection: 'row', gap: spacing(2) }}>
+        <Button label="Save" loading={save.isPending} disabled={!name.trim()} onPress={() => save.mutate()} style={{ flex: 1 }} />
+        <Button label="Cancel" variant="secondary" disabled={save.isPending} onPress={onClose} style={{ flex: 1 }} />
+      </View>
+    </View>
+  );
+}
+
 // Admin → Create Products (each product belongs to a customer).
 export function ProductsScreen() {
   const { spacing } = useTheme();
@@ -27,6 +56,7 @@ export function ProductsScreen() {
   const [name, setName] = useState('');
   const [ok, setOk] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const customers = useQuery({
@@ -52,8 +82,8 @@ export function ProductsScreen() {
 
   const remove = useMutation({
     mutationFn: (id: string) => masterApi.deleteProduct(id),
-    onSuccess: (res) => {
-      setOk(res.archived ? 'Product had history — archived (preserved).' : 'Product deleted.');
+    onSuccess: () => {
+      setOk('Product deleted.');
       setConfirmId(null);
       qc.invalidateQueries({ queryKey: ['products'] });
     },
@@ -122,31 +152,44 @@ export function ProductsScreen() {
                   <Card key={p.id}>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                       <View style={{ flex: 1, paddingRight: spacing(2) }}>
-                        <AppText weight="600">
-                          {p.name}
-                          {p.status === 'Archived' ? '  (Archived)' : ''}
-                        </AppText>
+                        <AppText weight="600">{p.name}</AppText>
                         <AppText variant="caption" tone="muted">
                           {p.id}
                         </AppText>
                       </View>
-                      {confirmId !== p.id ? (
-                        <Button
-                          label="Delete"
-                          variant="danger"
-                          onPress={() => {
-                            setOk(null);
-                            setDeleteError(null);
-                            setConfirmId(p.id);
-                          }}
-                        />
+                      {confirmId !== p.id && editingId !== p.id ? (
+                        <View style={{ flexDirection: 'row', gap: spacing(2) }}>
+                          <Button
+                            label="Edit"
+                            variant="secondary"
+                            onPress={() => {
+                              setOk(null);
+                              setDeleteError(null);
+                              setConfirmId(null);
+                              setEditingId(p.id);
+                            }}
+                          />
+                          <Button
+                            label="Delete"
+                            variant="danger"
+                            onPress={() => {
+                              setOk(null);
+                              setDeleteError(null);
+                              setEditingId(null);
+                              setConfirmId(p.id);
+                            }}
+                          />
+                        </View>
                       ) : null}
                     </View>
+                    {editingId === p.id ? (
+                      <ProductEditPanel product={p} onClose={() => setEditingId(null)} />
+                    ) : null}
                     {confirmId === p.id ? (
                       <View style={{ marginTop: spacing(2) }}>
                         <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
-                          Delete &quot;{p.name}&quot;? Products with production history are archived
-                          (kept for history), not removed — so OrderID tracking is never broken.
+                          Delete &quot;{p.name}&quot;? This cannot be undone. Products with production
+                          history are protected and cannot be deleted.
                         </AppText>
                         <View style={{ flexDirection: 'row', gap: spacing(2) }}>
                           <Button

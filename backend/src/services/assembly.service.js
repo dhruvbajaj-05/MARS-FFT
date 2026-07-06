@@ -19,6 +19,9 @@ const { parsePagination, buildList } = require('../utils/pagination');
 
 const SHIFTS = ['A', 'B', 'C'];
 
+// Engineer may edit/delete within 12 hours of record creation (mirrors moulding).
+const EDIT_WINDOW_MS = 12 * 60 * 60 * 1000;
+
 // ---- Order-level assembly status (computed at read time; never stored).
 // Assembly consumes Moulding output, so completion is measured against the good
 // parts produced by Moulding for the order (the "input" available to assemble):
@@ -124,6 +127,7 @@ function toPublicAssemblyRecord(record) {
     submittedBy: record.submittedBy.toString(),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    canEdit: (Date.now() - new Date(record.createdAt).getTime()) < EDIT_WINDOW_MS,
   };
 }
 
@@ -364,6 +368,146 @@ async function getComponentAvailability(customerId, productId, orderId) {
   });
 }
 
+// Re-open a completed order's assembly workspace when its cumulative normal sets fall below
+// the order quantity (after an edit/delete). Mirrors the moulding self-heal.
+async function healOrderAssemblyStatus(order) {
+  if (!order || order.orderQuantity <= 0) return;
+  const [agg] = await AssemblyRecord.aggregate([
+    { $match: { orderId: order._id } },
+    { $group: { _id: null, totalSets: { $sum: '$assembledSets' } } },
+  ]);
+  const totalNormal = agg ? agg.totalSets : 0;
+  if (order.assemblyStatus === 'Completed' && totalNormal < order.orderQuantity) {
+    order.assemblyStatus = 'Active';
+    order.assemblyCompletedAt = null;
+    if (order.status === 'Completed') {
+      order.status = 'Active';
+      order.completedAt = null;
+    }
+    await order.save();
+  }
+}
+
+// Rebuild the consumption snapshot for `totalSets`, splitting into order (normal) vs product
+// surplus (extra) against the sets already assembled by OTHER records for the order.
+async function buildConsumption({ customerId, productId, orderId, totalSets, excludeRecordId, order }) {
+  const match = { orderId: new mongoose.Types.ObjectId(String(orderId)) };
+  if (excludeRecordId) match._id = { $ne: new mongoose.Types.ObjectId(String(excludeRecordId)) };
+  const [doneAgg] = await AssemblyRecord.aggregate([
+    { $match: match },
+    { $group: { _id: null, totalSets: { $sum: '$assembledSets' } } },
+  ]);
+  const alreadyDone = doneAgg ? doneAgg.totalSets : 0;
+  const remainingRequired = Math.max(0, (order.orderQuantity || 0) - alreadyDone);
+  const normalSets = Math.min(totalSets, remainingRequired);
+  const extraSets = totalSets - normalSets;
+
+  const assortmentParts = await assortmentService.getAssortmentParts(customerId, productId);
+  const moulded = assortmentParts.filter((p) => (p.kind || 'moulded') === 'moulded');
+  const outsourced = (await outsourcedService.getOrderBom({ customerId, productId, orderId }))
+    .filter((p) => p.perSet > 0);
+  if (totalSets > 0 && moulded.length === 0 && outsourced.length === 0) {
+    throw badRequest(
+      'No assortment/BOM defined for this product. Define parts-per-set before assembling sets.',
+      'missing_assortment'
+    );
+  }
+
+  const consumption = [
+    ...moulded.map((p) => ({ partName: p.partName, perSet: p.perSet, quantity: p.perSet * totalSets, kind: 'moulded' })),
+    ...outsourced.map((p) => ({ partName: p.partName, perSet: p.perSet, quantity: p.perSet * totalSets, kind: 'outsourced' })),
+  ].filter((c) => c.quantity > 0);
+
+  return { consumption, normalSets, extraSets };
+}
+
+// Edit an assembly record within the 12-hour window (own record only). Simple metadata is
+// always editable; changing the total assembled sets rebuilds the consumption snapshot.
+// Balances are then re-derived by reconcile from the full record history (no manual deltas).
+async function updateAssemblyRecord(id, payload, user) {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw badRequest('Invalid id', 'invalid_id');
+  const record = await AssemblyRecord.findById(id);
+  if (!record) throw notFound('Assembly record not found', 'assembly_record_not_found');
+  if (record.submittedBy.toString() !== String(user.id)) {
+    throw forbidden('You can only edit your own assembly records');
+  }
+  if (Date.now() - new Date(record.createdAt).getTime() > EDIT_WINDOW_MS) {
+    throw forbidden('Edit window has expired (12 hours after creation)', 'edit_window_expired');
+  }
+
+  if (payload.assemblyLine !== undefined) record.assemblyLine = String(payload.assemblyLine).trim();
+  if (payload.operatorCount !== undefined) {
+    const n = Number(payload.operatorCount);
+    if (!Number.isFinite(n) || n < 0) throw badRequest('operatorCount must be a number >= 0', 'invalid_quantity');
+    record.operatorCount = n;
+  }
+  if (payload.rejectedQuantity !== undefined) {
+    const n = Number(payload.rejectedQuantity);
+    if (!Number.isFinite(n) || n < 0) throw badRequest('rejectedQuantity must be a number >= 0', 'invalid_quantity');
+    record.rejectedQuantity = n;
+  }
+  if (payload.rejectionReason !== undefined) {
+    record.rejectionReason = payload.rejectionReason ? String(payload.rejectionReason).trim() : undefined;
+  }
+  if (payload.remarks !== undefined) {
+    record.remarks = payload.remarks ? String(payload.remarks).trim() : undefined;
+  }
+
+  const order = await Order.findById(record.orderId);
+
+  // When the total sets change, recompute the split + consumption snapshot.
+  if (payload.assembledSets !== undefined && order) {
+    const totalSets = Number(payload.assembledSets);
+    if (!Number.isFinite(totalSets) || totalSets < 0) {
+      throw badRequest('assembledSets must be a number >= 0', 'invalid_quantity');
+    }
+    const { consumption, normalSets, extraSets } = await buildConsumption({
+      customerId: record.customerId.toString(),
+      productId: record.productId.toString(),
+      orderId: record.orderId.toString(),
+      totalSets,
+      excludeRecordId: record._id,
+      order,
+    });
+    record.assembledSets = normalSets;
+    record.extraSets = extraSets;
+    record.fromSurplus = extraSets > 0;
+    record.assembledQuantity = normalSets;
+    record.consumption = consumption;
+  }
+
+  await record.save();
+
+  if (order) await healOrderAssemblyStatus(order);
+  await reconcileService.reconcileProduct(record.customerId.toString(), record.productId.toString());
+  await reconcileService.reconcileOutsourced(record.customerId.toString(), record.productId.toString());
+
+  return toPublicAssemblyRecord(record);
+}
+
+// Delete an assembly record within the 12-hour window (own record only). Component and
+// outsourced balances are re-derived from the remaining records by reconcile.
+async function deleteAssemblyRecord(id, user) {
+  if (!mongoose.Types.ObjectId.isValid(id)) throw badRequest('Invalid id', 'invalid_id');
+  const record = await AssemblyRecord.findById(id);
+  if (!record) throw notFound('Assembly record not found', 'assembly_record_not_found');
+  if (record.submittedBy.toString() !== String(user.id)) {
+    throw forbidden('You can only delete your own assembly records');
+  }
+  if (Date.now() - new Date(record.createdAt).getTime() > EDIT_WINDOW_MS) {
+    throw forbidden('Delete window has expired (12 hours after creation)', 'delete_window_expired');
+  }
+
+  const { customerId, productId, orderId } = record;
+  await AssemblyRecord.deleteOne({ _id: record._id });
+
+  const order = await Order.findById(orderId);
+  if (order) await healOrderAssemblyStatus(order);
+  await reconcileService.reconcileProduct(customerId.toString(), productId.toString());
+  await reconcileService.reconcileOutsourced(customerId.toString(), productId.toString());
+  return { deleted: true };
+}
+
 // Shared filter builder for list queries.
 function buildFilter(query) {
   const filter = {};
@@ -422,6 +566,8 @@ async function getRecordById(id, user) {
 
 module.exports = {
   createAssemblyRecord,
+  updateAssemblyRecord,
+  deleteAssemblyRecord,
   getComponentAvailability,
   listMyRecords,
   listAllRecords,

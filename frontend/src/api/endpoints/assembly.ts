@@ -63,4 +63,18 @@ export const assemblyApi = {
     apiClient.get<AssemblyStatus>('/assembly/status', { params: { orderId } }).then((r) => r.data),
   get: (id: string) =>
     apiClient.get<{ record: AssemblyRecord }>(`/assembly/${id}`).then((r) => r.data.record),
+  // Edit / delete own record within the 12-hour window (re-derives component/outsourced stores).
+  update: (
+    id: string,
+    input: {
+      assembledSets?: number;
+      assemblyLine?: string;
+      operatorCount?: number;
+      rejectedQuantity?: number;
+      rejectionReason?: string;
+      remarks?: string;
+    },
+  ) => apiClient.patch<{ record: AssemblyRecord }>(`/assembly/${id}`, input).then((r) => r.data.record),
+  remove: (id: string) =>
+    apiClient.delete<{ deleted: boolean }>(`/assembly/${id}`).then((r) => r.data),
 };

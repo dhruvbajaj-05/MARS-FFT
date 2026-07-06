@@ -34,4 +34,8 @@ export const qcApi = {
   status: (orderId: string) =>
     apiClient.get<QCStatus>('/qc/status', { params: { orderId } }).then((r) => r.data),
   get: (id: string) => apiClient.get<{ record: QCRecord }>(`/qc/${id}`).then((r) => r.data.record),
+  // Edit / delete own record within the 12-hour window (adjusts Finished Goods).
+  update: (id: string, input: Partial<Omit<QCInput, 'customerId' | 'productId' | 'orderId'>>) =>
+    apiClient.patch<{ record: QCRecord }>(`/qc/${id}`, input).then((r) => r.data.record),
+  remove: (id: string) => apiClient.delete<{ deleted: boolean }>(`/qc/${id}`).then((r) => r.data),
 };

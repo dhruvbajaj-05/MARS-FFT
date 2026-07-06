@@ -13,7 +13,6 @@ function toPublic(m) {
     id: m._id.toString(),
     name: m.name,
     category: m.category,
-    status: m.status,
     createdAt: m.createdAt,
   };
 }
@@ -39,10 +38,9 @@ async function createMachine({ name, category, createdBy }) {
   }
 }
 
-// List machines. Active-only by default; pass includeArchived=true / category to filter.
+// List machines. Optionally filter by category.
 async function listMachines(query = {}) {
   const filter = {};
-  if (String(query.includeArchived) !== 'true') filter.status = 'Active';
   if (query.category && CATEGORIES.includes(query.category)) filter.category = query.category;
   const items = await Machine.find(filter).sort({ category: 1, name: 1 }).lean();
   return { machines: items.map(toPublic) };
@@ -66,15 +64,14 @@ async function updateMachine(id, { name, category }) {
   return toPublic(m);
 }
 
-// Archive (soft) / restore. Machines are never hard-deleted so records keep referencing them.
-async function archiveMachine(id, archived = true) {
+// Hard-delete a machine. Moulding records store the machine as a plain string
+// (machineNumber), never as a reference, so removing a machine never breaks history.
+async function deleteMachine(id) {
   if (!mongoose.Types.ObjectId.isValid(id)) throw badRequest('Invalid id', 'invalid_id');
   const m = await Machine.findById(id);
   if (!m) throw notFound('Machine not found', 'machine_not_found');
-  m.status = archived ? 'Archived' : 'Active';
-  m.archivedAt = archived ? new Date() : null;
-  await m.save();
-  return toPublic(m);
+  await Machine.deleteOne({ _id: id });
+  return { id: String(id), deleted: true };
 }
 
-module.exports = { createMachine, listMachines, updateMachine, archiveMachine, toPublic };
+module.exports = { createMachine, listMachines, updateMachine, deleteMachine, toPublic };

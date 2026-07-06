@@ -17,6 +17,7 @@ import {
   Select,
   type SelectOption,
 } from '@/components';
+import { useCurrentUser } from '@/hooks/useAuth';
 import { ApiError, friendlyMessage } from '@/services/apiError';
 import { ROLE_LABELS, ROLES, type Role } from '@/types/roles';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -30,16 +31,87 @@ const ROLE_OPTIONS: SelectOption[] = [
   ROLES.ADMIN,
 ].map((r) => ({ label: ROLE_LABELS[r], value: r }));
 
+// Inline edit panel for a single user (name, email, role, customer, optional new password).
+function UserEditPanel({
+  user,
+  customerOptions,
+  onClose,
+}: {
+  user: ManagedUser;
+  customerOptions: SelectOption[];
+  onClose: () => void;
+}) {
+  const { spacing } = useTheme();
+  const qc = useQueryClient();
+  const [name, setName] = useState(user.name);
+  const [email, setEmail] = useState(user.email);
+  const [role, setRole] = useState<Role | null>(user.role);
+  const [customerId, setCustomerId] = useState<string | null>(user.customerId);
+  const [password, setPassword] = useState('');
+
+  const save = useMutation({
+    mutationFn: () =>
+      usersApi.update(user.id, {
+        name: name.trim(),
+        email: email.trim(),
+        role: role as Role,
+        customerId: role === ROLES.CUSTOMER ? customerId ?? undefined : undefined,
+        ...(password ? { password } : {}),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['users'] });
+      onClose();
+    },
+  });
+
+  const error = save.error instanceof ApiError ? friendlyMessage(save.error) : null;
+  const needsCustomer = role === ROLES.CUSTOMER;
+  const canSave =
+    name.trim() && email.trim() && role && (!needsCustomer || customerId) && (!password || password.length >= 8);
+
+  return (
+    <View style={{ marginTop: spacing(2) }}>
+      {error ? <Banner tone="danger" message={error} /> : null}
+      <FormField label="Full name" value={name} onChangeText={setName} />
+      <FormField label="Email" value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" />
+      <Select label="Role" value={role} options={ROLE_OPTIONS} onChange={(v) => setRole(v as Role)} />
+      {needsCustomer ? (
+        <Select
+          label="Customer (required for customer users)"
+          value={customerId}
+          options={customerOptions}
+          onChange={(v) => setCustomerId(v)}
+          emptyHint="Create a customer first"
+        />
+      ) : null}
+      <FormField
+        label="New password (optional, min 8 chars)"
+        value={password}
+        onChangeText={setPassword}
+        placeholder="Leave blank to keep current"
+        secureTextEntry
+      />
+      <View style={{ flexDirection: 'row', gap: spacing(2) }}>
+        <Button label="Save" loading={save.isPending} disabled={!canSave} onPress={() => save.mutate()} style={{ flex: 1 }} />
+        <Button label="Cancel" variant="secondary" disabled={save.isPending} onPress={onClose} style={{ flex: 1 }} />
+      </View>
+    </View>
+  );
+}
+
 // Admin → Create Users (engineers by role, or customer-portal users tied to a customer).
 export function UsersScreen() {
   const { spacing } = useTheme();
   const qc = useQueryClient();
+  const currentUser = useCurrentUser();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState<Role | null>(null);
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
 
   const customers = useQuery({
     queryKey: queryKeys.customers({ page: 1, limit: 100 }),
@@ -72,7 +144,16 @@ export function UsersScreen() {
     },
   });
 
+  const remove = useMutation({
+    mutationFn: (id: string) => usersApi.remove(id),
+    onSuccess: () => {
+      setConfirmId(null);
+      qc.invalidateQueries({ queryKey: ['users'] });
+    },
+  });
+
   const error = create.error instanceof ApiError ? friendlyMessage(create.error) : null;
+  const deleteError = remove.error instanceof ApiError ? friendlyMessage(remove.error) : null;
   const customerOptions: SelectOption[] = (customers.data?.data ?? []).map((c) => ({
     label: c.name,
     value: c.id,
@@ -80,7 +161,7 @@ export function UsersScreen() {
 
   const needsCustomer = role === ROLES.CUSTOMER;
   const canSubmit =
-    name.trim() && email.trim() && password.length >= 6 && role && (!needsCustomer || customerId);
+    name.trim() && email.trim() && password.length >= 8 && role && (!needsCustomer || customerId);
 
   return (
     <Screen
@@ -104,7 +185,7 @@ export function UsersScreen() {
           autoCapitalize="none"
         />
         <FormField
-          label="Password (min 6 chars)"
+          label="Password (min 8 chars)"
           value={password}
           onChangeText={setPassword}
           placeholder="••••••••"
@@ -134,6 +215,7 @@ export function UsersScreen() {
       <AppText variant="h3" style={{ marginBottom: spacing(2) }}>
         Existing users
       </AppText>
+      {deleteError ? <Banner tone="danger" message={deleteError} /> : null}
       <QueryBoundary
         isLoading={users.isLoading}
         isError={users.isError}
@@ -146,14 +228,71 @@ export function UsersScreen() {
             <AppText tone="muted">No users yet.</AppText>
           ) : (
             <View style={{ gap: spacing(2) }}>
-              {d.data.map((u) => (
-                <Card key={u.id}>
-                  <AppText weight="600">{u.name}</AppText>
-                  <AppText variant="caption" tone="muted">
-                    {u.email} · {ROLE_LABELS[u.role]}
-                  </AppText>
-                </Card>
-              ))}
+              {d.data.map((u) => {
+                const isSelf = currentUser?.id === u.id;
+                return (
+                  <Card key={u.id}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <View style={{ flex: 1, paddingRight: spacing(2) }}>
+                        <AppText weight="600">{u.name}</AppText>
+                        <AppText variant="caption" tone="muted">
+                          {u.email} · {ROLE_LABELS[u.role]}
+                        </AppText>
+                      </View>
+                      {editingId !== u.id && confirmId !== u.id ? (
+                        <View style={{ flexDirection: 'row', gap: spacing(2) }}>
+                          <Button
+                            label="Edit"
+                            variant="secondary"
+                            onPress={() => {
+                              setConfirmId(null);
+                              setEditingId(u.id);
+                            }}
+                          />
+                          {!isSelf ? (
+                            <Button
+                              label="Delete"
+                              variant="danger"
+                              onPress={() => {
+                                setEditingId(null);
+                                setConfirmId(u.id);
+                              }}
+                            />
+                          ) : null}
+                        </View>
+                      ) : null}
+                    </View>
+
+                    {editingId === u.id ? (
+                      <UserEditPanel user={u} customerOptions={customerOptions} onClose={() => setEditingId(null)} />
+                    ) : null}
+
+                    {confirmId === u.id ? (
+                      <View style={{ marginTop: spacing(2) }}>
+                        <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
+                          Delete &quot;{u.name}&quot;? This permanently removes the account and cannot be undone.
+                        </AppText>
+                        <View style={{ flexDirection: 'row', gap: spacing(2) }}>
+                          <Button
+                            label="Confirm delete"
+                            variant="danger"
+                            loading={remove.isPending}
+                            onPress={() => remove.mutate(u.id)}
+                            style={{ flex: 1 }}
+                          />
+                          <Button
+                            label="Cancel"
+                            variant="secondary"
+                            disabled={remove.isPending}
+                            onPress={() => setConfirmId(null)}
+                            style={{ flex: 1 }}
+                          />
+                        </View>
+                      </View>
+                    ) : null}
+                  </Card>
+                );
+              })}
             </View>
           )
         }

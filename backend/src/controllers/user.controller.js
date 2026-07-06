@@ -38,6 +38,32 @@ async function getById(req, res, next) {
   }
 }
 
+// PATCH /api/v1/users/:id  (admin) — edit name/email/role/customer/password/active
+async function update(req, res, next) {
+  try {
+    const user = await userService.updateUser(req.params.id, {
+      name: req.body.name,
+      email: req.body.email,
+      role: req.body.role,
+      customerId: req.body.customerId,
+      password: req.body.password,
+      isActive: req.body.isActive,
+    });
+    res.status(200).json({ user });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// DELETE /api/v1/users/:id  (admin) — hard delete (cannot delete self)
+async function remove(req, res, next) {
+  try {
+    res.status(200).json(await userService.deleteUser(req.params.id, req.user.id));
+  } catch (err) {
+    next(err);
+  }
+}
+
 // POST /api/v1/users/:id/deactivate  (admin) — soft delete (no hard delete in V1)
 async function deactivate(req, res, next) {
   try {
@@ -58,4 +84,4 @@ async function reactivate(req, res, next) {
   }
 }
 
-module.exports = { create, list, getById, deactivate, reactivate };
+module.exports = { create, list, getById, update, remove, deactivate, reactivate };

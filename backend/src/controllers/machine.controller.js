@@ -35,13 +35,12 @@ async function update(req, res, next) {
   }
 }
 
-async function archive(req, res, next) {
+async function remove(req, res, next) {
   try {
-    const machine = await machineService.archiveMachine(req.params.id, req.body.archived !== false);
-    res.status(200).json({ machine });
+    res.status(200).json(await machineService.deleteMachine(req.params.id));
   } catch (err) {
     next(err);
   }
 }
 
-module.exports = { list, create, update, archive };
+module.exports = { list, create, update, remove };

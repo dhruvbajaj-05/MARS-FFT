@@ -37,7 +37,20 @@ async function getById(req, res, next) {
   }
 }
 
-// DELETE /api/v1/products/:id  (admin) — archives if the product has history, else removes.
+// PATCH /api/v1/products/:id  (admin) — edit name/partName
+async function update(req, res, next) {
+  try {
+    const product = await productService.updateProduct(req.params.id, {
+      name: req.body.name,
+      partName: req.body.partName,
+    });
+    res.status(200).json({ product });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// DELETE /api/v1/products/:id  (admin) — blocked (409) when the product has history, else removes.
 async function remove(req, res, next) {
   try {
     res.status(200).json(await productService.deleteProduct(req.params.id));
@@ -46,4 +59,4 @@ async function remove(req, res, next) {
   }
 }
 
-module.exports = { create, list, getById, remove };
+module.exports = { create, list, getById, update, remove };

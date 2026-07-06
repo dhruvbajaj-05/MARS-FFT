@@ -4,9 +4,28 @@ const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Counter = require('../models/Counter');
-const { notFound, badRequest } = require('../utils/httpError');
+const MouldingRecord = require('../models/MouldingRecord');
+const AssemblyRecord = require('../models/AssemblyRecord');
+const QCRecord = require('../models/QCRecord');
+const PackingDispatchRecord = require('../models/PackingDispatchRecord');
+const OrderMold = require('../models/OrderMold');
+const OutsourcedComponentItem = require('../models/OutsourcedComponentItem');
+const ComponentStockItem = require('../models/ComponentStockItem');
+const StockLedgerEntry = require('../models/StockLedgerEntry');
+const { notFound, badRequest, conflict } = require('../utils/httpError');
 const { parsePagination, buildList } = require('../utils/pagination');
 const reconcileService = require('./reconcile.service');
+
+// Count production records that reference an order across every department.
+async function countOrderRecords(orderId) {
+  const [moulding, assembly, qc, dispatch] = await Promise.all([
+    MouldingRecord.countDocuments({ orderId }),
+    AssemblyRecord.countDocuments({ orderId }),
+    QCRecord.countDocuments({ orderId }),
+    PackingDispatchRecord.countDocuments({ orderId }),
+  ]);
+  return { moulding, assembly, qc, dispatch, total: moulding + assembly + qc + dispatch };
+}
 
 const ORDER_CODE_SEQ = 'orderCode';
 const ORDER_CODE_PREFIX = 'FFT-';
@@ -170,15 +189,98 @@ async function completeAssembly(id) {
   return toPublicOrder(order);
 }
 
-// Admin: archive an order (retire from active lists). Data remains queryable forever.
-async function archiveOrder(id) {
+// Admin: edit an order. orderQuantity can always be changed; product/customer may only be
+// reassigned while the order has no production records (that would invalidate history).
+// Any change re-runs reconcile so the outsourced requirement (orderQuantity × perSet) and
+// surplus allocation stay exact.
+async function updateOrder(id, { orderQuantity, productId, customerId }) {
   const order = await loadOrder(id);
-  if (order.status !== 'Archived') {
-    order.status = 'Archived';
-    order.archivedAt = new Date();
-    await order.save();
+
+  const wantsChain =
+    (productId !== undefined && String(productId) !== String(order.productId)) ||
+    (customerId !== undefined && String(customerId) !== String(order.customerId));
+
+  if (wantsChain) {
+    const { total } = await countOrderRecords(order._id);
+    if (total > 0) {
+      throw conflict(
+        'Cannot change this order’s product/customer while it has production records. ' +
+          'Only the order quantity can be edited.',
+        'order_in_use'
+      );
+    }
+    const nextProductId = productId !== undefined ? productId : order.productId;
+    const nextCustomerId = customerId !== undefined ? customerId : order.customerId;
+    const product = await Product.findById(nextProductId);
+    if (!product) {
+      throw badRequest('productId does not reference an existing product', 'invalid_product');
+    }
+    if (product.customerId.toString() !== String(nextCustomerId)) {
+      throw badRequest('productId does not belong to the given customerId', 'product_customer_mismatch');
+    }
+    order.productId = nextProductId;
+    order.customerId = nextCustomerId;
   }
+
+  if (orderQuantity !== undefined) {
+    const quantity = Number(orderQuantity);
+    if (!Number.isFinite(quantity) || quantity < 0) {
+      throw badRequest('orderQuantity must be a number >= 0', 'invalid_quantity');
+    }
+    order.orderQuantity = quantity;
+  }
+
+  await order.save();
+
+  // Recompute the product's stores (outsourced requirement + surplus FIFO) after the edit.
+  try {
+    await reconcileService.reconcileProduct(order.customerId.toString(), order.productId.toString());
+    await reconcileService.reconcileOutsourced(order.customerId.toString(), order.productId.toString());
+  } catch (e) {
+    console.warn('[order] reconcile after edit failed:', e.message);
+  }
+
   return toPublicOrder(order);
+}
+
+// Admin: hard-delete an order. Blocked (409) when any department has recorded work against
+// it, so production history is never orphaned. When clean, the order and its derived rows
+// (mould setup, outsourced BOM snapshot, component cells, ledger) are removed and the
+// product's stores are reconciled so any surplus auto-consumed at creation returns.
+async function deleteOrder(id) {
+  const order = await loadOrder(id);
+
+  const counts = await countOrderRecords(order._id);
+  if (counts.total > 0) {
+    const parts = [];
+    if (counts.moulding) parts.push(`${counts.moulding} moulding`);
+    if (counts.assembly) parts.push(`${counts.assembly} assembly`);
+    if (counts.qc) parts.push(`${counts.qc} QC`);
+    if (counts.dispatch) parts.push(`${counts.dispatch} dispatch`);
+    throw conflict(
+      `Cannot delete ${order.orderCode || 'this order'} — it has ${parts.join(', ')} record(s). ` +
+        'Delete those records first.',
+      'order_in_use'
+    );
+  }
+
+  const { customerId, productId } = order;
+
+  await Promise.all([
+    Order.deleteOne({ _id: order._id }),
+    OrderMold.deleteMany({ orderId: order._id }),
+    OutsourcedComponentItem.deleteMany({ orderId: order._id }),
+    ComponentStockItem.deleteMany({ orderId: order._id }),
+    StockLedgerEntry.deleteMany({ orderId: order._id }),
+  ]);
+
+  try {
+    await reconcileService.reconcileAllForProduct(customerId.toString(), productId.toString());
+  } catch (e) {
+    console.warn('[order] reconcile after delete failed:', e.message);
+  }
+
+  return { id: String(id), deleted: true };
 }
 
 module.exports = {
@@ -187,7 +289,8 @@ module.exports = {
   getOrderById,
   completeProduction,
   completeAssembly,
-  archiveOrder,
+  updateOrder,
+  deleteOrder,
   toPublicOrder,
   nextOrderCode,
   formatOrderCode,
