@@ -15,6 +15,8 @@ const adminRoutes = require('./admin.routes');
 const storeRoutes = require('./store.routes');
 const outsourcedRoutes = require('./outsourced.routes');
 const machineRoutes = require('./machine.routes');
+const qcReportRoutes = require('./qcReport.routes');
+const qcNotificationRoutes = require('./qcNotification.routes');
 
 const router = express.Router();
 
@@ -69,6 +71,12 @@ router.use('/customer', customerViewRoutes);
 // Phase 9 — Admin dashboard (Module 6): read-only, admin-role only; system-wide
 // analytics across customers, products, orders, users and all four departments.
 router.use('/admin', adminRoutes);
+
+// QC (Quality Management) module: centralized, image-first defect reporting authored by
+// moulding/assembly engineers, viewed by Admin (customers later). Separate from the
+// finished-goods '/qc' module above. Two tabs (Moulding QC / Assembly QC) via `department`.
+router.use('/qc-reports', qcReportRoutes);
+router.use('/qc-notifications', qcNotificationRoutes);
 
 // ---- Mounted in later phases (do NOT enable yet) ----
 // router.use('/notifications', notificationRoutes);

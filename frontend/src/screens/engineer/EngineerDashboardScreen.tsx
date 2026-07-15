@@ -6,6 +6,7 @@ import { mouldingApi } from '@/api/endpoints/moulding';
 import type { Paginated } from '@/api/types';
 import { queryKeys } from '@/api/queryKeys';
 import { AppText, Card, KPIGrid, QueryBoundary, Screen } from '@/components';
+import { QCIssuesCard } from '@/components/qc';
 import { departmentForRole } from '@/features/engineer/department';
 import { useCurrentUser } from '@/hooks/useAuth';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -44,6 +45,10 @@ function MouldingDashboard({ userName }: { userName: string }) {
         Welcome back, {userName}
       </AppText>
 
+      <View style={{ marginBottom: spacing(4) }}>
+        <QCIssuesCard department="moulding" />
+      </View>
+
       <QueryBoundary
         isLoading={query.isLoading}
         isError={query.isError}
@@ -67,43 +72,79 @@ function MouldingDashboard({ userName }: { userName: string }) {
                       No products yet.
                     </AppText>
                   ) : (
-                    <View style={{ gap: spacing(1) }}>
+                    <View style={{ gap: spacing(2) }}>
                       {c.products.map((p) => (
                         <View
                           key={p.id}
                           style={{
-                            flexDirection: 'row',
-                            justifyContent: 'space-between',
-                            alignItems: 'center',
                             paddingVertical: spacing(2),
-                            paddingHorizontal: spacing(2),
+                            paddingHorizontal: spacing(3),
                             borderRadius: 8,
                             backgroundColor: p.activeOrders > 0 ? colors.status.progress.bg : colors.surfaceAlt,
                           }}
                         >
-                          <AppText weight="600">{p.name}</AppText>
-                          {p.activeOrders > 0 ? (
-                            <View
-                              style={{
-                                backgroundColor: colors.status.progress.fg,
-                                borderRadius: 12,
-                                paddingHorizontal: spacing(2),
-                                paddingVertical: 2,
-                              }}
-                            >
-                              <AppText
-                                variant="caption"
-                                weight="700"
-                                style={{ color: colors.status.progress.bg }}
+                          <View
+                            style={{
+                              flexDirection: 'row',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                            }}
+                          >
+                            <AppText weight="600">{p.name}</AppText>
+                            {p.activeOrders > 0 ? (
+                              <View
+                                style={{
+                                  backgroundColor: colors.status.progress.fg,
+                                  borderRadius: 12,
+                                  paddingHorizontal: spacing(2),
+                                  paddingVertical: 2,
+                                }}
                               >
-                                {p.activeOrders} Active {p.activeOrders === 1 ? 'Order' : 'Orders'}
+                                <AppText
+                                  variant="caption"
+                                  weight="700"
+                                  style={{ color: colors.status.progress.bg }}
+                                >
+                                  {p.activeOrders} Active {p.activeOrders === 1 ? 'Order' : 'Orders'}
+                                </AppText>
+                              </View>
+                            ) : (
+                              <AppText variant="caption" tone="muted">
+                                No active orders
                               </AppText>
+                            )}
+                          </View>
+
+                          {/* Moulds currently running for this product (req #8) */}
+                          {p.runningMoulds && p.runningMoulds.length > 0 ? (
+                            <View style={{ marginTop: spacing(2) }}>
+                              <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>
+                                Running Moulds
+                              </AppText>
+                              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2) }}>
+                                {p.runningMoulds.map((m) => (
+                                  <View
+                                    key={`${m.moldName}-${m.cavity}`}
+                                    style={{
+                                      backgroundColor: colors.surface,
+                                      borderRadius: 10,
+                                      paddingHorizontal: spacing(3),
+                                      paddingVertical: spacing(1),
+                                      borderWidth: 1,
+                                      borderColor: colors.border,
+                                    }}
+                                  >
+                                    <AppText variant="caption" weight="700">
+                                      {m.cavity} Cavity
+                                    </AppText>
+                                    <AppText variant="caption" tone="muted">
+                                      {m.moldName}
+                                    </AppText>
+                                  </View>
+                                ))}
+                              </View>
                             </View>
-                          ) : (
-                            <AppText variant="caption" tone="muted">
-                              No active orders
-                            </AppText>
-                          )}
+                          ) : null}
                         </View>
                       ))}
                     </View>

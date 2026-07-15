@@ -39,6 +39,12 @@ const orderSchema = new mongoose.Schema(
     completedAt: { type: Date, default: null },
     archivedAt: { type: Date, default: null },
 
+    // Departments whose QC documentation the engineer has explicitly finished
+    // ("Done Uploading QC Photos" — QC module req #11). A closed department drops the
+    // order from that department's active QC list, but production completion never
+    // closes QC on its own (engineers may keep documenting defects after production).
+    qcClosedDepartments: { type: [String], default: [] },
+
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   },
   { timestamps: { createdAt: true, updatedAt: true } }

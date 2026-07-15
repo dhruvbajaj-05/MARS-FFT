@@ -15,10 +15,14 @@ const EXT_BY_MIME = {
   'application/pdf': '.pdf',
 };
 
+// Default cap on how many images a single record may carry.
+const MAX_IMAGES_PER_RECORD = 50;
+
 // Build a multer instance that writes images for one department subfolder to disk.
 // Binaries live under env.upload.dir/<subdir>; only a URL reference is later stored
-// in `mediaassets`. Each engineer record carries an optional single image (doc 08 §6).
-function imageUploader(subdir) {
+// in `mediaassets`. `maxFiles` bounds the total number of files accepted in the request
+// (single-image routes pass 1; multi-image routes pass their maxCount).
+function imageUploader(subdir, maxFiles = MAX_IMAGES_PER_RECORD) {
   const destDir = path.join(env.upload.dir, subdir);
   // Ensure the target directory exists once, at startup.
   fs.mkdirSync(destDir, { recursive: true });
@@ -45,7 +49,7 @@ function imageUploader(subdir) {
   return multer({
     storage,
     fileFilter,
-    limits: { fileSize: env.upload.maxImageBytes, files: 1 },
+    limits: { fileSize: env.upload.maxImageBytes, files: maxFiles },
   });
 }
 
@@ -55,9 +59,6 @@ function publicUrlFor(diskPath) {
   const rel = path.relative(env.upload.dir, diskPath).split(path.sep).join('/');
   return `${env.upload.baseUrl}${env.upload.publicPath}/${rel}`;
 }
-
-// Default cap on how many images a single record may carry.
-const MAX_IMAGES_PER_RECORD = 10;
 
 // Translate a multer error into a clean 400 (size/count limits, unexpected field).
 function toUploadError(err) {
@@ -120,12 +121,14 @@ function runHandler(handler) {
 
 // Single optional image on `field` (used by the Moulding module).
 function singleImage(subdir, field = 'image') {
-  return runHandler(imageUploader(subdir).single(field));
+  return runHandler(imageUploader(subdir, 1).single(field));
 }
 
-// Multiple optional images on `field` (used by the Assembly module's photos[]).
+// Multiple optional images on `field` (used by Assembly + QC photos[]). The uploader's
+// total-files limit must match maxCount, otherwise multi-photo requests fail (this was
+// the QC "can't submit with photos" bug — the shared uploader was capped at 1 file).
 function arrayImages(subdir, field = 'photos', maxCount = MAX_IMAGES_PER_RECORD) {
-  return runHandler(imageUploader(subdir).array(field, maxCount));
+  return runHandler(imageUploader(subdir, maxCount).array(field, maxCount));
 }
 
 // Multiple named file fields of mixed kinds (used by Packing & Dispatch).

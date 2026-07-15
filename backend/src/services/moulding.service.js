@@ -463,17 +463,40 @@ async function getMouldingDashboard() {
       .lean();
     const productRows = [];
     for (const p of products) {
-      const activeOrders = await Order.countDocuments({
+      const activeOrderDocs = await Order.find({
         customerId: c._id,
         productId: p._id,
         status: 'Active',
         productionStatus: 'Active',
-      });
+      })
+        .select('_id')
+        .lean();
+      const activeOrders = activeOrderDocs.length;
+
+      // Moulds currently running for this product = distinct molds set up on its active
+      // orders, so the dashboard tells engineers what tooling is live (req #8).
+      let runningMoulds = [];
+      if (activeOrders > 0) {
+        const molds = await OrderMold.find({ orderId: { $in: activeOrderDocs.map((o) => o._id) } })
+          .select('moldName partName cavity')
+          .lean();
+        const seen = new Set();
+        for (const m of molds) {
+          const key = `${m.moldName}·${m.cavity}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          runningMoulds.push({ moldName: m.moldName, partName: m.partName || null, cavity: m.cavity });
+        }
+        // Highest-cavity tooling first (e.g. 11 Cavity, 7 Cavity, 2 Cavity).
+        runningMoulds.sort((a, b) => b.cavity - a.cavity);
+      }
+
       productRows.push({
         id: p._id.toString(),
         name: p.name,
         partName: p.partName || null,
         activeOrders,
+        runningMoulds,
       });
     }
     result.push({ id: c._id.toString(), name: c.name, products: productRows });

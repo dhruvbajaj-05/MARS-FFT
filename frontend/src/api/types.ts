@@ -94,11 +94,17 @@ export interface Media {
 }
 
 // ---- Moulding dashboard (companies → products → active orders) ----
+export interface RunningMould {
+  moldName: string;
+  partName: string | null;
+  cavity: number;
+}
 export interface MouldingDashboardProduct {
   id: string;
   name: string;
   partName: string | null;
   activeOrders: number;
+  runningMoulds: RunningMould[];
 }
 export interface MouldingDashboardCustomer {
   id: string;
@@ -444,7 +450,24 @@ export interface CustomerOrderDashboard {
       invoiceNumber: string | null;
     }[];
   };
+  defectReports: CustomerDefectReport[];
   timeline: CustomerTimelineStep[];
+}
+
+// Customer-visible defect report (image-first QC report authored by an engineer).
+export interface CustomerDefectReport {
+  id: string;
+  department: QCDepartment;
+  severity: QCSeverity;
+  status: QCStatusValue;
+  defects: string[];
+  description: string | null;
+  machine: string | null;
+  mould: string | null;
+  part: string | null;
+  shift: 'A' | 'B' | 'C' | null;
+  photos: Media[];
+  createdAt: string;
 }
 
 // ---- Admin dashboard (Phase 9) ----
@@ -811,4 +834,116 @@ export interface AdminOrderTimeline extends AdminOrderRow {
   qcAcceptedQuantity: number;
   productionCompletedAt: string | null;
   assemblyCompletedAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// QC (Quality Management) module — centralized, image-first defect reports.
+// One shape powers both the Moulding QC and Assembly QC tabs (via `department`).
+// Mirrors backend qcReport.service `toPublicReport`.
+// ---------------------------------------------------------------------------
+export type QCDepartment = 'moulding' | 'assembly';
+export type QCSeverity = 'minor' | 'major' | 'critical';
+export type QCStatusValue = 'open' | 'investigating' | 'resolved' | 'rejected';
+
+export interface QCComment {
+  id?: string;
+  authorId: string | null;
+  authorName: string | null;
+  authorRole: string | null;
+  text: string;
+  createdAt: string;
+}
+export interface QCStatusHistoryEntry {
+  status: QCStatusValue;
+  byId: string | null;
+  byName: string | null;
+  note: string | null;
+  at: string;
+}
+export interface QCReport {
+  id: string;
+  department: QCDepartment;
+  customerId: string;
+  productId: string;
+  orderId: string;
+  machine: string | null;
+  mould: string | null;
+  part: string | null;
+  shift: 'A' | 'B' | 'C' | null;
+  defects: string[];
+  severity: QCSeverity;
+  description: string | null;
+  tags: string[];
+  photos: Media[];
+  status: QCStatusValue;
+  comments: QCComment[];
+  statusHistory: QCStatusHistoryEntry[];
+  submittedBy: string;
+  submittedByName: string | null;
+  createdAt: string;
+  updatedAt: string;
+  // Resolved labels (attached by the list endpoint for readable Admin/QC lists).
+  orderCode?: string | null;
+  customerName?: string | null;
+  productName?: string | null;
+}
+export interface QCCountBucket {
+  label: string;
+  count: number;
+}
+export interface QCOrderContext {
+  order: {
+    id: string;
+    orderCode: string | null;
+    orderQuantity: number;
+    customerId: string;
+    productId: string;
+    customerName: string | null;
+    productName: string | null;
+    productionStatus: string;
+    assemblyStatus: string;
+  };
+  department: QCDepartment;
+  progress: { status: string; progressPct: number; producedQuantity: number; targetQuantity: number };
+  machines: string[];
+  moulds: string[];
+  counts: { total: number; open: number; resolved: number; critical: number };
+  latest: QCReport[];
+}
+export interface QCSummary {
+  totals: { total: number; open: number; resolved: number; rejected: number; critical: number };
+  mostCommonDefects: QCCountBucket[];
+  defectsByMachine: QCCountBucket[];
+  defectsByMould: QCCountBucket[];
+}
+// One order inside a department's QC tab (req #11). Stays listed until the engineer
+// presses "Done Uploading QC Photos"; production completion never removes it.
+export interface QCActiveOrder {
+  id: string;
+  orderCode: string | null;
+  customerId: string;
+  productId: string;
+  customerName: string | null;
+  productName: string | null;
+  orderQuantity: number;
+  productionStatus: string;
+  productionComplete: boolean;
+  reportCount: number;
+  openCount: number;
+  lastReportAt: string | null;
+}
+export interface QCActiveOrdersResponse {
+  orders: QCActiveOrder[];
+}
+
+export interface QCNotification {
+  id: string;
+  reportId: string;
+  department: string;
+  customerId: string;
+  orderId: string;
+  severity: string;
+  message: string;
+  isRead: boolean;
+  createdAt: string;
 }

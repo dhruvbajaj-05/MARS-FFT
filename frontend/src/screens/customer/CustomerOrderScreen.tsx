@@ -6,7 +6,7 @@ import { LayoutAnimation, Modal, Platform, Pressable, RefreshControl, ScrollView
 
 import { customerApi } from '@/api/endpoints/customer';
 import { queryKeys } from '@/api/queryKeys';
-import type { CustomerMoldRow, CustomerOrderDashboard, Media } from '@/api/types';
+import type { CustomerDefectReport, CustomerMoldRow, CustomerOrderDashboard, Media } from '@/api/types';
 import {
   AppText,
   ErrorState,
@@ -165,6 +165,53 @@ function PhotoStrip({ photos }: { photos: Media[] }) {
         </Pressable>
       </Modal>
     </View>
+  );
+}
+
+// ---- Engineer defect reports (image-first QC reports, req #5) ----------------
+function sevTone(severity: CustomerDefectReport['severity']) {
+  return severity === 'critical' ? 'danger' : severity === 'major' ? 'progress' : 'info';
+}
+
+function DefectReportsSection({ reports }: { reports: CustomerDefectReport[] }) {
+  const { colors, radius, spacing } = useTheme();
+  if (!reports || reports.length === 0) return null;
+  return (
+    <SectionCard icon="📸" title={`Defect Reports (${reports.length})`}>
+      {reports.map((r) => (
+        <View
+          key={r.id}
+          style={{
+            borderWidth: 0.5,
+            borderColor: colors.border,
+            borderRadius: radius.md,
+            padding: spacing(3),
+            marginBottom: spacing(2),
+            backgroundColor: colors.surfaceAlt,
+          }}
+        >
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <StatusPill label={r.severity} tone={sevTone(r.severity)} />
+            <AppText variant="caption" tone="muted">{formatDate(r.createdAt)}</AppText>
+          </View>
+          <AppText weight="700" style={{ marginTop: spacing(2) }}>
+            {r.defects.length ? r.defects.join(', ') : 'Defect report'}
+          </AppText>
+          {r.description ? (
+            <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
+              {r.description}
+            </AppText>
+          ) : null}
+          <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
+            {r.department === 'assembly' ? 'Assembly' : 'Moulding'}
+            {[r.machine, r.mould].filter(Boolean).length
+              ? ` · ${[r.machine, r.mould].filter(Boolean).join(' · ')}`
+              : ''}
+          </AppText>
+          <PhotoStrip photos={r.photos} />
+        </View>
+      ))}
+    </SectionCard>
   );
 }
 
@@ -361,6 +408,9 @@ function OrderDashboard({ d }: { d: CustomerOrderDashboard }) {
           </View>
         ) : null}
       </SectionCard>
+
+      {/* ENGINEER DEFECT REPORTS (req #5) */}
+      <DefectReportsSection reports={d.defectReports} />
 
       {/* TIMELINE */}
       <SectionCard icon="🗺️" title="Production Timeline">

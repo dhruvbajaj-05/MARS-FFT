@@ -1,4 +1,5 @@
 import { config } from '@/config/env';
+import { useAuthStore } from '@/store/authStore';
 import { ApiError } from './apiError';
 
 // A normalized picked file from Expo Image Picker or Document Picker.
@@ -66,4 +67,49 @@ export function buildRecordFormData({ fields, files = [] }: BuildOptions): FormD
   }
 
   return form;
+}
+
+// POST a multipart body using React Native's fetch instead of axios. RN's fetch reliably
+// sets `multipart/form-data; boundary=…` for a FormData body; axios in RN can send it
+// without a boundary, which makes the server hang until timeout and surfaces as a false
+// "network" error. Auth + error handling mirror the axios client.
+export async function postFormData<T>(path: string, form: FormData): Promise<T> {
+  const token = useAuthStore.getState().token;
+  const url = `${config.apiBaseUrl}${path}`;
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      // Intentionally NO Content-Type — fetch adds it with the correct boundary.
+      headers: {
+        Accept: 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: form,
+    });
+  } catch (e) {
+    // Surface the real transport error in the Metro console for diagnosis (the on-screen
+    // message stays user-friendly).
+    console.warn('[postFormData] upload failed:', url, e);
+    throw new ApiError('Network unavailable. Check your connection and retry.', {
+      isNetwork: true,
+      code: 'network_error',
+    });
+  }
+
+  let data: any = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* non-JSON / empty body */
+  }
+
+  if (!res.ok) {
+    throw new ApiError(data?.message ?? `Request failed (${res.status})`, {
+      status: res.status,
+      code: data?.error ?? 'http_error',
+    });
+  }
+  return data as T;
 }

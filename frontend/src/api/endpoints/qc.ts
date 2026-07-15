@@ -2,7 +2,10 @@ import { apiClient } from '@/api/client';
 import type { FinishedGoodsBalance, Paginated, QCRecord, QCStatus } from '@/api/types';
 import type { ListParams } from './master';
 
-const MULTIPART = { headers: { 'Content-Type': 'multipart/form-data' } };
+// Don't hand-set Content-Type for FormData in React Native — it omits the multipart
+// boundary and the request hangs (surfaces as a false "network" error). Let axios/RN set
+// it; just extend the upload timeout.
+const MULTIPART = { timeout: 120000 };
 
 // JSON payload for a QC submission (MVP — no photo upload). orderId optional.
 export interface QCInput {

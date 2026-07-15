@@ -4,8 +4,10 @@ import React from 'react';
 import { Pressable, RefreshControl, ScrollView, View } from 'react-native';
 
 import { adminApi } from '@/api/endpoints/admin';
+import { qcReportsApi } from '@/api/endpoints/qcReports';
 import { queryKeys } from '@/api/queryKeys';
 import { AppText, Card, Screen } from '@/components';
+import { PressableScale, shadow } from '@/components/premium';
 import { useTheme } from '@/theme/ThemeProvider';
 
 const DEPT_LABELS: Record<string, string> = {
@@ -39,6 +41,11 @@ export function AdminDashboardScreen() {
   const dashboard = useQuery({ queryKey: queryKeys.admin.dashboard, queryFn: adminApi.dashboard });
   const depts = useQuery({ queryKey: queryKeys.admin.departments, queryFn: adminApi.departments });
   const delayed = useQuery({ queryKey: queryKeys.admin.delayed({}), queryFn: () => adminApi.delayedOrders({}) });
+  const qcNotifs = useQuery({
+    queryKey: queryKeys.qc.notifications({ unread: true }),
+    queryFn: () => qcReportsApi.notifications({ unread: true, limit: 1 }),
+  });
+  const qcUnread = qcNotifs.data?.unreadCount ?? 0;
 
   const isRefreshing =
     dashboard.isRefetching || depts.isRefetching || delayed.isRefetching;
@@ -68,6 +75,37 @@ export function AdminDashboardScreen() {
           {dateStr}
         </AppText>
       </View>
+
+      {/* ── Quality shortcut: monitor QC defect reports without opening the module ── */}
+      <PressableScale onPress={() => navigation.navigate('AdminQC')}>
+        <View
+          style={[
+            {
+              flexDirection: 'row',
+              alignItems: 'center',
+              backgroundColor: qcUnread > 0 ? colors.status.danger.bg : colors.surface,
+              borderRadius: radius.lg,
+              padding: spacing(4),
+              borderWidth: 1,
+              borderColor: qcUnread > 0 ? colors.status.danger.fg : colors.border,
+              gap: spacing(3),
+              marginBottom: spacing(5),
+            },
+            shadow('sm'),
+          ]}
+        >
+          <AppText style={{ fontSize: 26 }}>🔍</AppText>
+          <View style={{ flex: 1 }}>
+            <AppText variant="h3" style={{ color: qcUnread > 0 ? colors.status.danger.fg : colors.text }}>
+              Quality Control{qcUnread > 0 ? ` · ${qcUnread} new` : ''}
+            </AppText>
+            <AppText variant="caption" tone="muted">
+              View every QC defect report across all companies
+            </AppText>
+          </View>
+          <AppText style={{ fontSize: 22, color: colors.textMuted }}>›</AppText>
+        </View>
+      </PressableScale>
 
       {/* ── Delayed Orders Alert ── */}
       {delayedCount > 0 && (

@@ -29,6 +29,6 @@ export const config = {
     maxDocBytes: 10 * 1024 * 1024,
     allowedImageTypes: ['image/jpeg', 'image/png', 'image/webp'],
     allowedDocTypes: ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'],
-    maxFilesPerRecord: 10,
+    maxFilesPerRecord: 50,
   },
 } as const;

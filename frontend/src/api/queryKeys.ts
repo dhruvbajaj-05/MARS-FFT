@@ -44,6 +44,18 @@ export const queryKeys = {
     orderDashboard: (id: string) => ['customer', 'order', id, 'dashboard'] as const,
   },
 
+  // Centralized QC (Quality Management) module.
+  qc: {
+    defectTypes: ['qc', 'defect-types'] as const,
+    reports: (params?: unknown) => ['qc', 'reports', params ?? {}] as const,
+    report: (id: string) => ['qc', 'report', id] as const,
+    orderContext: (orderId: string, department: string) =>
+      ['qc', 'order-context', orderId, department] as const,
+    activeOrders: (department: string) => ['qc', 'active-orders', department] as const,
+    summary: (orderId: string, department: string) => ['qc', 'summary', orderId, department] as const,
+    notifications: (params?: unknown) => ['qc', 'notifications', params ?? {}] as const,
+  },
+
   admin: {
     dashboard: ['admin', 'dashboard'] as const,
     productionSummary: ['admin', 'production-summary'] as const,

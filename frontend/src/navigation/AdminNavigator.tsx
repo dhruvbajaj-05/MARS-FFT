@@ -6,6 +6,8 @@ import { SettingsScreen } from '@/screens/shared/SettingsScreen';
 import { AdminFactoryNavigator } from './AdminFactoryNavigator';
 import { AdminMasterNavigator } from './AdminMasterNavigator';
 import { AdminOrdersNavigator } from './AdminOrdersNavigator';
+import { AdminQCNavigator } from './AdminQCNavigator';
+import { AppTabBar } from './AppTabBar';
 import { useTabScreenOptions } from './tabOptions';
 
 const Tab = createBottomTabNavigator();
@@ -19,7 +21,7 @@ const Tab = createBottomTabNavigator();
 export function AdminNavigator() {
   const options = useTabScreenOptions();
   return (
-    <Tab.Navigator screenOptions={options}>
+    <Tab.Navigator screenOptions={options} tabBar={(props) => <AppTabBar {...props} />}>
       <Tab.Screen
         name="AdminDashboard"
         component={AdminDashboardScreen}
@@ -34,6 +36,11 @@ export function AdminNavigator() {
         name="AdminOrders"
         component={AdminOrdersNavigator}
         options={{ title: 'Orders', headerShown: false }}
+      />
+      <Tab.Screen
+        name="AdminQC"
+        component={AdminQCNavigator}
+        options={{ title: 'QC', headerShown: false }}
       />
       <Tab.Screen
         name="AdminMaster"

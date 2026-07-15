@@ -7,6 +7,7 @@ const Customer = require('../models/Customer');
 const MouldingRecord = require('../models/MouldingRecord');
 const AssemblyRecord = require('../models/AssemblyRecord');
 const QCRecord = require('../models/QCRecord');
+const QCReport = require('../models/QCReport');
 const PackingDispatchRecord = require('../models/PackingDispatchRecord');
 
 const OrderMold = require('../models/OrderMold');
@@ -464,6 +465,37 @@ const pct = (n, d) => (d > 0 ? Math.min(100, Math.round((n / d) * 100)) : 0);
 // One-decimal percentage for rejection/quality rates.
 const ratePct = (bad, total) => (total > 0 ? Math.round((bad / total) * 1000) / 10 : 0);
 
+// Overall production progress = the progress of the FURTHEST pipeline stage that has
+// started (req #9). `stages` is [{ started, pct }] in Moulding→Assembly→QC→Dispatch order.
+// This is the single shared source of truth for the product cards, the order cards and
+// the order dashboard header, so the overall bar always reflects live production and is
+// never stuck at 0% just because nothing has shipped yet.
+function overallProgress(stages) {
+  let overall = 0;
+  for (const s of stages) {
+    if (s.started) overall = s.pct;
+  }
+  return overall;
+}
+
+// Customer-safe view of a QC defect report (internal ids / audit trail stripped).
+function toCustomerDefectReport(report) {
+  return {
+    id: report._id.toString(),
+    department: report.department,
+    severity: report.severity,
+    status: report.status,
+    defects: report.defects || [],
+    description: report.description || null,
+    machine: report.machine || null,
+    mould: report.mould || null,
+    part: report.part || null,
+    shift: report.shift || null,
+    photos: (report.photos || []).map(toMedia).filter(Boolean),
+    createdAt: report.createdAt,
+  };
+}
+
 // Customer-facing stage label for one department, from its progress.
 function stageStatus(hasRecords, progressPct) {
   if (!hasRecords) return 'Not started';
@@ -471,11 +503,19 @@ function stageStatus(hasRecords, progressPct) {
   return 'In progress';
 }
 
-// Group a record collection by productId → { count, lastAt }.
-async function countByProduct(model, customerId) {
+// Group a record collection by productId → { count, sum, lastAt }. `sumField` (optional)
+// totals a production quantity so the caller can derive per-stage progress percentages.
+async function countByProduct(model, customerId, sumField) {
   const rows = await model.aggregate([
     { $match: { customerId } },
-    { $group: { _id: '$productId', count: { $sum: 1 }, lastAt: { $max: '$createdAt' } } },
+    {
+      $group: {
+        _id: '$productId',
+        count: { $sum: 1 },
+        sum: { $sum: sumField ? `$${sumField}` : 0 },
+        lastAt: { $max: '$createdAt' },
+      },
+    },
   ]);
   return new Map(rows.map((r) => [String(r._id), r]));
 }
@@ -510,10 +550,10 @@ async function getProducts(user) {
       { $match: { customerId } },
       { $group: { _id: '$productId', dispatched: { $sum: '$packedQuantity' }, lastAt: { $max: '$dispatchDate' } } },
     ]),
-    countByProduct(MouldingRecord, customerId),
-    countByProduct(AssemblyRecord, customerId),
-    countByProduct(QCRecord, customerId),
-    countByProduct(PackingDispatchRecord, customerId),
+    countByProduct(MouldingRecord, customerId, 'goodParts'),
+    countByProduct(AssemblyRecord, customerId, 'assembledQuantity'),
+    countByProduct(QCRecord, customerId, 'acceptedQuantity'),
+    countByProduct(PackingDispatchRecord, customerId, 'packedQuantity'),
   ]);
 
   const ordersByProduct = new Map(ordersAgg.map((r) => [String(r._id), r]));
@@ -523,7 +563,18 @@ async function getProducts(user) {
     const id = String(p._id);
     const o = ordersByProduct.get(id) || { total: 0, active: 0, orderedQty: 0, lastOrderAt: null };
     const d = dispatchByProduct.get(id) || { dispatched: 0, lastAt: null };
-    const progressPct = pct(d.dispatched, o.orderedQty);
+
+    // Overall = furthest started stage's progress (req #9). Denominators mirror the
+    // per-stage math on the detailed order dashboard.
+    const mGood = mCount.get(id)?.sum || 0;
+    const aGood = aCount.get(id)?.sum || 0;
+    const qAcc = qCount.get(id)?.sum || 0;
+    const progressPct = overallProgress([
+      { started: !!mCount.get(id), pct: pct(mGood, o.orderedQty) },
+      { started: !!aCount.get(id), pct: pct(aGood, o.orderedQty) },
+      { started: !!qCount.get(id), pct: pct(qAcc, aGood || o.orderedQty) },
+      { started: !!dCount.get(id), pct: pct(d.dispatched, o.orderedQty) },
+    ]);
 
     // Latest activity across all departments + order creation.
     const candidates = [
@@ -582,6 +633,9 @@ async function getProductOrders(user, productId) {
         assemblyCount: { $ifNull: [{ $arrayElemAt: ['$assembly.count', 0] }, 0] },
         qcCount: { $ifNull: [{ $arrayElemAt: ['$qc.count', 0] }, 0] },
         dispatchCount: { $ifNull: [{ $arrayElemAt: ['$dispatch.count', 0] }, 0] },
+        mouldingGood: { $ifNull: [{ $arrayElemAt: ['$moulding.total', 0] }, 0] },
+        assemblyGood: { $ifNull: [{ $arrayElemAt: ['$assembly.total', 0] }, 0] },
+        qcAccepted: { $ifNull: [{ $arrayElemAt: ['$qc.total', 0] }, 0] },
         dispatchedQuantity: { $ifNull: [{ $arrayElemAt: ['$dispatch.total', 0] }, 0] },
       },
     },
@@ -594,7 +648,12 @@ async function getProductOrders(user, productId) {
       orderCode: o.orderCode || formatOrderNumber(o._id),
       orderQuantity: qty,
       dispatchedQuantity: o.dispatchedQuantity,
-      progressPct: pct(o.dispatchedQuantity, qty),
+      progressPct: overallProgress([
+        { started: o.mouldingCount > 0, pct: pct(o.mouldingGood, qty) },
+        { started: o.assemblyCount > 0, pct: pct(o.assemblyGood, qty) },
+        { started: o.qcCount > 0, pct: pct(o.qcAccepted, o.assemblyGood || qty) },
+        { started: o.dispatchCount > 0, pct: pct(o.dispatchedQuantity, qty) },
+      ]),
       status: deriveOverallStatus(o),
       stageReached: {
         moulding: o.mouldingCount > 0,
@@ -682,6 +741,14 @@ async function getOrderDashboard(user, orderId) {
     ]);
 
   const orderQty = order.orderQuantity || 0;
+
+  // Image-first defect reports authored by engineers, scoped to this customer's order
+  // (req #5). Company → Product → Order → QC Reports linkage is enforced by the query.
+  const defectReportDocs = await QCReport.find({ orderId: oid, customerId })
+    .populate('photos')
+    .sort({ createdAt: -1 })
+    .lean();
+  const defectReports = defectReportDocs.map(toCustomerDefectReport);
 
   // ---- Moulding: per mould + overall roll-up -------------------------------
   const producedByMold = new Map(mouldAgg.map((m) => [m._id, m]));
@@ -801,6 +868,15 @@ async function getOrderDashboard(user, orderId) {
     shipments,
   };
 
+  // Overall production progress = furthest started stage (req #9) — the single shared
+  // source of truth also used by the product/order cards.
+  const overallProgressPct = overallProgress([
+    { started: molds.some((m) => m.produced > 0), pct: moulding.progressPct },
+    { started: a.runs > 0, pct: assembly.progressPct },
+    { started: q.runs > 0, pct: qc.progressPct },
+    { started: shipments.length > 0, pct: dispatch.progressPct },
+  ]);
+
   // ---- Timeline (derived earliest dates) -----------------------------------
   const [moldSetupAt, prodAt, asmStartAt, qcStartAt, packAt] = timelineDates;
   const step = (label, at, done) => ({ label, at: at || null, done: !!done });
@@ -822,7 +898,7 @@ async function getOrderDashboard(user, orderId) {
       partName: product ? product.partName || null : null,
       customer: customer ? customer.name : null,
       orderQuantity: orderQty,
-      overallProgressPct: dispatch.progressPct,
+      overallProgressPct,
       status: dispatch.status === 'Completed' ? 'Completed' : deriveOverallStatus({
         orderQuantity: orderQty,
         dispatchedQuantity: dispatched,
@@ -837,6 +913,7 @@ async function getOrderDashboard(user, orderId) {
     assembly,
     qc,
     dispatch,
+    defectReports,
     timeline,
   };
 }

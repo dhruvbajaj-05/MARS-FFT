@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Pressable, RefreshControl, View } from 'react-native';
 
 import { masterApi } from '@/api/endpoints/master';
@@ -19,6 +19,7 @@ import {
   type SelectOption,
 } from '@/components';
 import { ApiError, friendlyMessage } from '@/services/apiError';
+import { useMouldingSession } from '@/features/moulding/MouldingSessionContext';
 import { useCustomerProduct } from '@/screens/engineer/useCustomerProduct';
 import { useTheme } from '@/theme/ThemeProvider';
 import { currentShift, shiftLabel } from '@/utils/shift';
@@ -34,7 +35,24 @@ import { currentShift, shiftLabel } from '@/utils/shift';
 export function MouldingForm() {
   const { spacing, colors } = useTheme();
   const qc = useQueryClient();
+  const { setActive } = useMouldingSession();
   const cp = useCustomerProduct({ orderFilter: { productionStatus: 'Active' } });
+
+  // Share the currently selected order with the QC tab so the engineer never re-selects
+  // Company → Product → Order to report a defect (req #2).
+  useEffect(() => {
+    if (cp.orderId && cp.customerId && cp.productId) {
+      setActive({
+        customerId: cp.customerId,
+        productId: cp.productId,
+        orderId: cp.orderId,
+        customerName: cp.customerOptions.find((o) => o.value === cp.customerId)?.label ?? null,
+        productName: cp.productOptions.find((o) => o.value === cp.productId)?.label ?? null,
+        orderCode: cp.selectedOrder?.orderCode ?? null,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cp.orderId, cp.customerId, cp.productId, cp.selectedOrder?.orderCode]);
 
   // ---- Mould Setup form ----
   const [mMoldName, setMMoldName] = useState('');

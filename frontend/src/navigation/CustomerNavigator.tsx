@@ -3,6 +3,7 @@ import React from 'react';
 
 import { CustomerHomeNavigator } from './CustomerHomeNavigator';
 import { SettingsScreen } from '@/screens/shared/SettingsScreen';
+import { AppTabBar } from './AppTabBar';
 import { useTabScreenOptions } from './tabOptions';
 
 const Tab = createBottomTabNavigator();
@@ -13,7 +14,7 @@ const Tab = createBottomTabNavigator();
 export function CustomerNavigator() {
   const options = useTabScreenOptions();
   return (
-    <Tab.Navigator screenOptions={options}>
+    <Tab.Navigator screenOptions={options} tabBar={(props) => <AppTabBar {...props} />}>
       <Tab.Screen name="CustomerHome" component={CustomerHomeNavigator} options={{ title: 'Home' }} />
       <Tab.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
     </Tab.Navigator>

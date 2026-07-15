@@ -7,7 +7,8 @@ const { requireBody, validateObjectId } = require('../middleware/validate');
 const { ROLES } = require('../utils/roles');
 
 // Machine Master. Admin manages; Moulding Engineers only LIST (for the production
-// dropdown). Machines are referenced by name string in records, so delete is always safe.
+// dropdown). Machines are archived, never hard-deleted, so records keep referencing them.
+
 const router = express.Router();
 
 // List — admin + moulding engineer (dropdown source).
