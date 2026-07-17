@@ -90,7 +90,10 @@ function MouldingDashboard({ userName }: { userName: string }) {
                               alignItems: 'center',
                             }}
                           >
-                            <AppText weight="600">{p.name}</AppText>
+                            <View style={{ flex: 1, paddingRight: spacing(2) }}>
+                              <AppText weight="700">{p.itemCode ?? '—'}</AppText>
+                              <AppText variant="caption" tone="muted">{p.name}</AppText>
+                            </View>
                             {p.activeOrders > 0 ? (
                               <View
                                 style={{
@@ -105,12 +108,12 @@ function MouldingDashboard({ userName }: { userName: string }) {
                                   weight="700"
                                   style={{ color: colors.status.progress.bg }}
                                 >
-                                  {p.activeOrders} Active {p.activeOrders === 1 ? 'Order' : 'Orders'}
+                                  {p.activeOrders} Active {p.activeOrders === 1 ? 'Job' : 'Jobs'}
                                 </AppText>
                               </View>
                             ) : (
                               <AppText variant="caption" tone="muted">
-                                No active orders
+                                No active jobs
                               </AppText>
                             )}
                           </View>

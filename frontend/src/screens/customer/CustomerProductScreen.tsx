@@ -91,6 +91,7 @@ function OrderCard({ order, onPress }: { order: CustomerProductOrderRow; onPress
           <View>
             <AppText variant="h3">{order.orderCode}</AppText>
             <AppText variant="caption" tone="muted">
+              {order.poNumber ? `${order.poNumber} · ` : ''}
               {order.orderQuantity.toLocaleString()} units · {relativeTime(order.createdAt, 'Placed')}
             </AppText>
           </View>
@@ -120,9 +121,10 @@ export function CustomerProductScreen() {
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}>
       <View style={{ marginBottom: spacing(4) }}>
-        <AppText variant="h1">{params.productName}</AppText>
+        <AppText variant="h1">{query.data?.product.itemCode ?? params.productName}</AppText>
         <AppText tone="muted" style={{ marginTop: spacing(1) }}>
-          {query.data ? `${query.data.orders.length} order${query.data.orders.length !== 1 ? 's' : ''}` : 'Order history'}
+          {query.data?.product.name ?? params.productName}
+          {query.data ? ` · ${query.data.orders.length} order${query.data.orders.length !== 1 ? 's' : ''}` : ''}
         </AppText>
       </View>
 

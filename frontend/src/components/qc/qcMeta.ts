@@ -12,13 +12,11 @@ export const SEVERITY_META: Record<QCSeverity, { label: string; tone: StatusTone
 
 export const STATUS_META: Record<QCStatusValue, { label: string; tone: StatusTone }> = {
   open: { label: 'Open', tone: 'danger' },
-  investigating: { label: 'Investigating', tone: 'progress' },
-  resolved: { label: 'Resolved', tone: 'success' },
-  rejected: { label: 'Rejected', tone: 'neutral' },
+  closed: { label: 'Closed', tone: 'success' },
 };
 
 export const SEVERITY_ORDER: QCSeverity[] = ['minor', 'major', 'critical'];
-export const STATUS_ORDER: QCStatusValue[] = ['open', 'investigating', 'resolved', 'rejected'];
+export const STATUS_ORDER: QCStatusValue[] = ['open', 'closed'];
 
 // The default optional tags (spec §Optional Tags).
 export const QC_TAGS = [

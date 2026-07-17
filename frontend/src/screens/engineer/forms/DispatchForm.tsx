@@ -7,17 +7,17 @@ import { storeApi } from '@/api/endpoints/store';
 import { queryKeys } from '@/api/queryKeys';
 import { AppText, Banner, Button, Card, FormField, Screen, Select } from '@/components';
 import { ApiError, friendlyMessage } from '@/services/apiError';
-import { useCustomerProduct } from '@/screens/engineer/useCustomerProduct';
+import { usePOItemCode } from '@/screens/engineer/usePOItemCode';
 import { useTheme } from '@/theme/ThemeProvider';
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 
-// Dispatch Engineer → Dispatch from Finished Goods. The backend validates the packed
-// quantity against finished-goods on hand and deducts it (stock-OUT).
+// Dispatch Engineer → Dispatch from Finished Goods (Company → PO → Item Code). The backend
+// validates the packed quantity against finished-goods on hand and deducts it (stock-OUT).
 export function DispatchForm() {
   const { spacing } = useTheme();
   const qc = useQueryClient();
-  const cp = useCustomerProduct();
+  const cp = usePOItemCode();
 
   const [dispatchDate, setDispatchDate] = useState(todayISO());
   const [packed, setPacked] = useState('');
@@ -40,6 +40,7 @@ export function DispatchForm() {
       dispatchApi.submit({
         customerId: cp.customerId!,
         productId: cp.productId!,
+        orderId: cp.jobId ?? undefined,
         dispatchDate: new Date(dispatchDate).toISOString(),
         packedQuantity: Number(packed),
         cartonCount: Number(cartons),
@@ -65,6 +66,7 @@ export function DispatchForm() {
   const canSubmit =
     cp.customerId &&
     cp.productId &&
+    cp.jobId &&
     dispatchDate.trim() &&
     transporter.trim() &&
     vehicle.trim() &&
@@ -84,11 +86,20 @@ export function DispatchForm() {
 
         <Select label="Customer" value={cp.customerId} options={cp.customerOptions} onChange={cp.selectCustomer} />
         <Select
-          label="Product"
-          value={cp.productId}
-          options={cp.productOptions}
-          onChange={(v) => cp.setProductId(v)}
-          placeholder={cp.customerId ? 'Select a product' : 'Select a customer first'}
+          label="Purchase Order"
+          value={cp.purchaseOrderId}
+          options={cp.purchaseOrderOptions}
+          onChange={(v) => cp.selectPurchaseOrder(v)}
+          placeholder={cp.customerId ? 'Select a purchase order' : 'Select a customer first'}
+          emptyHint="No purchase orders for this customer"
+        />
+        <Select
+          label="Item Code"
+          value={cp.jobId}
+          options={cp.jobOptions}
+          onChange={(v) => cp.setJobId(v)}
+          placeholder={cp.purchaseOrderId ? 'Select an item code' : 'Select a purchase order first'}
+          emptyHint="No item codes in this PO"
         />
 
         {cp.productId && balance.data ? (

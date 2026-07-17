@@ -20,39 +20,40 @@ import {
 } from '@/components';
 import { ApiError, friendlyMessage } from '@/services/apiError';
 import { useMouldingSession } from '@/features/moulding/MouldingSessionContext';
-import { useCustomerProduct } from '@/screens/engineer/useCustomerProduct';
+import { usePOItemCode } from '@/screens/engineer/usePOItemCode';
 import { useTheme } from '@/theme/ThemeProvider';
 import { currentShift, shiftLabel } from '@/utils/shift';
 
-// Moulding Engineer screen (revised workflow):
-//   1. Select Customer → Product → Order (Active production only).
-//   2. Mould Setup: define molds per order (Mold Name, Part, Cavity, Required Shots).
+// Moulding Engineer screen (Company → PO → Item Code workflow):
+//   1. Select Customer → Purchase Order → Item Code (active production jobs only).
+//   2. Mould Setup: define molds per item code (Mold Name, Part, Cavity, Required Shots).
 //   3. Production push: Shots Done + Rejected Shots (shots, not pieces).
 //      Good Pieces = (Shots Done − Rejected Shots) × Cavity (req #2).
-//      Rejection reasons: multi-select checkboxes (req #3).
-//   4. Recovery section (when order is complete): enter recovered good pieces
-//      from inspected rejected shots → goes to Product Surplus (req #9).
+//   4. Recovery section (when the item code is complete): recovered good pieces → Surplus.
 export function MouldingForm() {
   const { spacing, colors } = useTheme();
   const qc = useQueryClient();
   const { setActive } = useMouldingSession();
-  const cp = useCustomerProduct({ orderFilter: { productionStatus: 'Active' } });
+  const cp = usePOItemCode({ jobFilter: (j) => j.productionStatus === 'Active' });
 
-  // Share the currently selected order with the QC tab so the engineer never re-selects
-  // Company → Product → Order to report a defect (req #2).
+  // Share the selected Item Code job with the QC tab so the engineer never re-selects
+  // Company → PO → Item Code to report a defect (req #2).
   useEffect(() => {
-    if (cp.orderId && cp.customerId && cp.productId) {
+    if (cp.jobId && cp.customerId && cp.productId) {
       setActive({
         customerId: cp.customerId,
         productId: cp.productId,
-        orderId: cp.orderId,
+        orderId: cp.jobId,
+        purchaseOrderId: cp.purchaseOrderId,
+        poNumber: cp.selectedPO?.poNumber ?? null,
+        itemCode: cp.itemCode,
         customerName: cp.customerOptions.find((o) => o.value === cp.customerId)?.label ?? null,
-        productName: cp.productOptions.find((o) => o.value === cp.productId)?.label ?? null,
-        orderCode: cp.selectedOrder?.orderCode ?? null,
+        productName: cp.selectedJob?.productName ?? null,
+        orderCode: cp.selectedJob?.orderCode ?? null,
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cp.orderId, cp.customerId, cp.productId, cp.selectedOrder?.orderCode]);
+  }, [cp.jobId, cp.customerId, cp.productId, cp.purchaseOrderId, cp.itemCode]);
 
   // ---- Mould Setup form ----
   const [mMoldName, setMMoldName] = useState('');
@@ -88,16 +89,16 @@ export function MouldingForm() {
     queryFn: () => mouldingApi.rejectionReasons(),
   });
   const orderMolds = useQuery({
-    queryKey: queryKeys.orderMolds(cp.orderId ?? 'none'),
-    queryFn: () => mouldingApi.orderMolds(cp.orderId!),
-    enabled: !!cp.orderId,
+    queryKey: queryKeys.orderMolds(cp.jobId ?? 'none'),
+    queryFn: () => mouldingApi.orderMolds(cp.jobId!),
+    enabled: !!cp.jobId,
   });
   const prodStatus = useQuery({
-    queryKey: queryKeys.dept('moulding').status(cp.orderId ?? 'none'),
-    queryFn: () => mouldingApi.status(cp.orderId!),
-    enabled: !!cp.orderId,
+    queryKey: queryKeys.dept('moulding').status(cp.jobId ?? 'none'),
+    queryFn: () => mouldingApi.status(cp.jobId!),
+    enabled: !!cp.jobId,
   });
-  // Product-level store surplus (pooled across all orders) — shown on the mould setup so the
+  // Product-level store surplus (pooled across all jobs) — shown on the mould setup so the
   // planner can reduce Required Shots by whatever usable inventory already exists.
   const storeSurplus = useQuery({
     queryKey: queryKeys.store.componentsByOrder({
@@ -121,7 +122,7 @@ export function MouldingForm() {
   const saveMold = useMutation({
     mutationFn: () =>
       mouldingApi.upsertOrderMold({
-        orderId: cp.orderId!,
+        orderId: cp.jobId!,
         customerId: cp.customerId ?? undefined,
         productId: cp.productId ?? undefined,
         moldName: mMoldName.trim(),
@@ -134,11 +135,11 @@ export function MouldingForm() {
     onSuccess: (mold) => {
       setMoldOk(`Mold "${mold.moldName}" saved (${mold.partName}, ${mold.cavity} cavity, target ${mold.requiredQuantity}).`);
       resetSetupForm();
-      qc.invalidateQueries({ queryKey: queryKeys.orderMolds(cp.orderId!) });
+      qc.invalidateQueries({ queryKey: queryKeys.orderMolds(cp.jobId!) });
       if (cp.productId) qc.invalidateQueries({ queryKey: queryKeys.molds(cp.productId) });
       // Target (requiredShots) changes re-derive finished/pending/surplus.
       qc.invalidateQueries({ queryKey: ['store'] });
-      qc.invalidateQueries({ queryKey: queryKeys.dept('moulding').status(cp.orderId!) });
+      qc.invalidateQueries({ queryKey: queryKeys.dept('moulding').status(cp.jobId!) });
     },
   });
 
@@ -157,7 +158,7 @@ export function MouldingForm() {
   const submit = useMutation({
     mutationFn: () =>
       mouldingApi.submit({
-        orderId: cp.orderId!,
+        orderId: cp.jobId!,
         customerId: cp.customerId!,
         productId: cp.productId!,
         moldName: selectedMold!,
@@ -178,7 +179,7 @@ export function MouldingForm() {
       qc.invalidateQueries({ queryKey: ['store'] });
       qc.invalidateQueries({ queryKey: ['moulding'] });
       qc.invalidateQueries({ queryKey: queryKeys.rejectionReasons });
-      qc.invalidateQueries({ queryKey: queryKeys.orderMolds(cp.orderId!) });
+      qc.invalidateQueries({ queryKey: queryKeys.orderMolds(cp.jobId!) });
       qc.invalidateQueries({ queryKey: queryKeys.mouldingDashboard });
     },
   });
@@ -195,7 +196,7 @@ export function MouldingForm() {
         }))
         .filter((e) => e.goodPieces > 0);
       return mouldingApi.recover({
-        orderId: cp.orderId!,
+        orderId: cp.jobId!,
         productId: cp.productId!,
         customerId: cp.customerId!,
         recoveries: entries,
@@ -271,12 +272,12 @@ export function MouldingForm() {
       ? (shotsNum - rejectedShotsNum) * cavity
       : null;
 
-  const canSaveMold = !!(cp.orderId && mMoldName.trim() && mPartName.trim() && Number(mCavity) >= 1);
+  const canSaveMold = !!(cp.jobId && mMoldName.trim() && mPartName.trim() && Number(mCavity) >= 1);
 
   const canSubmit = !!(
     cp.customerId &&
     cp.productId &&
-    cp.orderId &&
+    cp.jobId &&
     selectedMold &&
     machineNumber &&
     Number.isFinite(shotsNum) &&
@@ -291,12 +292,12 @@ export function MouldingForm() {
   const isProductionComplete = prodStatus.data?.status === 'Completed';
 
   return (
-    <Screen scroll contentStyle={{ paddingBottom: 200 }} refreshControl={<RefreshControl refreshing={cp.orders.isRefetching} onRefresh={cp.orders.refetch} />}>
+    <Screen scroll contentStyle={{ paddingBottom: 200 }} refreshControl={<RefreshControl refreshing={cp.refreshing} onRefresh={cp.refetch} />}>
       <AppText variant="h2" style={{ marginBottom: spacing(3) }}>
         Moulding
       </AppText>
 
-      {/* Customer → Product → Order */}
+      {/* Customer → Purchase Order → Item Code */}
       <Card style={{ marginBottom: spacing(4) }}>
         <Select
           label="Customer"
@@ -309,27 +310,28 @@ export function MouldingForm() {
           emptyHint="Ask admin to create a customer"
         />
         <Select
-          label="Product"
-          value={cp.productId}
-          options={cp.productOptions}
+          label="Purchase Order"
+          value={cp.purchaseOrderId}
+          options={cp.purchaseOrderOptions}
           onChange={(v) => {
-            cp.selectProduct(v);
+            cp.selectPurchaseOrder(v);
             setSelectedMold(null);
           }}
-          placeholder={cp.customerId ? 'Select a product' : 'Select a customer first'}
+          placeholder={cp.customerId ? 'Select a purchase order' : 'Select a customer first'}
+          emptyHint="No purchase orders for this customer"
         />
         <Select
-          label="Order (OrderID)"
-          value={cp.orderId}
-          options={cp.orderOptions}
+          label="Item Code"
+          value={cp.jobId}
+          options={cp.jobOptions}
           onChange={(v) => {
-            cp.setOrderId(v);
+            cp.setJobId(v);
             setSelectedMold(null);
           }}
-          placeholder={cp.productId ? 'Select an order' : 'Select a product first'}
-          emptyHint="No active orders for this product"
+          placeholder={cp.purchaseOrderId ? 'Select an item code' : 'Select a purchase order first'}
+          emptyHint="No active item codes in this PO"
         />
-        {cp.selectedOrder ? (
+        {cp.selectedJob ? (
           <View
             style={{
               flexDirection: 'row',
@@ -340,10 +342,10 @@ export function MouldingForm() {
             }}
           >
             <AppText tone="muted">
-              Order: <AppText weight="600">{cp.selectedOrder.orderCode ?? '—'}</AppText>
+              Item: <AppText weight="600">{cp.itemCode ?? '—'}</AppText>
             </AppText>
             <AppText tone="muted">
-              Quantity: <AppText weight="600">{cp.selectedOrder.orderQuantity} sets</AppText>
+              Quantity: <AppText weight="600">{cp.selectedJob.orderQuantity} sets</AppText>
             </AppText>
           </View>
         ) : null}
@@ -354,14 +356,14 @@ export function MouldingForm() {
         ) : null}
       </Card>
 
-      {/* Mould Setup (per order) */}
-      {cp.orderId && !isProductionComplete ? (
+      {/* Mould Setup (per item code) */}
+      {cp.jobId && !isProductionComplete ? (
         <Card style={{ marginBottom: spacing(4) }}>
           <AppText variant="h3" style={{ marginBottom: spacing(2) }}>
-            Mould Setup for this order
+            Mould Setup for this item code
           </AppText>
 
-          {/* Current store surplus (product-level, pooled across orders) — so the planner can
+          {/* Current store surplus (product-level, pooled across jobs) — so the planner can
               reduce Required Shots by the usable inventory that already exists. */}
           {surplusRows.length > 0 ? (
             <View
@@ -441,7 +443,7 @@ export function MouldingForm() {
           {suggestions.length > 0 ? (
             <View style={{ marginBottom: spacing(3) }}>
               <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>
-                Suggestions (from previous orders) — tap to use
+                Suggestions (from previous item codes) — tap to use
               </AppText>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2) }}>
                 {suggestions.map((s) => (
@@ -496,7 +498,7 @@ export function MouldingForm() {
       ) : null}
 
       {/* Production push */}
-      {cp.orderId && !isProductionComplete ? (
+      {cp.jobId && !isProductionComplete ? (
         <Card style={{ marginBottom: spacing(4) }}>
           <AppText variant="h3" style={{ marginBottom: spacing(2) }}>
             Production Push
@@ -600,10 +602,10 @@ export function MouldingForm() {
         </Card>
       ) : null}
 
-      {/* Order completed banner + recovery section (req #9) */}
-      {cp.orderId && isProductionComplete ? (
+      {/* Item code completed banner + recovery section (req #9) */}
+      {cp.jobId && isProductionComplete ? (
         <Card style={{ marginBottom: spacing(4) }}>
-          <Banner tone="success" persistent message="Production complete for this order." />
+          <Banner tone="success" persistent message="Production complete for this item code." />
           <Pressable
             onPress={() => setShowRecovery((s) => !s)}
             style={{
@@ -649,7 +651,7 @@ export function MouldingForm() {
             </View>
           ) : showRecovery ? (
             <AppText tone="muted" style={{ marginTop: spacing(2) }}>
-              No molds set up for this order.
+              No molds set up for this item code.
             </AppText>
           ) : null}
         </Card>

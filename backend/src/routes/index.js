@@ -4,6 +4,7 @@ const express = require('express');
 const authRoutes = require('./auth.routes');
 const customerRoutes = require('./customer.routes');
 const productRoutes = require('./product.routes');
+const purchaseOrderRoutes = require('./purchaseOrder.routes');
 const orderRoutes = require('./order.routes');
 const userRoutes = require('./user.routes');
 const mouldingRoutes = require('./moulding.routes');
@@ -32,6 +33,9 @@ router.use('/auth', authRoutes);
 // engineers may read customers/products/orders to drive dropdowns).
 router.use('/customers', customerRoutes);
 router.use('/products', productRoutes);
+// Purchase Orders — the container grouping several Item Code production jobs (each an
+// Order). Admin creates; engineers read to drive the Company → PO → Item Code cascade.
+router.use('/purchase-orders', purchaseOrderRoutes);
 router.use('/orders', orderRoutes);
 router.use('/users', userRoutes);
 

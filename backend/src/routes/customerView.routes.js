@@ -3,13 +3,14 @@
 const express = require('express');
 const customerViewController = require('../controllers/customerView.controller');
 const protect = require('../middleware/protect');
-const { validateObjectId } = require('../middleware/validate');
+const { validateObjectId, requireBody } = require('../middleware/validate');
 const { ROLES } = require('../utils/roles');
 
-// Phase 8 — Customer dashboard (Module 5). READ-ONLY.
-// Every route is locked to the `customer` role via RBAC (...protect(ROLES.CUSTOMER));
-// the service further forces all queries to the token's own customerId. There are
-// deliberately no POST/PUT/PATCH/DELETE routes here.
+// Phase 8 — Customer dashboard (Module 5). Read-only except for one deliberate,
+// tightly-scoped write: a customer may add a comment to a QC case on their OWN order
+// (see the qc-reports comment route below). Every route is locked to the `customer`
+// role via RBAC (...protect(ROLES.CUSTOMER)); the service further forces all queries to
+// the token's own customerId, so a customer can never touch another customer's data.
 const router = express.Router();
 
 // Dashboard counters (Total / Active / Completed / Delayed).
@@ -55,6 +56,16 @@ router.get(
   ...protect(ROLES.CUSTOMER),
   validateObjectId('id'),
   customerViewController.getOrderProgress
+);
+
+// Append a comment to a QC case on the customer's own order (read-only otherwise).
+router.post(
+  '/orders/:id/qc-reports/:reportId/comments',
+  ...protect(ROLES.CUSTOMER),
+  validateObjectId('id'),
+  validateObjectId('reportId'),
+  requireBody(['text']),
+  customerViewController.addQcComment
 );
 
 module.exports = router;

@@ -60,6 +60,23 @@ function publicUrlFor(diskPath) {
   return `${env.upload.baseUrl}${env.upload.publicPath}/${rel}`;
 }
 
+// Reverse of publicUrlFor: resolve the on-disk path a stored media URL points to, so a
+// binary can be physically removed (e.g. when a QC case is closed). Works whether the URL
+// is absolute (PUBLIC_BASE_URL set) or a relative `/uploads/...` path. Returns null when
+// the URL doesn't sit under the public uploads path.
+function diskPathForUrl(url) {
+  if (!url) return null;
+  const marker = `${env.upload.publicPath}/`;
+  const idx = url.indexOf(marker);
+  if (idx === -1) return null;
+  const rel = url.slice(idx + marker.length).split('/').join(path.sep);
+  const resolved = path.join(env.upload.dir, rel);
+  // Guard against path traversal: the resolved path must stay inside the uploads dir.
+  const base = path.resolve(env.upload.dir);
+  if (!path.resolve(resolved).startsWith(base)) return null;
+  return resolved;
+}
+
 // Translate a multer error into a clean 400 (size/count limits, unexpected field).
 function toUploadError(err) {
   if (err.code === 'LIMIT_FILE_SIZE') {
@@ -143,4 +160,4 @@ function mediaFields(subdir, specs) {
   return runHandler(mediaUploader(subdir, fieldKinds).fields(fields));
 }
 
-module.exports = { singleImage, arrayImages, mediaFields, publicUrlFor, MAX_IMAGES_PER_RECORD };
+module.exports = { singleImage, arrayImages, mediaFields, publicUrlFor, diskPathForUrl, MAX_IMAGES_PER_RECORD };

@@ -44,6 +44,9 @@ export interface Product {
   id: string;
   customerId: string | null;
   name: string;
+  // Unique manufacturing identifier (e.g. "37500"). Referenced by every production
+  // process; `name` is display only.
+  itemCode: string | null;
   partName: string | null;
   status?: 'Active' | 'Archived';
   createdBy: string | null;
@@ -63,6 +66,8 @@ export type OrderPhaseStatus = 'Active' | 'Completed';
 export interface Order {
   id: string;
   orderCode: string | null;
+  // The Purchase Order this Item Code job belongs to (null for legacy/standalone jobs).
+  purchaseOrderId: string | null;
   customerId: string | null;
   productId: string | null;
   orderQuantity: number;
@@ -75,6 +80,45 @@ export interface Order {
   archivedAt: string | null;
   createdBy: string | null;
   createdAt: string;
+}
+
+// ---- Purchase Orders (Company → PO → Item Code) ----
+export type PurchaseOrderStatus = 'Open' | 'Completed' | 'Archived';
+
+// A PO summary row (list view) — jobCount/totalQuantity are roll-ups over its Item Code jobs.
+export interface PurchaseOrder {
+  id: string;
+  poNumber: string | null;
+  customerId: string | null;
+  customerName?: string | null;
+  status: PurchaseOrderStatus;
+  notes: string | null;
+  jobCount?: number;
+  completedJobs?: number;
+  totalQuantity?: number;
+  completedAt: string | null;
+  archivedAt: string | null;
+  createdBy: string | null;
+  createdAt: string;
+}
+
+// One Item Code production job inside a PO (an Order enriched with its product identity).
+export interface POJob extends Order {
+  itemCode: string | null;
+  productName: string | null;
+  partName: string | null;
+}
+
+// Full PO detail: the container + its Item Code jobs.
+export interface PurchaseOrderDetail {
+  purchaseOrder: PurchaseOrder;
+  jobs: POJob[];
+}
+
+// One line when creating a PO (an Item Code + how many sets to produce).
+export interface POLineInput {
+  productId: string;
+  orderQuantity: number;
 }
 export interface ManagedUser {
   id: string;
@@ -102,6 +146,7 @@ export interface RunningMould {
 export interface MouldingDashboardProduct {
   id: string;
   name: string;
+  itemCode: string | null;
   partName: string | null;
   activeOrders: number;
   runningMoulds: RunningMould[];
@@ -337,6 +382,7 @@ export interface CustomerOrderProgress {
 export interface CustomerProduct {
   id: string;
   name: string;
+  itemCode: string | null;
   partName: string | null;
   totalOrders: number;
   activeOrders: number;
@@ -351,6 +397,7 @@ export interface CustomerProductsResponse {
 export interface CustomerProductOrderRow {
   id: string;
   orderCode: string;
+  poNumber: string | null;
   orderQuantity: number;
   dispatchedQuantity: number;
   progressPct: number;
@@ -359,7 +406,7 @@ export interface CustomerProductOrderRow {
   createdAt: string;
 }
 export interface CustomerProductOrders {
-  product: { id: string; name: string; partName: string | null };
+  product: { id: string; name: string; itemCode: string | null; partName: string | null };
   orders: CustomerProductOrderRow[];
 }
 
@@ -388,7 +435,9 @@ export interface CustomerOrderDashboard {
   order: {
     id: string;
     orderCode: string;
+    poNumber: string | null;
     product: string | null;
+    itemCode: string | null;
     partName: string | null;
     customer: string | null;
     orderQuantity: number;
@@ -467,6 +516,16 @@ export interface CustomerDefectReport {
   part: string | null;
   shift: 'A' | 'B' | 'C' | null;
   photos: Media[];
+  comments: CustomerQCComment[];
+  createdAt: string;
+}
+
+// A QC comment as exposed to the customer portal (internal author id stripped).
+export interface CustomerQCComment {
+  id?: string;
+  authorName: string | null;
+  authorRole: string | null;
+  text: string;
   createdAt: string;
 }
 
@@ -508,6 +567,7 @@ export interface AdminOrderRow {
   customer: string | null;
   customerId: string | null;
   product: string | null;
+  itemCode: string | null;
   productId: string | null;
   orderQuantity: number;
   dispatchedQuantity: number;
@@ -843,7 +903,8 @@ export interface AdminOrderTimeline extends AdminOrderRow {
 // ---------------------------------------------------------------------------
 export type QCDepartment = 'moulding' | 'assembly';
 export type QCSeverity = 'minor' | 'major' | 'critical';
-export type QCStatusValue = 'open' | 'investigating' | 'resolved' | 'rejected';
+// Simplified QC lifecycle (2026-07): a case is either Open or Closed.
+export type QCStatusValue = 'open' | 'closed';
 
 export interface QCComment {
   id?: string;
@@ -886,6 +947,7 @@ export interface QCReport {
   orderCode?: string | null;
   customerName?: string | null;
   productName?: string | null;
+  itemCode?: string | null;
 }
 export interface QCCountBucket {
   label: string;
@@ -900,6 +962,7 @@ export interface QCOrderContext {
     productId: string;
     customerName: string | null;
     productName: string | null;
+    itemCode: string | null;
     productionStatus: string;
     assemblyStatus: string;
   };
@@ -921,10 +984,12 @@ export interface QCSummary {
 export interface QCActiveOrder {
   id: string;
   orderCode: string | null;
+  purchaseOrderId: string | null;
   customerId: string;
   productId: string;
   customerName: string | null;
   productName: string | null;
+  itemCode: string | null;
   orderQuantity: number;
   productionStatus: string;
   productionComplete: boolean;

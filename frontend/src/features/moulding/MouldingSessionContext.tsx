@@ -1,12 +1,15 @@
 import React, { createContext, useContext, useMemo, useState } from 'react';
 
-// The order the moulding engineer is currently working on. Set from the Entry tab when a
-// Company → Product → Order is chosen, and read by the QC tab so the engineer never has to
-// re-select Company / Product / Order to report a defect (QC module req #2).
+// The Item Code job the moulding engineer is currently working on. Set from the Entry tab
+// when a Company → PO → Item Code is chosen, and read by the QC tab so the engineer never
+// has to re-select anything to report a defect (QC module req #2). `orderId` is the job id.
 export interface MouldingActiveOrder {
   customerId: string;
   productId: string;
   orderId: string;
+  purchaseOrderId: string | null;
+  poNumber: string | null;
+  itemCode: string | null;
   customerName: string | null;
   productName: string | null;
   orderCode: string | null;

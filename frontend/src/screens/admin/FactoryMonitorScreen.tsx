@@ -398,6 +398,7 @@ function DisclosureRow({
 interface ProductGroup {
   productId: string;
   product: string;
+  itemCode: string | null;
   orders: AdminOrderRow[];
 }
 interface CustomerGroup {
@@ -439,7 +440,7 @@ export function FactoryMonitorScreen() {
       const cust = custMap.get(custId)!;
       let prod = cust.products.find((p) => p.productId === prodId);
       if (!prod) {
-        prod = { productId: prodId, product: o.product ?? 'Unknown product', orders: [] };
+        prod = { productId: prodId, product: o.product ?? 'Unknown product', itemCode: o.itemCode ?? null, orders: [] };
         cust.products.push(prod);
       }
       prod.orders.push(o);
@@ -456,7 +457,7 @@ export function FactoryMonitorScreen() {
         Production Records
       </AppText>
       <AppText tone="muted" variant="caption" style={{ marginBottom: spacing(4) }}>
-        Customer → Product → Order → Stage. Expand to drill into records.
+        Customer → Item Code → Job → Stage. Expand to drill into records.
       </AppText>
 
       {ordersQ.isLoading ? (
@@ -490,8 +491,8 @@ export function FactoryMonitorScreen() {
                       <View key={prodKey} style={{ borderTopWidth: 1, borderTopColor: colors.border }}>
                         <DisclosureRow
                           open={isOpen(prodKey)}
-                          title={prod.product}
-                          subtitle={`${prod.orders.length} order${prod.orders.length !== 1 ? 's' : ''}`}
+                          title={prod.itemCode ? `${prod.itemCode} · ${prod.product}` : prod.product}
+                          subtitle={`${prod.orders.length} job${prod.orders.length !== 1 ? 's' : ''}`}
                           depth={1}
                           onPress={() => toggle(prodKey)}
                         />

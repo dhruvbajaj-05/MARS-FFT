@@ -33,9 +33,9 @@ export const masterApi = {
   // Products (filter by customerId for cascading dropdowns)
   listProducts: (params: ListParams = {}) =>
     apiClient.get<Paginated<Product>>('/products', { params }).then((r) => r.data),
-  createProduct: (input: { customerId: string; name: string; partName?: string }) =>
+  createProduct: (input: { customerId: string; name: string; itemCode: string; partName?: string }) =>
     apiClient.post<{ product: Product }>('/products', input).then((r) => r.data.product),
-  updateProduct: (id: string, input: { name?: string; partName?: string }) =>
+  updateProduct: (id: string, input: { name?: string; itemCode?: string; partName?: string }) =>
     apiClient.patch<{ product: Product }>(`/products/${id}`, input).then((r) => r.data.product),
   // Delete (admin). Backend returns 409 product_in_use when production history exists.
   deleteProduct: (id: string) =>

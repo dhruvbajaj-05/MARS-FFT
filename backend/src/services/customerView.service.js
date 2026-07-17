@@ -2,6 +2,7 @@
 
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
+const PurchaseOrder = require('../models/PurchaseOrder');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
 const MouldingRecord = require('../models/MouldingRecord');
@@ -18,7 +19,7 @@ const qcService = require('./qc.service');
 const dispatchService = require('./dispatch.service');
 const storeService = require('./store.service');
 
-const { notFound, forbidden } = require('../utils/httpError');
+const { notFound, forbidden, badRequest } = require('../utils/httpError');
 const { parsePagination, buildList } = require('../utils/pagination');
 const { DELAYED_AFTER_DAYS, DAY_MS } = require('../utils/sla');
 
@@ -366,7 +367,7 @@ async function getOrderDetails(user, orderId) {
 
   const [customer, product, qcSummary, dispatchSummary, photos] = await Promise.all([
     Customer.findById(order.customerId).select('name').lean(),
-    Product.findById(order.productId).select('name partName').lean(),
+    Product.findById(order.productId).select('name itemCode partName').lean(),
     buildQcSummary(order._id, customerId),
     buildDispatchSummary(order._id, customerId),
     collectPhotos(order._id, customerId),
@@ -492,6 +493,15 @@ function toCustomerDefectReport(report) {
     part: report.part || null,
     shift: report.shift || null,
     photos: (report.photos || []).map(toMedia).filter(Boolean),
+    // The shared conversation (Admin / engineer / customer). Customers may read the whole
+    // thread and add their own comments (see addQcComment) on their own orders.
+    comments: (report.comments || []).map((c) => ({
+      id: c._id ? c._id.toString() : undefined,
+      authorName: c.authorName || null,
+      authorRole: c.authorRole || null,
+      text: c.text,
+      createdAt: c.createdAt,
+    })),
     createdAt: report.createdAt,
   };
 }
@@ -600,6 +610,7 @@ async function getProducts(user) {
     return {
       id,
       name: p.name,
+      itemCode: p.itemCode || null,
       partName: p.partName || null,
       totalOrders: o.total,
       activeOrders: o.active,
@@ -617,7 +628,7 @@ async function getProducts(user) {
 // ---------------------------------------------------------------------------
 async function getProductOrders(user, productId) {
   const customerId = customerScope(user);
-  const product = await Product.findOne({ _id: productId, customerId }).select('name partName').lean();
+  const product = await Product.findOne({ _id: productId, customerId }).select('name itemCode partName').lean();
   if (!product) throw notFound('Product not found', 'product_not_found');
 
   const orders = await Order.aggregate([
@@ -641,11 +652,19 @@ async function getProductOrders(user, productId) {
     },
   ]);
 
+  // Resolve the PO number for each item code job (so the customer sees Company → PO → Item Code).
+  const poIds = [...new Set(orders.map((o) => o.purchaseOrderId).filter(Boolean).map(String))];
+  const poDocs = poIds.length
+    ? await PurchaseOrder.find({ _id: { $in: poIds } }).select('poNumber').lean()
+    : [];
+  const poNumMap = new Map(poDocs.map((p) => [String(p._id), p.poNumber || null]));
+
   const data = orders.map((o) => {
     const qty = o.orderQuantity || 0;
     return {
       id: String(o._id),
       orderCode: o.orderCode || formatOrderNumber(o._id),
+      poNumber: o.purchaseOrderId ? poNumMap.get(String(o.purchaseOrderId)) || null : null,
       orderQuantity: qty,
       dispatchedQuantity: o.dispatchedQuantity,
       progressPct: overallProgress([
@@ -666,7 +685,12 @@ async function getProductOrders(user, productId) {
   });
 
   return {
-    product: { id: String(product._id), name: product.name, partName: product.partName || null },
+    product: {
+      id: String(product._id),
+      name: product.name,
+      itemCode: product.itemCode || null,
+      partName: product.partName || null,
+    },
     orders: data,
   };
 }
@@ -678,10 +702,14 @@ async function getOrderDashboard(user, orderId) {
   const customerId = customerScope(user);
   const order = await loadOwnedOrder(orderId, customerId);
   const oid = new mongoose.Types.ObjectId(orderId);
+  // The Purchase Order this item code job belongs to (Company → PO → Item Code).
+  const po = order.purchaseOrderId
+    ? await PurchaseOrder.findById(order.purchaseOrderId).select('poNumber').lean()
+    : null;
 
   const [product, customer, orderMolds, mouldAgg, asmAgg, qcAgg, dispatchRecs, qcPhotoDocs, timelineDates] =
     await Promise.all([
-      Product.findById(order.productId).select('name partName').lean(),
+      Product.findById(order.productId).select('name itemCode partName').lean(),
       Customer.findById(order.customerId).select('name').lean(),
       OrderMold.find({ orderId: oid }).lean(),
       // Per-mould production, latest-first so $first captures the latest machine/shift.
@@ -894,7 +922,9 @@ async function getOrderDashboard(user, orderId) {
     order: {
       id: String(order._id),
       orderCode: order.orderCode || formatOrderNumber(order._id),
+      poNumber: po ? po.poNumber || null : null,
       product: product ? product.name : null,
+      itemCode: product ? product.itemCode || null : null,
       partName: product ? product.partName || null : null,
       customer: customer ? customer.name : null,
       orderQuantity: orderQty,
@@ -918,6 +948,39 @@ async function getOrderDashboard(user, orderId) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// POST /customer/orders/:id/qc-reports/:reportId/comments — customer reply
+// ---------------------------------------------------------------------------
+//
+// The single deliberate write in this otherwise read-only service. Scoped hard to the
+// caller's own customerId AND orderId, so a customer can only ever comment on a QC case
+// that belongs to one of their own orders. Customers cannot change status, upload images
+// or close cases — only append a comment to the shared thread.
+async function addQcComment(user, orderId, reportId, text) {
+  const customerId = customerScope(user);
+  const order = await loadOwnedOrder(orderId, customerId); // 404 unless owned by caller
+
+  if (!mongoose.Types.ObjectId.isValid(reportId)) {
+    throw notFound('QC report not found', 'qc_report_not_found');
+  }
+  const clean = String(text || '').trim();
+  if (!clean) throw badRequest('Comment text is required', 'invalid_comment');
+
+  const report = await QCReport.findOne({ _id: reportId, orderId: order._id, customerId });
+  if (!report) throw notFound('QC report not found', 'qc_report_not_found');
+
+  const customer = await Customer.findById(customerId).select('name').lean();
+  report.comments.push({
+    authorId: user.id,
+    authorName: customer ? customer.name : 'Customer',
+    authorRole: 'customer',
+    text: clean,
+  });
+  await report.save();
+  await report.populate('photos');
+  return { report: toCustomerDefectReport(report) };
+}
+
 module.exports = {
   getDashboard,
   listOrders,
@@ -928,4 +991,5 @@ module.exports = {
   getProducts,
   getProductOrders,
   getOrderDashboard,
+  addQcComment,
 };

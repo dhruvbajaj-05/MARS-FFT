@@ -7,7 +7,7 @@ import { RefreshControl, StyleSheet, TextInput, View } from 'react-native';
 import { qcReportsApi, type QCListParams } from '@/api/endpoints/qcReports';
 import { queryKeys } from '@/api/queryKeys';
 import type { QCDepartment, QCReport, QCStatusValue } from '@/api/types';
-import { AppText, PressableScale, QueryBoundary, Screen, Select, StatusPill } from '@/components';
+import { AppText, PressableScale, QueryBoundary, Screen, Select, StatusPill, type SelectOption } from '@/components';
 import { SEVERITY_META, STATUS_META, STATUS_ORDER, formatDateTime } from '@/components/qc';
 import { useCustomerProduct } from '@/screens/engineer/useCustomerProduct';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -55,6 +55,12 @@ export function AdminQCScreen() {
     queryFn: () => qcReportsApi.list(params),
   });
 
+  // Item Code options (product = item code, 1:1) so the browser filters by item code, not name.
+  const itemCodeOptions: SelectOption[] = (cp.products.data?.data ?? []).map((p) => ({
+    label: p.itemCode ? `${p.itemCode} · ${p.name}` : p.name,
+    value: p.id,
+  }));
+
   return (
     <Screen
       scroll
@@ -91,7 +97,7 @@ export function AdminQCScreen() {
         />
       </View>
 
-      {/* Company → Product → Order filters */}
+      {/* Company → Item Code → Job filters */}
       <View style={{ marginBottom: spacing(2) }}>
         <Select
           label="Company"
@@ -101,17 +107,17 @@ export function AdminQCScreen() {
         />
         {cp.customerId ? (
           <Select
-            label="Product"
+            label="Item Code"
             value={cp.productId}
-            options={[{ label: 'All products', value: '' }, ...cp.productOptions]}
+            options={[{ label: 'All item codes', value: '' }, ...itemCodeOptions]}
             onChange={(v) => (v ? cp.selectProduct(v) : cp.selectProduct(''))}
           />
         ) : null}
         {cp.productId ? (
           <Select
-            label="Order ID"
+            label="Job (Order ID)"
             value={cp.orderId}
-            options={[{ label: 'All orders', value: '' }, ...cp.orderOptions]}
+            options={[{ label: 'All jobs', value: '' }, ...cp.orderOptions]}
             onChange={(v) => cp.setOrderId(v || null)}
           />
         ) : null}
@@ -233,7 +239,7 @@ function AdminReportCard({ report, onPress }: { report: QCReport; onPress: () =>
             {report.defects.length ? report.defects.join(', ') : 'Defect report'}
           </AppText>
           <AppText variant="caption" tone="muted" numberOfLines={1}>
-            {[report.customerName, report.productName, report.orderCode].filter(Boolean).join(' · ') || '—'}
+            {[report.customerName, report.itemCode ?? report.productName, report.orderCode].filter(Boolean).join(' · ') || '—'}
           </AppText>
           <AppText variant="caption" tone="muted" numberOfLines={1}>
             {report.department === 'assembly' ? 'Assembly' : 'Moulding'} ·{' '}

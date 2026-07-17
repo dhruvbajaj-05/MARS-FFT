@@ -96,6 +96,22 @@ async function finishedGoods(req, res, next) {
   }
 }
 
+// POST /api/v1/customer/orders/:id/qc-reports/:reportId/comments  (customer)
+// The only write in this module — append a comment to a QC case on the customer's own order.
+async function addQcComment(req, res, next) {
+  try {
+    const result = await customerViewService.addQcComment(
+      req.user,
+      req.params.id,
+      req.params.reportId,
+      req.body.text
+    );
+    res.status(201).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = {
   dashboard,
   listOrders,
@@ -106,4 +122,5 @@ module.exports = {
   products,
   productOrders,
   orderDashboard,
+  addQcComment,
 };

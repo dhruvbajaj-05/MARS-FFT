@@ -2,26 +2,21 @@ import { useRoute, type RouteProp } from '@react-navigation/native';
 import { Image } from 'expo-image';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, ScrollView, View } from 'react-native';
 
 import { qcReportsApi } from '@/api/endpoints/qcReports';
 import { queryKeys } from '@/api/queryKeys';
 import type { QCReport, QCStatusValue } from '@/api/types';
 import { AppText, QueryBoundary, Screen } from '@/components';
-import { SectionCard, StatusPill } from '@/components/premium';
-import {
-  CommentThread,
-  FullscreenImageViewer,
-  SEVERITY_META,
-  STATUS_META,
-  StatusPicker,
-  formatDateTime,
-  shiftLabel,
-} from '@/components/qc';
+import { SectionCard } from '@/components/premium';
+import { CommentThread, FullscreenImageViewer, StatusPicker, formatDateTime } from '@/components/qc';
 import { resolveMediaUrl } from '@/utils/mediaUrl';
 import { useTheme } from '@/theme/ThemeProvider';
 import type { QCStackParamList } from './navTypes';
 
+// A QC case, simplified: images (until the case is closed), an Open/Closed control, and
+// the comment thread. Closing a case permanently deletes its images from storage — the
+// record and comments are kept for audit.
 export function QCReportDetailScreen() {
   const { colors, spacing, radius } = useTheme();
   const { params } = useRoute<RouteProp<QCStackParamList, 'QCReportDetail'>>();
@@ -53,6 +48,22 @@ export function QCReportDetailScreen() {
     onSuccess: (updated) => qc.setQueryData(queryKeys.qc.report(reportId), updated),
   });
 
+  // Closing deletes images — confirm first. Re-opening needs no confirmation.
+  const changeStatus = (next: QCStatusValue) => {
+    if (next === 'closed') {
+      Alert.alert(
+        'Close this QC case?',
+        'Closing permanently deletes the uploaded images to free storage. The case and all comments are kept.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Close case', style: 'destructive', onPress: () => statusMut.mutate('closed') },
+        ]
+      );
+      return;
+    }
+    statusMut.mutate(next);
+  };
+
   return (
     <Screen
       scroll
@@ -67,11 +78,11 @@ export function QCReportDetailScreen() {
         onRetry={query.refetch}
       >
         {(r: QCReport) => {
-          const sev = SEVERITY_META[r.severity];
           const uris = r.photos.map((p) => resolveMediaUrl(p.url)).filter(Boolean) as string[];
+          const isClosed = r.status === 'closed';
           return (
             <View>
-              {/* Image gallery */}
+              {/* Images — viewable until the case is closed */}
               {r.photos.length > 0 ? (
                 <ScrollView
                   horizontal
@@ -89,12 +100,23 @@ export function QCReportDetailScreen() {
                     </Pressable>
                   ))}
                 </ScrollView>
+              ) : isClosed ? (
+                <View
+                  style={{
+                    backgroundColor: colors.surfaceAlt,
+                    borderRadius: radius.lg,
+                    padding: spacing(4),
+                    marginBottom: spacing(4),
+                    alignItems: 'center',
+                  }}
+                >
+                  <AppText style={{ fontSize: 28, marginBottom: spacing(1) }}>🗑️</AppText>
+                  <AppText tone="muted" variant="caption" style={{ textAlign: 'center' }}>
+                    Images were removed when this case was closed.
+                  </AppText>
+                </View>
               ) : null}
 
-              <View style={{ flexDirection: 'row', gap: spacing(2), marginBottom: spacing(2) }}>
-                <StatusPill label={sev.label} tone={sev.tone} />
-                <StatusPill label={STATUS_META[r.status].label} tone={STATUS_META[r.status].tone} />
-              </View>
               <AppText variant="h2" style={{ marginBottom: spacing(1) }}>
                 {r.defects.length ? r.defects.join(', ') : 'Defect report'}
               </AppText>
@@ -102,68 +124,9 @@ export function QCReportDetailScreen() {
                 {r.submittedByName ?? 'Engineer'} · {formatDateTime(r.createdAt)}
               </AppText>
 
-              {/* Details */}
-              <SectionCard icon="📋" title="Details">
-                <Detail label="Machine" value={r.machine} />
-                <Detail label="Mould" value={r.mould} />
-                <Detail label="Part" value={r.part} />
-                <Detail label="Shift" value={shiftLabel(r.shift)} />
-                <Detail label="Department" value={r.department === 'assembly' ? 'Assembly QC' : 'Moulding QC'} last />
-              </SectionCard>
-
-              {r.description ? (
-                <SectionCard icon="📝" title="Description">
-                  <AppText style={{ lineHeight: 21 }}>{r.description}</AppText>
-                </SectionCard>
-              ) : null}
-
-              {r.tags.length > 0 ? (
-                <SectionCard icon="🏷️" title="Tags">
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2) }}>
-                    {r.tags.map((t) => (
-                      <View
-                        key={t}
-                        style={{
-                          backgroundColor: colors.surfaceAlt,
-                          borderRadius: radius.pill,
-                          paddingHorizontal: spacing(3),
-                          paddingVertical: spacing(1),
-                        }}
-                      >
-                        <AppText variant="caption" weight="600">
-                          {t}
-                        </AppText>
-                      </View>
-                    ))}
-                  </View>
-                </SectionCard>
-              ) : null}
-
-              {/* Status control */}
-              <SectionCard icon="🚦" title="Status">
-                <StatusPicker
-                  value={r.status}
-                  onChange={(s) => statusMut.mutate(s)}
-                  disabled={statusMut.isPending}
-                />
-                {r.statusHistory.length > 0 ? (
-                  <View style={{ marginTop: spacing(3), gap: spacing(1) }}>
-                    {r.statusHistory
-                      .slice()
-                      .reverse()
-                      .map((h, i) => (
-                        <View key={i} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                          <AppText variant="caption" tone="muted">
-                            {STATUS_META[h.status]?.label ?? h.status}
-                            {h.byName ? ` · ${h.byName}` : ''}
-                          </AppText>
-                          <AppText variant="caption" tone="muted">
-                            {formatDateTime(h.at)}
-                          </AppText>
-                        </View>
-                      ))}
-                  </View>
-                ) : null}
+              {/* Status: Open / Closed */}
+              <SectionCard icon="🚦" title="QC Status">
+                <StatusPicker value={r.status} onChange={changeStatus} disabled={statusMut.isPending} />
               </SectionCard>
 
               {/* Comments */}
@@ -186,23 +149,5 @@ export function QCReportDetailScreen() {
         }}
       </QueryBoundary>
     </Screen>
-  );
-}
-
-function Detail({ label, value, last }: { label: string; value?: string | null; last?: boolean }) {
-  const { colors, spacing } = useTheme();
-  return (
-    <View
-      style={{
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        paddingVertical: spacing(2),
-        borderBottomWidth: last ? 0 : 1,
-        borderBottomColor: colors.border,
-      }}
-    >
-      <AppText tone="muted">{label}</AppText>
-      <AppText weight="600">{value || '—'}</AppText>
-    </View>
   );
 }

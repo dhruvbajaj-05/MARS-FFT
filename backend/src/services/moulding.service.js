@@ -494,6 +494,7 @@ async function getMouldingDashboard() {
       productRows.push({
         id: p._id.toString(),
         name: p.name,
+        itemCode: p.itemCode || null,
         partName: p.partName || null,
         activeOrders,
         runningMoulds,

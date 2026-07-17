@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const mongoose = require('mongoose');
 const QCReport = require('../models/QCReport');
 const QCDefectType = require('../models/QCDefectType');
@@ -117,9 +118,35 @@ function toPublicReport(report) {
     })),
     submittedBy: report.submittedBy.toString(),
     submittedByName: report.submittedByName || null,
+    closedAt: report.closedAt || null,
     createdAt: report.createdAt,
     updatedAt: report.updatedAt,
   };
+}
+
+// Physically delete a report's images: unlink the binaries on disk AND remove their
+// `mediaassets` rows, then clear the report's photo references. Used when a QC case is
+// closed — the comments/history stay, only the images (which consume storage) are purged.
+// Safe to call more than once; a report with no photos is a no-op.
+async function deleteReportPhotos(report) {
+  const photoIds = (report.photos || []).map((p) => (p && p._id ? p._id : p)).filter(Boolean);
+  if (photoIds.length === 0) return;
+
+  const { diskPathForUrl } = require('../middleware/upload');
+  const assets = await MediaAsset.find({ _id: { $in: photoIds } });
+  await Promise.all(
+    assets.map(async (a) => {
+      const disk = diskPathForUrl(a.url);
+      if (!disk) return;
+      try {
+        await fs.promises.unlink(disk);
+      } catch (e) {
+        /* file already gone — nothing to reclaim */
+      }
+    })
+  );
+  await MediaAsset.deleteMany({ _id: { $in: photoIds } });
+  report.photos = [];
 }
 
 async function userName(userId) {
@@ -179,6 +206,12 @@ async function addDefectType(name, userId) {
 async function createReport({ payload, files, user }) {
   const department = assertDepartment(payload.department);
   const order = await validateChain(payload);
+
+  // Once "QC Done" has been pressed for this order + department, QC is locked
+  // permanently — no further reports or images may be uploaded.
+  if ((order.qcClosedDepartments || []).includes(department)) {
+    throw badRequest('QC is completed for this order — uploads are locked', 'qc_locked');
+  }
 
   const defects = parseStringArray(payload.defects, 'defects');
   const tags = parseStringArray(payload.tags, 'tags');
@@ -306,15 +339,17 @@ async function listReports(query = {}) {
     const [orders, customers, products] = await Promise.all([
       Order.find({ _id: { $in: orderIds } }).select('orderCode').lean(),
       Customer.find({ _id: { $in: customerIds } }).select('name').lean(),
-      Product.find({ _id: { $in: productIds } }).select('name').lean(),
+      Product.find({ _id: { $in: productIds } }).select('name itemCode').lean(),
     ]);
     const orderCode = new Map(orders.map((o) => [String(o._id), o.orderCode || null]));
     const cName = new Map(customers.map((c) => [String(c._id), c.name]));
     const pName = new Map(products.map((p) => [String(p._id), p.name]));
+    const pItem = new Map(products.map((p) => [String(p._id), p.itemCode || null]));
     for (const d of data) {
       d.orderCode = orderCode.get(d.orderId) ?? null;
       d.customerName = cName.get(d.customerId) ?? null;
       d.productName = pName.get(d.productId) ?? null;
+      d.itemCode = pItem.get(d.productId) ?? null;
     }
   }
   return buildList(data, total, page, limit);
@@ -336,9 +371,10 @@ async function updateStatus(id, status, note, user) {
   if (!STATUSES.includes(status)) {
     throw badRequest(`status must be one of: ${STATUSES.join(', ')}`, 'invalid_status');
   }
-  const report = await QCReport.findById(id);
+  const report = await QCReport.findById(id).populate('photos');
   if (!report) throw notFound('QC report not found', 'qc_report_not_found');
 
+  const wasClosed = report.status === 'closed';
   const { name } = await userName(user.id);
   report.status = status;
   report.statusHistory.push({
@@ -347,6 +383,15 @@ async function updateStatus(id, status, note, user) {
     byName: name,
     note: note ? String(note).trim() : undefined,
   });
+
+  if (status === 'closed') {
+    // Closing purges the case's images from storage (comments/history are kept).
+    if (!wasClosed) await deleteReportPhotos(report);
+    report.closedAt = report.closedAt || new Date();
+  } else {
+    report.closedAt = null;
+  }
+
   await report.save();
   return toPublicReport(report);
 }
@@ -376,7 +421,7 @@ async function orderContext({ orderId, department }) {
 
   const [customer, product] = await Promise.all([
     Customer.findById(order.customerId).select('name').lean(),
-    Product.findById(order.productId).select('name').lean(),
+    Product.findById(order.productId).select('name itemCode').lean(),
   ]);
 
   // Production progress from the department's own status service.
@@ -421,6 +466,7 @@ async function orderContext({ orderId, department }) {
       productId: order.productId.toString(),
       customerName: customer?.name || null,
       productName: product?.name || null,
+      itemCode: product?.itemCode || null,
       productionStatus: order.productionStatus,
       assemblyStatus: order.assemblyStatus,
     },
@@ -448,10 +494,14 @@ async function orderContext({ orderId, department }) {
 // (mould setup / production / assembly / an existing QC report) AND the engineer has NOT
 // pressed "Done Uploading QC Photos" for it. Production completion never removes it —
 // engineers document defects during, right after, and while inspecting production.
-async function listActiveOrders({ department }) {
+// Shared lister for a department's QC item codes. `archived=false` returns the ACTIVE list
+// (item codes still being documented); `archived=true` returns the ARCHIVED list (item codes
+// the engineer has pressed "Done Uploading QC Photos" / "QC Done" for). Reports stay visible
+// either way — archiving only moves the item code between the two tabs.
+async function listDeptOrders({ department, archived = false }) {
   assertDepartment(department);
 
-  // Orders this department is involved in.
+  // Orders (item code jobs) this department is involved in.
   const idQueries = [QCReport.distinct('orderId', { department })];
   if (department === 'assembly') {
     idQueries.push(AssemblyRecord.distinct('orderId'));
@@ -467,13 +517,13 @@ async function listActiveOrders({ department }) {
 
   const orders = await Order.find({
     _id: { $in: ids },
-    qcClosedDepartments: { $ne: department },
+    qcClosedDepartments: archived ? department : { $ne: department },
   }).lean();
   if (orders.length === 0) return { orders: [] };
 
   const [customers, products, reportAgg] = await Promise.all([
     Customer.find({ _id: { $in: orders.map((o) => o.customerId) } }).select('name').lean(),
-    Product.find({ _id: { $in: orders.map((o) => o.productId) } }).select('name').lean(),
+    Product.find({ _id: { $in: orders.map((o) => o.productId) } }).select('name itemCode').lean(),
     QCReport.aggregate([
       { $match: { department, orderId: { $in: orders.map((o) => o._id) } } },
       {
@@ -481,24 +531,27 @@ async function listActiveOrders({ department }) {
           _id: '$orderId',
           count: { $sum: 1 },
           lastAt: { $max: '$createdAt' },
-          open: { $sum: { $cond: [{ $in: ['$status', ['open', 'investigating']] }, 1, 0] } },
+          open: { $sum: { $cond: [{ $eq: ['$status', 'open'] }, 1, 0] } },
         },
       },
     ]),
   ]);
   const cName = new Map(customers.map((c) => [String(c._id), c.name]));
-  const pName = new Map(products.map((p) => [String(p._id), p.name]));
+  const pMap = new Map(products.map((p) => [String(p._id), p]));
   const rMap = new Map(reportAgg.map((r) => [String(r._id), r]));
 
   const rows = orders.map((o) => {
     const r = rMap.get(String(o._id)) || { count: 0, lastAt: null, open: 0 };
+    const p = pMap.get(String(o.productId));
     return {
       id: String(o._id),
       orderCode: o.orderCode || null,
+      purchaseOrderId: o.purchaseOrderId ? String(o.purchaseOrderId) : null,
       customerId: String(o.customerId),
       productId: String(o.productId),
       customerName: cName.get(String(o.customerId)) || null,
-      productName: pName.get(String(o.productId)) || null,
+      productName: p ? p.name : null,
+      itemCode: p ? p.itemCode || null : null,
       orderQuantity: o.orderQuantity,
       productionStatus: o.productionStatus,
       productionComplete: o.productionStatus === 'Completed',
@@ -507,13 +560,21 @@ async function listActiveOrders({ department }) {
       lastReportAt: r.lastAt || null,
     };
   });
-  // Most recently documented first, then most recently updated orders.
+  // Most recently documented first, then most recently updated item codes.
   rows.sort((a, b) => {
     const at = a.lastReportAt ? new Date(a.lastReportAt).getTime() : 0;
     const bt = b.lastReportAt ? new Date(b.lastReportAt).getTime() : 0;
     return bt - at;
   });
   return { orders: rows };
+}
+
+function listActiveOrders({ department }) {
+  return listDeptOrders({ department, archived: false });
+}
+
+function listArchivedOrders({ department }) {
+  return listDeptOrders({ department, archived: true });
 }
 
 // Mark QC documentation finished for one order + department (the "Done Uploading QC
@@ -632,6 +693,7 @@ module.exports = {
   addComment,
   orderContext,
   listActiveOrders,
+  listArchivedOrders,
   closeOrder,
   summary,
   listDefectTypes,

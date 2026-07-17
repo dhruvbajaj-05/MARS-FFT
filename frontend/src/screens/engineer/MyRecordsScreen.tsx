@@ -9,7 +9,7 @@ import { AppText, Banner, Button, Card, FormField, MultiCheckbox, QueryBoundary,
 import { departmentForRole } from '@/features/engineer/department';
 import { useCurrentUser } from '@/hooks/useAuth';
 import { useTheme } from '@/theme/ThemeProvider';
-import { useCustomerProduct } from './useCustomerProduct';
+import { usePOItemCode } from './usePOItemCode';
 import { ApiError, friendlyMessage } from '@/services/apiError';
 
 // ---- Aggregation helpers for moulding grouped view ----
@@ -167,8 +167,8 @@ function MouldingEditPanel({
 function MouldingRecords() {
   const { spacing, colors } = useTheme();
   const qc = useQueryClient();
-  const cp = useCustomerProduct();
-  const { customerId, productId, orderId } = cp;
+  const cp = usePOItemCode();
+  const { customerId, productId, jobId } = cp;
 
   const [expandedShift, setExpandedShift] = useState<string | null>(null);
   const [expandedCavity, setExpandedCavity] = useState<string | null>(null);
@@ -179,12 +179,12 @@ function MouldingRecords() {
     limit: 200,
     customerId: customerId ?? undefined,
     productId: productId ?? undefined,
-    orderId: orderId ?? undefined,
+    orderId: jobId ?? undefined,
   };
   const query = useQuery({
     queryKey: queryKeys.dept('moulding').mine(params),
     queryFn: () => mouldingApi.listMine(params),
-    enabled: !!customerId && !!productId,
+    enabled: !!jobId,
   });
 
   const reasons = useQuery({
@@ -214,10 +214,10 @@ function MouldingRecords() {
     ]);
   };
 
-  const orderCodeFor = (id?: string) =>
-    cp.orderList.find((o) => o.id === id)?.orderCode ?? 'Order';
+  const itemCodeFor = (id?: string) =>
+    cp.jobList.find((o) => o.id === id)?.itemCode ?? cp.itemCode ?? 'Item';
 
-  const ready = !!customerId && !!productId;
+  const ready = !!jobId;
   const allReasons = reasons.data ?? [];
 
   return (
@@ -226,7 +226,7 @@ function MouldingRecords() {
         Moulding Records
       </AppText>
       <AppText tone="muted" variant="caption" style={{ marginBottom: spacing(3) }}>
-        Team-wide — every moulding engineer's production. You can edit/delete only your own
+        Team-wide — every moulding engineer&apos;s production. You can edit/delete only your own
         entries (within 12h).
       </AppText>
 
@@ -239,25 +239,25 @@ function MouldingRecords() {
           placeholder="Select a customer…"
         />
         <Select
-          label="Product"
-          value={productId}
-          options={cp.productOptions}
-          onChange={cp.selectProduct}
-          placeholder={customerId ? 'Select a product…' : 'Select a customer first'}
+          label="Purchase Order"
+          value={cp.purchaseOrderId}
+          options={cp.purchaseOrderOptions}
+          onChange={(v) => cp.selectPurchaseOrder(v)}
+          placeholder={customerId ? 'Select a purchase order…' : 'Select a customer first'}
+          emptyHint="No purchase orders for this customer"
         />
-        {ready ? (
-          <Select
-            label="OrderID (optional)"
-            value={orderId}
-            options={[{ label: 'All orders', value: '' }, ...cp.orderOptions]}
-            onChange={(v) => cp.setOrderId(v === '' ? null : v)}
-            placeholder="All orders"
-          />
-        ) : null}
+        <Select
+          label="Item Code"
+          value={jobId}
+          options={cp.jobOptions}
+          onChange={(v) => cp.setJobId(v)}
+          placeholder={cp.purchaseOrderId ? 'Select an item code…' : 'Select a purchase order first'}
+          emptyHint="No item codes in this PO"
+        />
       </Card>
 
       {!ready ? (
-        <AppText tone="muted">Select a customer and product to view records.</AppText>
+        <AppText tone="muted">Select a customer, purchase order and item code to view records.</AppText>
       ) : (
         <QueryBoundary
           isLoading={query.isLoading}
@@ -393,7 +393,7 @@ function MouldingRecords() {
                                       {' good'}
                                     </AppText>
                                     <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
-                                      Machine {r.machineNumber} · {new Date(r.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {orderCodeFor(r.orderId)}
+                                      Machine {r.machineNumber} · {new Date(r.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {itemCodeFor(r.orderId)}
                                     </AppText>
                                     {r.rejectionReasons.length > 0 ? (
                                       <AppText variant="caption" style={{ color: colors.status.danger.fg, marginTop: 2 }}>

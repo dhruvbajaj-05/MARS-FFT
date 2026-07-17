@@ -49,6 +49,7 @@ function toPublicOrder(order) {
   return {
     id: order._id.toString(),
     orderCode: order.orderCode || null,
+    purchaseOrderId: order.purchaseOrderId ? order.purchaseOrderId.toString() : null,
     customerId: order.customerId ? order.customerId.toString() : null,
     productId: order.productId ? order.productId.toString() : null,
     orderQuantity: order.orderQuantity,
@@ -67,7 +68,7 @@ function toPublicOrder(order) {
 // Create an order (admin only). Validates the customer → product chain so an order can
 // never point at a product that belongs to a different customer, then mints a unique
 // sequential OrderID (FFT-#####).
-async function createOrder({ customerId, productId, orderQuantity, createdBy }) {
+async function createOrder({ customerId, productId, orderQuantity, purchaseOrderId, createdBy }) {
   const quantity = Number(orderQuantity);
   if (!Number.isFinite(quantity) || quantity < 0) {
     throw badRequest('orderQuantity must be a number >= 0', 'invalid_quantity');
@@ -84,6 +85,7 @@ async function createOrder({ customerId, productId, orderQuantity, createdBy }) 
   const orderCode = await nextOrderCode();
   const order = await Order.create({
     orderCode,
+    purchaseOrderId: purchaseOrderId || null,
     customerId,
     productId,
     orderQuantity: quantity,
@@ -116,6 +118,7 @@ async function listOrders(query = {}) {
   const filter = {};
   if (query.productId) filter.productId = query.productId;
   if (query.customerId) filter.customerId = query.customerId;
+  if (query.purchaseOrderId) filter.purchaseOrderId = query.purchaseOrderId;
   if (query.status) filter.status = query.status;
   if (query.productionStatus) filter.productionStatus = query.productionStatus;
   if (query.assemblyStatus) filter.assemblyStatus = query.assemblyStatus;

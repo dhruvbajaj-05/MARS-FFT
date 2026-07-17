@@ -40,10 +40,19 @@ async function orderContext(req, res, next) {
   }
 }
 
-// GET /api/v1/qc-reports/active-orders?department=  — orders in a department's QC list
+// GET /api/v1/qc-reports/active-orders?department=  — item codes in a department's active QC list
 async function activeOrders(req, res, next) {
   try {
     res.status(200).json(await qcReportService.listActiveOrders({ department: req.query.department }));
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/qc-reports/archived-orders?department=  — item codes moved to Archived QC
+async function archivedOrders(req, res, next) {
+  try {
+    res.status(200).json(await qcReportService.listArchivedOrders({ department: req.query.department }));
   } catch (err) {
     next(err);
   }
@@ -147,6 +156,7 @@ module.exports = {
   list,
   orderContext,
   activeOrders,
+  archivedOrders,
   closeOrder,
   summary,
   listDefectTypes,

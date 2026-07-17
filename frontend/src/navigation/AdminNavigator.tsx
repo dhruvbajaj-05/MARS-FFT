@@ -35,7 +35,7 @@ export function AdminNavigator() {
       <Tab.Screen
         name="AdminOrders"
         component={AdminOrdersNavigator}
-        options={{ title: 'Orders', headerShown: false }}
+        options={{ title: 'POs', headerShown: false }}
       />
       <Tab.Screen
         name="AdminQC"

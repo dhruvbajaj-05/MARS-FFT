@@ -19,15 +19,21 @@ import {
 import { ApiError, friendlyMessage } from '@/services/apiError';
 import { useTheme } from '@/theme/ThemeProvider';
 
-// Inline edit panel for a single product (name + part name).
+// Inline edit panel for a single product (item code + name + part name).
 function ProductEditPanel({ product, onClose }: { product: Product; onClose: () => void }) {
   const { spacing } = useTheme();
   const qc = useQueryClient();
   const [name, setName] = useState(product.name);
+  const [itemCode, setItemCode] = useState(product.itemCode ?? '');
   const [partName, setPartName] = useState(product.partName ?? '');
 
   const save = useMutation({
-    mutationFn: () => masterApi.updateProduct(product.id, { name: name.trim(), partName: partName.trim() }),
+    mutationFn: () =>
+      masterApi.updateProduct(product.id, {
+        name: name.trim(),
+        itemCode: itemCode.trim(),
+        partName: partName.trim(),
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['products'] });
       onClose();
@@ -38,10 +44,17 @@ function ProductEditPanel({ product, onClose }: { product: Product; onClose: () 
   return (
     <View style={{ marginTop: spacing(2) }}>
       {error ? <Banner tone="danger" message={error} /> : null}
+      <FormField label="Item code" value={itemCode} onChangeText={setItemCode} placeholder="e.g. 37500" />
       <FormField label="Product name" value={name} onChangeText={setName} />
       <FormField label="Part name (optional)" value={partName} onChangeText={setPartName} />
       <View style={{ flexDirection: 'row', gap: spacing(2) }}>
-        <Button label="Save" loading={save.isPending} disabled={!name.trim()} onPress={() => save.mutate()} style={{ flex: 1 }} />
+        <Button
+          label="Save"
+          loading={save.isPending}
+          disabled={!name.trim() || !itemCode.trim()}
+          onPress={() => save.mutate()}
+          style={{ flex: 1 }}
+        />
         <Button label="Cancel" variant="secondary" disabled={save.isPending} onPress={onClose} style={{ flex: 1 }} />
       </View>
     </View>
@@ -54,6 +67,7 @@ export function ProductsScreen() {
   const qc = useQueryClient();
   const [customerId, setCustomerId] = useState<string | null>(null);
   const [name, setName] = useState('');
+  const [itemCode, setItemCode] = useState('');
   const [ok, setOk] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -72,10 +86,12 @@ export function ProductsScreen() {
   });
 
   const create = useMutation({
-    mutationFn: () => masterApi.createProduct({ customerId: customerId!, name: name.trim() }),
+    mutationFn: () =>
+      masterApi.createProduct({ customerId: customerId!, name: name.trim(), itemCode: itemCode.trim() }),
     onSuccess: (p) => {
-      setOk(`Product "${p.name}" created`);
+      setOk(`Product "${p.name}" (${p.itemCode}) created`);
       setName('');
+      setItemCode('');
       qc.invalidateQueries({ queryKey: ['products'] });
     },
   });
@@ -119,11 +135,12 @@ export function ProductsScreen() {
           placeholder="Select a customer"
           emptyHint="Create a customer first"
         />
+        <FormField label="Item code" value={itemCode} onChangeText={setItemCode} placeholder="e.g. 37500" />
         <FormField label="Product name" value={name} onChangeText={setName} placeholder="e.g. City Truck" />
         <Button
           label="Create Product"
           loading={create.isPending}
-          disabled={!customerId || name.trim().length === 0}
+          disabled={!customerId || name.trim().length === 0 || itemCode.trim().length === 0}
           onPress={() => {
             setOk(null);
             create.mutate();
@@ -152,10 +169,15 @@ export function ProductsScreen() {
                   <Card key={p.id}>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                       <View style={{ flex: 1, paddingRight: spacing(2) }}>
-                        <AppText weight="600">{p.name}</AppText>
-                        <AppText variant="caption" tone="muted">
-                          {p.id}
+                        <AppText weight="600">
+                          {p.itemCode ? `${p.itemCode} · ` : ''}
+                          {p.name}
                         </AppText>
+                        {p.partName ? (
+                          <AppText variant="caption" tone="muted">
+                            {p.partName}
+                          </AppText>
+                        ) : null}
                       </View>
                       {confirmId !== p.id && editingId !== p.id ? (
                         <View style={{ flexDirection: 'row', gap: spacing(2) }}>

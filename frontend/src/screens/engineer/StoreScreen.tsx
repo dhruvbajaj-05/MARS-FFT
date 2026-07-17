@@ -10,7 +10,7 @@ import { useCurrentUser } from '@/hooks/useAuth';
 import { ROLES } from '@/types/roles';
 import { ApiError, friendlyMessage } from '@/services/apiError';
 import { useTheme } from '@/theme/ThemeProvider';
-import { useCustomerProduct } from './useCustomerProduct';
+import { usePOItemCode } from './usePOItemCode';
 
 // Engineer store viewer.
 //   Moulding / Assembly → Component Store. Works exactly like the Records pages:
@@ -84,7 +84,7 @@ function OrderBuckets({ order }: { order: ComponentOrderNode }) {
       </View>
       <PartBucket title="Pending" kind="pending" parts={order.pending} />
       <PartBucket title="Finished" kind="finished" parts={order.finished} />
-      {empty ? <AppText tone="muted" variant="caption">No parts yet for this order.</AppText> : null}
+      {empty ? <AppText tone="muted" variant="caption">No parts yet for this item code.</AppText> : null}
     </View>
   );
 }
@@ -344,14 +344,14 @@ function ComponentStore() {
   const { spacing } = useTheme();
   const user = useCurrentUser();
   const canEditOutsourced = user?.role === ROLES.MOULDING_ENGINEER;
-  const cp = useCustomerProduct();
-  const { customerId, productId, orderId } = cp;
+  const cp = usePOItemCode();
+  const { customerId, productId, jobId } = cp;
 
-  const ready = !!customerId && !!productId && !!orderId;
+  const ready = !!customerId && !!productId && !!jobId;
   const params = {
     customerId: customerId ?? undefined,
     productId: productId ?? undefined,
-    orderId: orderId ?? undefined,
+    orderId: jobId ?? undefined,
   };
   const query = useQuery({
     queryKey: queryKeys.store.componentsByOrder(params),
@@ -360,9 +360,9 @@ function ComponentStore() {
   });
 
   // With all three filters applied the tree collapses to a single customer → product →
-  // order path. Surplus lives on the product node (the order's overage).
+  // item code path. Surplus lives on the product node (the item code's overage).
   const product = query.data?.customers[0]?.products[0];
-  const order = product?.orders.find((o) => o.orderId === orderId) ?? product?.orders[0];
+  const order = product?.orders.find((o) => o.orderId === jobId) ?? product?.orders[0];
 
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}>
@@ -370,7 +370,7 @@ function ComponentStore() {
         Component Store
       </AppText>
       <AppText tone="muted" style={{ marginBottom: spacing(4) }}>
-        Select a customer, product and OrderID to see that order&apos;s Pending, Finished and Surplus parts.
+        Select a customer, purchase order and item code to see that item code&apos;s Pending, Finished and Surplus parts.
       </AppText>
 
       <Card style={{ marginBottom: spacing(4) }}>
@@ -382,25 +382,25 @@ function ComponentStore() {
           placeholder="Select a customer…"
         />
         <Select
-          label="Product"
-          value={productId}
-          options={cp.productOptions}
-          onChange={cp.selectProduct}
-          placeholder={customerId ? 'Select a product…' : 'Select a customer first'}
-          emptyHint={customerId ? 'No products for this customer' : 'Select a customer first'}
+          label="Purchase Order"
+          value={cp.purchaseOrderId}
+          options={cp.purchaseOrderOptions}
+          onChange={(v) => cp.selectPurchaseOrder(v)}
+          placeholder={customerId ? 'Select a purchase order…' : 'Select a customer first'}
+          emptyHint={customerId ? 'No purchase orders for this customer' : 'Select a customer first'}
         />
         <Select
-          label="OrderID"
-          value={orderId}
-          options={cp.orderOptions}
-          onChange={(v) => cp.setOrderId(v)}
-          placeholder={productId ? 'Select an order…' : 'Select a product first'}
-          emptyHint="No orders for this product"
+          label="Item Code"
+          value={jobId}
+          options={cp.jobOptions}
+          onChange={(v) => cp.setJobId(v)}
+          placeholder={cp.purchaseOrderId ? 'Select an item code…' : 'Select a purchase order first'}
+          emptyHint="No item codes in this PO"
         />
       </Card>
 
       {!ready ? (
-        <AppText tone="muted">Select a customer, product and OrderID to view the component store.</AppText>
+        <AppText tone="muted">Select a customer, purchase order and item code to view the component store.</AppText>
       ) : (
         <QueryBoundary
           isLoading={query.isLoading}
@@ -413,7 +413,7 @@ function ComponentStore() {
             <>
               {!order ? (
                 <AppText tone="muted">
-                  No active components for this order. Submit moulding production first, or the order may be complete.
+                  No active components for this item code. Submit moulding production first, or it may be complete.
                 </AppText>
               ) : (
                 <OrderBuckets order={order} />
@@ -422,7 +422,7 @@ function ComponentStore() {
               <OutsourcedSection
                 customerId={customerId!}
                 productId={productId!}
-                orderId={orderId!}
+                orderId={jobId!}
                 canEdit={canEditOutsourced}
               />
             </>

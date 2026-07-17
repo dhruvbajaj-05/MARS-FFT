@@ -12,7 +12,7 @@ const router = express.Router();
 router.post(
   '/',
   ...protect(ROLES.ADMIN),
-  requireBody(['customerId', 'name']),
+  requireBody(['customerId', 'name', 'itemCode']),
   productController.create
 );
 

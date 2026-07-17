@@ -7,6 +7,7 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed:admin": "node src/scripts/seedAdmin.js",
+    "seed:dev": "node src/scripts/seedDev.js",
     "migrate:workflow": "node src/scripts/migrateWorkflow.js",
     "reconcile:all": "node src/scripts/reconcileAll.js",
     "seed:qc-defects": "node src/scripts/seedQCDefectTypes.js"

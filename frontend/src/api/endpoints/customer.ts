@@ -1,6 +1,7 @@
 import { apiClient } from '@/api/client';
 import type {
   CustomerDashboard,
+  CustomerDefectReport,
   CustomerOrderDashboard,
   CustomerOrderDetails,
   CustomerOrderProgress,
@@ -26,4 +27,13 @@ export const customerApi = {
     apiClient.get<CustomerProductOrders>(`/customer/products/${productId}/orders`).then((r) => r.data),
   orderDashboard: (id: string) =>
     apiClient.get<CustomerOrderDashboard>(`/customer/orders/${id}/dashboard`).then((r) => r.data),
+
+  // Append a comment to a QC case on one of the customer's own orders (read-only otherwise).
+  addQcComment: (orderId: string, reportId: string, text: string) =>
+    apiClient
+      .post<{ report: CustomerDefectReport }>(
+        `/customer/orders/${orderId}/qc-reports/${reportId}/comments`,
+        { text }
+      )
+      .then((r) => r.data.report),
 };

@@ -27,6 +27,10 @@ const orderSchema = new mongoose.Schema(
     // (sparse) still guarantees no duplicates. Legacy orders are backfilled by the
     // migration script.
     orderCode: { type: String, trim: true, default: null },
+    // The Purchase Order this job belongs to. An Order is one Item Code production job inside
+    // a PO (Customer → PurchaseOrder → Order[itemCode]). Nullable only for legacy/standalone
+    // jobs; new jobs are always created under a PO by the purchaseOrder service.
+    purchaseOrderId: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseOrder', default: null },
     customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
     orderQuantity: { type: Number, required: true, min: 0 },
@@ -53,6 +57,7 @@ const orderSchema = new mongoose.Schema(
 // Sparse unique so legacy rows (null until migrated) don't collide; once assigned, the
 // FFT-##### code is globally unique.
 orderSchema.index({ orderCode: 1 }, { unique: true, sparse: true });
+orderSchema.index({ purchaseOrderId: 1 });
 orderSchema.index({ customerId: 1 });
 orderSchema.index({ productId: 1 });
 orderSchema.index({ customerId: 1, productId: 1 });

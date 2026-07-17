@@ -185,8 +185,8 @@ export function CreateQCReportScreen() {
       {/* Auto-filled context */}
       <Card style={{ marginBottom: spacing(4) }}>
         <Row label="Company" value={ctx?.order.customerName ?? '…'} />
+        <Row label="Item Code" value={ctx?.order.itemCode ?? '…'} />
         <Row label="Product" value={ctx?.order.productName ?? '…'} />
-        <Row label="Order ID" value={ctx?.order.orderCode ?? '…'} />
         <Row label="Engineer" value={user?.name ?? '—'} />
         <Row label="Shift" value={shiftLabel(shift)} />
         <Row label="Date" value={new Date().toLocaleDateString('en-IN')} last />
@@ -211,7 +211,7 @@ export function CreateQCReportScreen() {
           options={moldOptions}
           onChange={selectMould}
           placeholder="Select a mould"
-          emptyHint="No moulds set up for this order yet"
+          emptyHint="No moulds set up for this item code yet"
         />
         {/* Part auto-fills from the selected mould but stays editable. */}
         <FormField label="Part" value={part} onChangeText={setPart} placeholder="Auto-filled from mould" />

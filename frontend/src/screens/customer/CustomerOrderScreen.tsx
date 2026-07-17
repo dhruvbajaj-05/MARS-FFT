@@ -1,14 +1,26 @@
 import { useRoute, type RouteProp } from '@react-navigation/native';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import React, { useState } from 'react';
-import { LayoutAnimation, Modal, Platform, Pressable, RefreshControl, ScrollView, UIManager, View } from 'react-native';
+import {
+  LayoutAnimation,
+  Linking,
+  Modal,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  TextInput,
+  UIManager,
+  View,
+} from 'react-native';
 
 import { customerApi } from '@/api/endpoints/customer';
 import { queryKeys } from '@/api/queryKeys';
 import type { CustomerDefectReport, CustomerMoldRow, CustomerOrderDashboard, Media } from '@/api/types';
 import {
   AppText,
+  Button,
   ErrorState,
   GaugeBar,
   MetricRow,
@@ -26,6 +38,7 @@ import {
 } from '@/components';
 import type { CustomerStackParamList } from '@/navigation/CustomerHomeNavigator';
 import { useTheme } from '@/theme/ThemeProvider';
+import { resolveMediaUrl } from '@/utils/mediaUrl';
 import { formatDate, relativeTime } from '@/utils/format';
 
 type Rt = RouteProp<CustomerStackParamList, 'CustomerOrder'>;
@@ -56,9 +69,12 @@ function OrderHero({ d }: { d: CustomerOrderDashboard }) {
         <ProgressBadge pct={o.overallProgressPct} size={78} tone={statusTone(o.status)} />
         <View style={{ flex: 1, marginLeft: spacing(4) }}>
           <AppText variant="caption" tone="muted" weight="600" style={{ textTransform: 'uppercase', letterSpacing: 0.5 }}>
-            {o.product ?? 'Order'}
+            {o.poNumber ?? o.product ?? 'Order'}
           </AppText>
-          <AppText variant="h2" style={{ marginTop: 2 }}>{o.orderCode}</AppText>
+          <AppText variant="h2" style={{ marginTop: 2 }}>{o.itemCode ?? o.orderCode}</AppText>
+          {o.product ? (
+            <AppText variant="caption" tone="muted">{o.product}</AppText>
+          ) : null}
           <View style={{ marginTop: spacing(2) }}>
             <StatusPill label={o.status} tone={statusTone(o.status)} />
           </View>
@@ -159,9 +175,26 @@ function PhotoStrip({ photos }: { photos: Media[] }) {
           style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center', padding: spacing(4) }}
         >
           {active ? (
-            <Image source={{ uri: active.url }} style={{ width: '100%', height: '80%' }} contentFit="contain" transition={200} />
+            <Image source={{ uri: active.url }} style={{ width: '100%', height: '78%' }} contentFit="contain" transition={200} />
           ) : null}
-          <AppText style={{ color: '#fff', marginTop: spacing(4) }}>Tap anywhere to close</AppText>
+          {active ? (
+            <Pressable
+              onPress={() => {
+                const url = resolveMediaUrl(active.url);
+                if (url) Linking.openURL(url);
+              }}
+              style={{
+                marginTop: spacing(4),
+                backgroundColor: 'rgba(255,255,255,0.16)',
+                borderRadius: radius.pill,
+                paddingHorizontal: spacing(5),
+                paddingVertical: spacing(2),
+              }}
+            >
+              <AppText style={{ color: '#fff' }} weight="700">⬇  Download</AppText>
+            </Pressable>
+          ) : null}
+          <AppText style={{ color: '#fff', marginTop: spacing(3) }}>Tap anywhere to close</AppText>
         </Pressable>
       </Modal>
     </View>
@@ -169,49 +202,104 @@ function PhotoStrip({ photos }: { photos: Media[] }) {
 }
 
 // ---- Engineer defect reports (image-first QC reports, req #5) ----------------
-function sevTone(severity: CustomerDefectReport['severity']) {
-  return severity === 'critical' ? 'danger' : severity === 'major' ? 'progress' : 'info';
-}
-
-function DefectReportsSection({ reports }: { reports: CustomerDefectReport[] }) {
-  const { colors, radius, spacing } = useTheme();
+function DefectReportsSection({ orderId, reports }: { orderId: string; reports: CustomerDefectReport[] }) {
   if (!reports || reports.length === 0) return null;
   return (
     <SectionCard icon="📸" title={`Defect Reports (${reports.length})`}>
       {reports.map((r) => (
-        <View
-          key={r.id}
-          style={{
-            borderWidth: 0.5,
-            borderColor: colors.border,
-            borderRadius: radius.md,
-            padding: spacing(3),
-            marginBottom: spacing(2),
-            backgroundColor: colors.surfaceAlt,
-          }}
-        >
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <StatusPill label={r.severity} tone={sevTone(r.severity)} />
-            <AppText variant="caption" tone="muted">{formatDate(r.createdAt)}</AppText>
-          </View>
-          <AppText weight="700" style={{ marginTop: spacing(2) }}>
-            {r.defects.length ? r.defects.join(', ') : 'Defect report'}
-          </AppText>
-          {r.description ? (
-            <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
-              {r.description}
-            </AppText>
-          ) : null}
-          <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
-            {r.department === 'assembly' ? 'Assembly' : 'Moulding'}
-            {[r.machine, r.mould].filter(Boolean).length
-              ? ` · ${[r.machine, r.mould].filter(Boolean).join(' · ')}`
-              : ''}
-          </AppText>
-          <PhotoStrip photos={r.photos} />
-        </View>
+        <DefectReportCard key={r.id} orderId={orderId} report={r} />
       ))}
     </SectionCard>
+  );
+}
+
+function DefectReportCard({ orderId, report: r }: { orderId: string; report: CustomerDefectReport }) {
+  const { colors, radius, spacing } = useTheme();
+  const qc = useQueryClient();
+  const [text, setText] = useState('');
+
+  const commentMut = useMutation({
+    mutationFn: (body: string) => customerApi.addQcComment(orderId, r.id, body),
+    onSuccess: () => {
+      setText('');
+      qc.invalidateQueries({ queryKey: queryKeys.customer.orderDashboard(orderId) });
+    },
+  });
+
+  const send = () => {
+    const t = text.trim();
+    if (t) commentMut.mutate(t);
+  };
+
+  return (
+    <View
+      style={{
+        borderWidth: 0.5,
+        borderColor: colors.border,
+        borderRadius: radius.md,
+        padding: spacing(3),
+        marginBottom: spacing(2),
+        backgroundColor: colors.surfaceAlt,
+      }}
+    >
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <StatusPill label={r.status === 'closed' ? 'Closed' : 'Open'} tone={r.status === 'closed' ? 'success' : 'danger'} />
+        <AppText variant="caption" tone="muted">{formatDate(r.createdAt)}</AppText>
+      </View>
+      <AppText weight="700" style={{ marginTop: spacing(2) }}>
+        {r.defects.length ? r.defects.join(', ') : 'Defect report'}
+      </AppText>
+      {r.description ? (
+        <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
+          {r.description}
+        </AppText>
+      ) : null}
+      <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
+        {r.department === 'assembly' ? 'Assembly' : 'Moulding'}
+        {[r.machine, r.mould].filter(Boolean).length
+          ? ` · ${[r.machine, r.mould].filter(Boolean).join(' · ')}`
+          : ''}
+      </AppText>
+      <PhotoStrip photos={r.photos} />
+
+      {/* Comments — read the thread and reply (customers can comment, read-only otherwise) */}
+      <View style={{ marginTop: spacing(3), borderTopWidth: 0.5, borderTopColor: colors.border, paddingTop: spacing(3) }}>
+        <AppText variant="caption" weight="700" tone="muted" style={{ marginBottom: spacing(2) }}>
+          Comments ({r.comments.length})
+        </AppText>
+        {r.comments.map((c, i) => (
+          <View key={c.id ?? i} style={{ marginBottom: spacing(2) }}>
+            <AppText variant="caption" weight="700">
+              {c.authorName || 'User'}
+              {c.authorRole ? (
+                <AppText variant="caption" tone="muted">  · {c.authorRole.replace(/_/g, ' ')}</AppText>
+              ) : null}
+            </AppText>
+            <AppText variant="caption">{c.text}</AppText>
+          </View>
+        ))}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing(2), marginTop: spacing(1) }}>
+          <TextInput
+            style={{
+              flex: 1,
+              backgroundColor: colors.surface,
+              borderColor: colors.border,
+              borderWidth: 0.5,
+              borderRadius: radius.md,
+              color: colors.text,
+              paddingHorizontal: spacing(3),
+              paddingVertical: spacing(2),
+            }}
+            value={text}
+            onChangeText={setText}
+            placeholder="Write a comment…"
+            placeholderTextColor={colors.textMuted}
+            multiline
+          />
+          <Button label="Send" onPress={send} loading={commentMut.isPending} disabled={!text.trim()} />
+        </View>
+      </View>
+    </View>
   );
 }
 
@@ -410,7 +498,7 @@ function OrderDashboard({ d }: { d: CustomerOrderDashboard }) {
       </SectionCard>
 
       {/* ENGINEER DEFECT REPORTS (req #5) */}
-      <DefectReportsSection reports={d.defectReports} />
+      <DefectReportsSection orderId={d.order.id} reports={d.defectReports} />
 
       {/* TIMELINE */}
       <SectionCard icon="🗺️" title="Production Timeline">

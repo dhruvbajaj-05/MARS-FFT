@@ -38,8 +38,9 @@ router.get('/', ...protect(...QC_AUTHORS), controller.list);
 router.get('/order-context', ...protect(...QC_AUTHORS), controller.orderContext);
 router.get('/summary', ...protect(...QC_AUTHORS), controller.summary);
 
-// Active QC orders for a department + "Done Uploading QC Photos" (req #11).
+// Active + archived QC item codes for a department + "Done Uploading QC Photos" (req #11).
 router.get('/active-orders', ...protect(...QC_AUTHORS), controller.activeOrders);
+router.get('/archived-orders', ...protect(...QC_AUTHORS), controller.archivedOrders);
 router.post(
   '/close-order',
   ...protect(...QC_AUTHORS),

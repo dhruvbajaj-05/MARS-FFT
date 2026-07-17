@@ -45,12 +45,12 @@ function ProductCard({ product, onPress }: { product: CustomerProduct; onPress: 
         ]}
       >
         <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing(3) }}>
-          <BrandTile name={product.name} size={52} />
+          <BrandTile name={product.itemCode ?? product.name} size={52} />
           <View style={{ flex: 1, marginLeft: spacing(3) }}>
-            <AppText variant="h3" numberOfLines={1}>{product.name}</AppText>
-            {product.partName ? (
-              <AppText variant="caption" tone="muted" numberOfLines={1}>{product.partName}</AppText>
-            ) : null}
+            <AppText variant="h3" numberOfLines={1}>{product.itemCode ?? product.name}</AppText>
+            <AppText variant="caption" tone="muted" numberOfLines={1}>
+              {product.name}{product.partName ? ` · ${product.partName}` : ''}
+            </AppText>
           </View>
           <StatusPill label={product.status} tone={statusTone(product.status)} />
         </View>

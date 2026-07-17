@@ -6,22 +6,22 @@ import { assemblyApi } from '@/api/endpoints/assembly';
 import { queryKeys } from '@/api/queryKeys';
 import { AppText, Banner, Button, Card, FormField, Screen, Select } from '@/components';
 import { ApiError, friendlyMessage } from '@/services/apiError';
-import { useCustomerProduct } from '@/screens/engineer/useCustomerProduct';
+import { usePOItemCode } from '@/screens/engineer/usePOItemCode';
 import { useTheme } from '@/theme/ThemeProvider';
 import { currentShift } from '@/utils/shift';
 
 type Row = { partName: string; perSet: string; kind: 'moulded' | 'outsourced' };
 
-// Assembly Engineer screen (revised, order-centric workflow):
-//   1. Select Customer → Product → Order (only orders whose assembly is still Active;
-//      order quantity loads automatically). See that order's FINISHED components.
+// Assembly Engineer screen (Company → PO → Item Code workflow):
+//   1. Select Customer → Purchase Order → Item Code (jobs whose assembly is still Active;
+//      order quantity loads automatically). See that item code's FINISHED components.
 //   2. Define the assortment (parts-per-set) — product-level, remembered + editable.
 //   3. Enter Assembled Sets → consumption (sets × per-set) is previewed and, on submit,
-//      deducted from the order's finished components.
+//      deducted from the item code's finished components.
 export function AssemblyForm() {
   const { spacing, colors } = useTheme();
   const qc = useQueryClient();
-  const cp = useCustomerProduct({ orderFilter: { assemblyStatus: 'Active' } });
+  const cp = usePOItemCode({ jobFilter: (j) => j.assemblyStatus === 'Active' });
 
   const [rows, setRows] = useState<Row[]>([]);
   const [rowsKey, setRowsKey] = useState<string | null>(null);
@@ -34,11 +34,11 @@ export function AssemblyForm() {
   const [remarks, setRemarks] = useState('');
   const [ok, setOk] = useState<string | null>(null);
 
-  // The selected order's finished components (what we can assemble from).
+  // The selected item code's finished components (what we can assemble from).
   const availability = useQuery({
-    queryKey: queryKeys.store.componentAvailability(cp.customerId ?? '', cp.productId ?? '', cp.orderId ?? undefined),
-    queryFn: () => assemblyApi.availability(cp.customerId!, cp.productId!, cp.orderId!),
-    enabled: !!cp.customerId && !!cp.productId && !!cp.orderId,
+    queryKey: queryKeys.store.componentAvailability(cp.customerId ?? '', cp.productId ?? '', cp.jobId ?? undefined),
+    queryFn: () => assemblyApi.availability(cp.customerId!, cp.productId!, cp.jobId!),
+    enabled: !!cp.customerId && !!cp.productId && !!cp.jobId,
   });
 
   const assortment = useQuery({
@@ -47,19 +47,19 @@ export function AssemblyForm() {
     enabled: !!cp.customerId && !!cp.productId,
   });
 
-  // Assembly status for the selected order (inspect per OrderID).
+  // Assembly status for the selected item code job.
   const asmStatus = useQuery({
-    queryKey: queryKeys.dept('assembly').status(cp.orderId ?? 'none'),
-    queryFn: () => assemblyApi.status(cp.orderId!),
-    enabled: !!cp.orderId,
+    queryKey: queryKeys.dept('assembly').status(cp.jobId ?? 'none'),
+    queryFn: () => assemblyApi.status(cp.jobId!),
+    enabled: !!cp.jobId,
   });
 
   // Seed the editable rows. Prefer the saved assortment; otherwise AUTO-POPULATE the part
-  // names from the selected order's FINISHED inventory so the engineer never re-types them
-  // (perSet stays blank to fill in). All seeded rows default to 'moulded'; outsourced parts
-  // can be added/toggled. Everything remains editable.
+  // names from the selected item code's FINISHED inventory so the engineer never re-types
+  // them (perSet stays blank to fill in). All seeded rows default to 'moulded'; outsourced
+  // parts can be added/toggled. Everything remains editable.
   useEffect(() => {
-    const key = `${cp.customerId}:${cp.productId}:${cp.orderId}`;
+    const key = `${cp.customerId}:${cp.productId}:${cp.jobId}`;
     if (rowsKey === key) return;
     if (assortment.data?.parts.length) {
       setRows(assortment.data.parts.map((p) => ({ partName: p.partName, perSet: String(p.perSet), kind: p.kind ?? 'moulded' })));
@@ -69,7 +69,7 @@ export function AssemblyForm() {
       setRows(fromFinished.length ? fromFinished : [{ partName: '', perSet: '', kind: 'moulded' }]);
       setRowsKey(key);
     }
-  }, [assortment.data, availability.data, cp.customerId, cp.productId, cp.orderId, rowsKey]);
+  }, [assortment.data, availability.data, cp.customerId, cp.productId, cp.jobId, rowsKey]);
 
   const saveAssortment = useMutation({
     mutationFn: () =>
@@ -89,7 +89,7 @@ export function AssemblyForm() {
   const submit = useMutation({
     mutationFn: () =>
       assemblyApi.submit({
-        orderId: cp.orderId!,
+        orderId: cp.jobId!,
         customerId: cp.customerId!,
         productId: cp.productId!,
         assemblyLine: line.trim(),
@@ -103,19 +103,20 @@ export function AssemblyForm() {
       const extra = res.record.extraSets ?? 0;
       if (res.completion?.completed) {
         setOk(
-          `Order complete — required sets assembled${extra > 0 ? ` (+${extra} extra from surplus)` : ''}. ` +
-            `Remaining parts moved to Product Surplus; this order has left the active Component Store.`,
+          `Item code complete — required sets assembled${extra > 0 ? ` (+${extra} extra from surplus)` : ''}. ` +
+            `Remaining parts moved to Product Surplus; this item code has left the active Component Store.`,
         );
       } else {
-        setOk(`Assembled ${res.record.assembledSets} sets (Shift ${res.record.shift}). Components deducted from this order.`);
+        setOk(`Assembled ${res.record.assembledSets} sets (Shift ${res.record.shift}). Components deducted from this item code.`);
       }
       setSets('');
       setRejected('');
       qc.invalidateQueries({ queryKey: ['store'] });
       qc.invalidateQueries({ queryKey: ['assembly'] });
       qc.invalidateQueries({ queryKey: ['orders'] });
+      qc.invalidateQueries({ queryKey: ['purchase-orders'] });
       qc.invalidateQueries({
-        queryKey: queryKeys.store.componentAvailability(cp.customerId!, cp.productId!, cp.orderId!),
+        queryKey: queryKeys.store.componentAvailability(cp.customerId!, cp.productId!, cp.jobId!),
       });
     },
   });
@@ -130,14 +131,14 @@ export function AssemblyForm() {
 
   const setsNum = Number.isFinite(Number(sets)) ? Number(sets) : 0;
   // Single input → server splits into order portion + surplus (over-assembly) portion.
-  const required = cp.selectedOrder?.orderQuantity ?? 0;
+  const required = cp.selectedJob?.orderQuantity ?? 0;
   const alreadyDone = asmStatus.data?.assembledQuantity ?? 0;
   const remainingRequired = Math.max(0, required - alreadyDone);
   const normalSets = Math.min(setsNum, remainingRequired);
   const extraSets = Math.max(0, setsNum - remainingRequired);
 
   // Consumption preview from the saved assortment. The normal (order) portion of moulded
-  // parts is checked against this order's finished inventory; surplus/outsourced portions
+  // parts is checked against this item code's finished inventory; surplus/outsourced portions
   // are validated server-side.
   const consumption = useMemo(() => {
     const parts = assortment.data?.parts ?? [];
@@ -162,7 +163,7 @@ export function AssemblyForm() {
   const canSubmit = !!(
     cp.customerId &&
     cp.productId &&
-    cp.orderId &&
+    cp.jobId &&
     line.trim() &&
     hasAssortment &&
     setsNum > 0 &&
@@ -173,7 +174,7 @@ export function AssemblyForm() {
   return (
     <Screen
       scroll
-      refreshControl={<RefreshControl refreshing={cp.orders.isRefetching} onRefresh={cp.orders.refetch} />}
+      refreshControl={<RefreshControl refreshing={cp.refreshing} onRefresh={cp.refetch} />}
     >
       <AppText variant="h2" style={{ marginBottom: spacing(3) }}>
         Assembly
@@ -182,21 +183,22 @@ export function AssemblyForm() {
       <Card style={{ marginBottom: spacing(4) }}>
         <Select label="Customer" value={cp.customerId} options={cp.customerOptions} onChange={cp.selectCustomer} />
         <Select
-          label="Product"
-          value={cp.productId}
-          options={cp.productOptions}
-          onChange={(v) => cp.selectProduct(v)}
-          placeholder={cp.customerId ? 'Select a product' : 'Select a customer first'}
+          label="Purchase Order"
+          value={cp.purchaseOrderId}
+          options={cp.purchaseOrderOptions}
+          onChange={(v) => cp.selectPurchaseOrder(v)}
+          placeholder={cp.customerId ? 'Select a purchase order' : 'Select a customer first'}
+          emptyHint="No purchase orders for this customer"
         />
         <Select
-          label="Order (OrderID)"
-          value={cp.orderId}
-          options={cp.orderOptions}
-          onChange={(v) => cp.setOrderId(v)}
-          placeholder={cp.productId ? 'Select an order' : 'Select a product first'}
-          emptyHint="No active orders for this product"
+          label="Item Code"
+          value={cp.jobId}
+          options={cp.jobOptions}
+          onChange={(v) => cp.setJobId(v)}
+          placeholder={cp.purchaseOrderId ? 'Select an item code' : 'Select a purchase order first'}
+          emptyHint="No active item codes in this PO"
         />
-        {cp.selectedOrder ? (
+        {cp.selectedJob ? (
           <View
             style={{
               flexDirection: 'row',
@@ -208,24 +210,24 @@ export function AssemblyForm() {
             }}
           >
             <AppText tone="muted">
-              Order: <AppText weight="600">{cp.selectedOrder.orderCode ?? '—'}</AppText>
+              Item: <AppText weight="600">{cp.itemCode ?? '—'}</AppText>
             </AppText>
             <AppText tone="muted">
-              Quantity: <AppText weight="600">{cp.selectedOrder.orderQuantity} sets</AppText>
+              Quantity: <AppText weight="600">{cp.selectedJob.orderQuantity} sets</AppText>
             </AppText>
           </View>
         ) : null}
-        {cp.orderId && asmStatus.data ? (
+        {cp.jobId && asmStatus.data ? (
           <AppText variant="caption" tone="muted" style={{ marginTop: spacing(2) }}>
             Assembly status: <AppText weight="600">{asmStatus.data.status}</AppText> · assembled{' '}
-            {asmStatus.data.assembledQuantity} / {cp.selectedOrder?.orderQuantity ?? '—'} sets
+            {asmStatus.data.assembledQuantity} / {cp.selectedJob?.orderQuantity ?? '—'} sets
           </AppText>
         ) : null}
 
-        {cp.orderId && availability.data ? (
+        {cp.jobId && availability.data ? (
           <View style={{ marginTop: spacing(2) }}>
             <AppText variant="caption" tone="muted" style={{ marginBottom: 4 }}>
-              Finished components available (this order)
+              Finished components available (this item code)
             </AppText>
             {availability.data.parts.length === 0 ? (
               <AppText tone="muted">None finished yet — complete moulding targets first.</AppText>
@@ -251,7 +253,7 @@ export function AssemblyForm() {
           {assortError ? <Banner tone="danger" message={assortError} /> : null}
 
           <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
-            Part names are auto-filled from this order&apos;s finished inventory — set the per-set
+            Part names are auto-filled from this item code&apos;s finished inventory — set the per-set
             quantity. Tap a part&apos;s tag to switch between Moulded and Outsourced (kept separate).
           </AppText>
           {rows.map((r, i) => (
@@ -294,7 +296,7 @@ export function AssemblyForm() {
       ) : null}
 
       {/* Assembly entry */}
-      {cp.orderId ? (
+      {cp.jobId ? (
         <Card>
           <AppText variant="h3" style={{ marginBottom: spacing(2) }}>
             Assembly Entry
@@ -316,7 +318,7 @@ export function AssemblyForm() {
             <Banner
               tone="info"
               persistent
-              message={`Over-assembly: ${normalSets} set(s) consume this order, ${extraSets} extra set(s) consume Product Surplus (moulded + outsourced). Surplus must be sufficient or the submission is rejected.`}
+              message={`Over-assembly: ${normalSets} set(s) consume this item code, ${extraSets} extra set(s) consume Product Surplus (moulded + outsourced). Surplus must be sufficient or the submission is rejected.`}
             />
           ) : null}
 

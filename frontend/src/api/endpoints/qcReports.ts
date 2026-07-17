@@ -49,10 +49,16 @@ export const qcReportsApi = {
       .get<QCOrderContext>('/qc-reports/order-context', { params: { orderId, department } })
       .then((r) => r.data),
 
-  // Orders currently inside a department's QC tab (req #11).
+  // Item codes currently inside a department's ACTIVE QC tab (req #11).
   activeOrders: (department: QCDepartment) =>
     apiClient
       .get<QCActiveOrdersResponse>('/qc-reports/active-orders', { params: { department } })
+      .then((r) => r.data.orders),
+
+  // Item codes moved to ARCHIVED QC (after "Done Uploading QC Photos" / "QC Done").
+  archivedOrders: (department: QCDepartment) =>
+    apiClient
+      .get<QCActiveOrdersResponse>('/qc-reports/archived-orders', { params: { department } })
       .then((r) => r.data.orders),
 
   // "Done Uploading QC Photos" — closes QC for one order + department.

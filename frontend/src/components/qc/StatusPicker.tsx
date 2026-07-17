@@ -7,8 +7,8 @@ import type { QCStatusValue } from '@/api/types';
 import { useTheme } from '@/theme/ThemeProvider';
 import { STATUS_META, STATUS_ORDER } from './qcMeta';
 
-// A wrap of status chips (Open / Investigating / Resolved / Rejected). Tapping one
-// selects it — used both to display and to change a report's status.
+// The QC status control: Open / Closed chips. Tapping one selects it — used both to
+// display and to change a case's status.
 export function StatusPicker({
   value,
   onChange,

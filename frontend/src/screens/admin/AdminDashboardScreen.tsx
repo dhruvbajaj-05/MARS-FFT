@@ -271,7 +271,7 @@ export function AdminDashboardScreen() {
       <View style={{ gap: spacing(3) }}>
         {[
           { label: 'View All Production Records', subtitle: 'Moulding, Assembly, QC, Dispatch', route: 'AdminFactory' },
-          { label: 'Manage Orders', subtitle: 'Create, complete, archive orders', route: 'AdminOrders' },
+          { label: 'Manage Purchase Orders', subtitle: 'Create POs, manage item codes, timelines', route: 'AdminOrders' },
           { label: 'Master Data', subtitle: 'Customers, Products, Machines, Users', route: 'AdminMaster' },
         ].map((item) => (
           <Pressable

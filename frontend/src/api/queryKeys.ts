@@ -6,6 +6,8 @@ export const queryKeys = {
   products: (params?: unknown) => ['products', params ?? {}] as const,
   orders: (params?: unknown) => ['orders', params ?? {}] as const,
   order: (id: string) => ['orders', 'detail', id] as const,
+  purchaseOrders: (params?: unknown) => ['purchase-orders', params ?? {}] as const,
+  purchaseOrder: (id: string) => ['purchase-orders', 'detail', id] as const,
   users: (params?: unknown) => ['users', params ?? {}] as const,
 
   dept: (dept: string) => ({
@@ -52,6 +54,7 @@ export const queryKeys = {
     orderContext: (orderId: string, department: string) =>
       ['qc', 'order-context', orderId, department] as const,
     activeOrders: (department: string) => ['qc', 'active-orders', department] as const,
+    archivedOrders: (department: string) => ['qc', 'archived-orders', department] as const,
     summary: (orderId: string, department: string) => ['qc', 'summary', orderId, department] as const,
     notifications: (params?: unknown) => ['qc', 'notifications', params ?? {}] as const,
   },

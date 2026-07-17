@@ -16,48 +16,62 @@ import { resolveMediaUrl } from '@/utils/mediaUrl';
 import type { QCStackParamList } from './navTypes';
 
 type Nav = NativeStackNavigationProp<QCStackParamList, 'MouldingQC'>;
+type Mode = 'active' | 'archived';
 
-// The order the QC screen is currently focused on. Sourced from the active list or, for a
-// just-started order with no reports yet, from the Entry-tab selection.
+// The item code the QC screen is currently focused on. Sourced from the active list or, for
+// a just-started item code with no reports yet, from the Entry-tab selection.
 interface FocusedOrder {
   orderId: string;
   customerId: string;
   productId: string;
   customerName: string | null;
   productName: string | null;
+  itemCode: string | null;
   orderCode: string | null;
   productionComplete: boolean;
 }
 
-// The QC tab inside the Moulding department. No Company → Product → Order picker: the
-// active order is whatever the engineer is working on in Entry (req #2). Orders stay here
-// after production completes until "Done Uploading QC Photos" is pressed (req #11).
+// The QC tab inside the Moulding department. No Company → PO → Item Code picker: the active
+// item code is whatever the engineer is working on in Entry (req #2). Item codes stay in the
+// Active tab after production completes until "QC Done" is pressed, then move to Archived.
 export function MouldingQCScreen() {
   const { colors, spacing, radius } = useTheme();
   const navigation = useNavigation<Nav>();
   const queryClient = useQueryClient();
   const { active } = useMouldingSession();
+  const [mode, setMode] = useState<Mode>('active');
   const [focusedId, setFocusedId] = useState<string | null>(null);
-  // Orders closed this session — so a just-closed order doesn't reappear via the Entry
-  // context fallback before the active-orders list refetches.
+  // Item codes closed this session — so a just-closed one doesn't reappear via the Entry
+  // context fallback before the active list refetches.
   const [closedIds, setClosedIds] = useState<string[]>([]);
 
   const activeOrdersQ = useQuery({
     queryKey: queryKeys.qc.activeOrders('moulding'),
     queryFn: () => qcReportsApi.activeOrders('moulding'),
   });
-  const activeOrders: QCActiveOrder[] = activeOrdersQ.data ?? [];
+  const archivedOrdersQ = useQuery({
+    queryKey: queryKeys.qc.archivedOrders('moulding'),
+    queryFn: () => qcReportsApi.archivedOrders('moulding'),
+    enabled: mode === 'archived',
+  });
 
-  // Explicit tap wins, else the current Entry order, else the most recent open QC order.
+  const listQ = mode === 'active' ? activeOrdersQ : archivedOrdersQ;
+  const orders = useMemo<QCActiveOrder[]>(() => listQ.data ?? [], [listQ.data]);
+
+  // Active mode: explicit tap wins, else the current Entry item code, else the most recent.
+  // Archived mode: only explicit selection.
   const effectiveId =
-    focusedId ??
-    (active && !closedIds.includes(active.orderId) ? active.orderId : null) ??
-    activeOrders.find((o) => !closedIds.includes(o.id))?.id ??
-    null;
+    mode === 'active'
+      ? focusedId ??
+        (active && !closedIds.includes(active.orderId) ? active.orderId : null) ??
+        orders.find((o) => !closedIds.includes(o.id))?.id ??
+        null
+      : focusedId ?? orders[0]?.id ?? null;
 
   const focused: FocusedOrder | null = useMemo(() => {
-    if (!effectiveId || closedIds.includes(effectiveId)) return null;
-    const fromList = activeOrders.find((o) => o.id === effectiveId);
+    if (!effectiveId) return null;
+    if (mode === 'active' && closedIds.includes(effectiveId)) return null;
+    const fromList = orders.find((o) => o.id === effectiveId);
     if (fromList) {
       return {
         orderId: fromList.id,
@@ -65,24 +79,26 @@ export function MouldingQCScreen() {
         productId: fromList.productId,
         customerName: fromList.customerName,
         productName: fromList.productName,
+        itemCode: fromList.itemCode,
         orderCode: fromList.orderCode,
         productionComplete: fromList.productionComplete,
       };
     }
-    // A brand-new order chosen in Entry that has no QC reports yet won't be in the list.
-    if (active && active.orderId === effectiveId) {
+    // A brand-new item code chosen in Entry that has no QC reports yet won't be in the list.
+    if (mode === 'active' && active && active.orderId === effectiveId) {
       return {
         orderId: active.orderId,
         customerId: active.customerId,
         productId: active.productId,
         customerName: active.customerName,
         productName: active.productName,
+        itemCode: active.itemCode,
         orderCode: active.orderCode,
         productionComplete: false,
       };
     }
     return null;
-  }, [effectiveId, activeOrders, active, closedIds]);
+  }, [effectiveId, orders, active, closedIds, mode]);
 
   const reportsQ = useQuery({
     queryKey: queryKeys.qc.reports({ department: 'moulding', orderId: focused?.orderId, inline: true }),
@@ -97,6 +113,7 @@ export function MouldingQCScreen() {
       setClosedIds((prev) => (prev.includes(orderId) ? prev : [...prev, orderId]));
       setFocusedId(null);
       queryClient.invalidateQueries({ queryKey: queryKeys.qc.activeOrders('moulding') });
+      queryClient.invalidateQueries({ queryKey: queryKeys.qc.archivedOrders('moulding') });
     },
   });
 
@@ -104,42 +121,92 @@ export function MouldingQCScreen() {
     if (!focused) return;
     const orderId = focused.orderId;
     Alert.alert(
-      'Done uploading QC photos?',
-      `This locks QC for ${focused.orderCode ?? 'this order'} and removes it from the active QC list. Reports stay visible to Admin and the customer.`,
+      'Mark QC done for this item code?',
+      `This permanently completes QC for ${focused.itemCode ?? 'this item code'}: no more QC reports or images can be uploaded, and it moves to Archived QC. Existing cases stay visible to Admin and the customer.`,
       [
         { text: 'Keep documenting', style: 'cancel' },
-        { text: 'Done', style: 'destructive', onPress: () => closeMut.mutate(orderId) },
+        { text: 'QC Done', style: 'destructive', onPress: () => closeMut.mutate(orderId) },
       ]
     );
   };
 
-  const otherOrders = activeOrders.filter((o) => o.id !== focused?.orderId);
+  const otherOrders = orders.filter((o) => o.id !== focused?.orderId);
+  const isArchived = mode === 'archived';
+
+  const switchMode = (m: Mode) => {
+    setMode(m);
+    setFocusedId(null);
+  };
 
   return (
     <Screen
       scroll
       contentStyle={{ paddingBottom: 140 }}
-      refreshControl={
-        <RefreshControl refreshing={activeOrdersQ.isRefetching} onRefresh={activeOrdersQ.refetch} />
-      }
+      refreshControl={<RefreshControl refreshing={listQ.isRefetching} onRefresh={listQ.refetch} />}
     >
       <AppText variant="h1" style={{ marginBottom: spacing(1) }}>
         Moulding QC
       </AppText>
-      <AppText tone="muted" style={{ marginBottom: spacing(4) }}>
-        Report defects for the order you're working on — no re-selecting.
+      <AppText tone="muted" style={{ marginBottom: spacing(3) }}>
+        Report defects for the item code you&apos;re working on — no re-selecting.
       </AppText>
+
+      {/* Active / Archived toggle */}
+      <View
+        style={{
+          flexDirection: 'row',
+          backgroundColor: colors.surfaceAlt,
+          borderRadius: radius.pill,
+          padding: 4,
+          marginBottom: spacing(4),
+        }}
+      >
+        {(['active', 'archived'] as Mode[]).map((m) => {
+          const on = mode === m;
+          return (
+            <PressableScale key={m} onPress={() => switchMode(m)} style={{ flex: 1 }}>
+              <View
+                style={{
+                  backgroundColor: on ? colors.primary : 'transparent',
+                  borderRadius: radius.pill,
+                  paddingVertical: spacing(2),
+                  alignItems: 'center',
+                }}
+              >
+                <AppText weight="700" style={{ color: on ? colors.primaryText : colors.textMuted }}>
+                  {m === 'active' ? 'Active QC' : 'Archived QC'}
+                </AppText>
+              </View>
+            </PressableScale>
+          );
+        })}
+      </View>
 
       {focused ? (
         <Card style={{ marginBottom: spacing(4) }}>
-          {/* Auto-linked Company → Product → Order (req #3) */}
+          {/* Auto-linked Company → PO → Item Code (req #3) */}
           <View style={{ marginBottom: spacing(3) }}>
             <ContextRow label="Company" value={focused.customerName ?? '—'} />
-            <ContextRow label="Product" value={focused.productName ?? '—'} />
-            <ContextRow label="Order ID" value={focused.orderCode ?? '—'} last />
+            <ContextRow label="Item Code" value={focused.itemCode ?? '—'} />
+            <ContextRow label="Product" value={focused.productName ?? '—'} last />
           </View>
 
-          {focused.productionComplete ? (
+          {isArchived ? (
+            <View
+              style={{
+                alignSelf: 'flex-start',
+                backgroundColor: colors.surfaceAlt,
+                borderRadius: radius.pill,
+                paddingHorizontal: spacing(3),
+                paddingVertical: spacing(1),
+                marginBottom: spacing(3),
+              }}
+            >
+              <AppText variant="caption" weight="700" tone="muted">
+                ✓ QC completed · archived (images removed, history kept)
+              </AppText>
+            </View>
+          ) : focused.productionComplete ? (
             <View
               style={{
                 alignSelf: 'flex-start',
@@ -156,41 +223,43 @@ export function MouldingQCScreen() {
             </View>
           ) : null}
 
-          {/* Two large actions (req #3) */}
-          <View style={{ gap: spacing(2), marginBottom: spacing(3) }}>
-            <Button
-              label="＋  New QC Report"
-              onPress={() =>
-                navigation.navigate('CreateQCReport', {
-                  department: 'moulding',
-                  orderId: focused.orderId,
-                  customerId: focused.customerId,
-                  productId: focused.productId,
-                })
-              }
-            />
-            <Button
-              label={`Previous Reports${reports.length ? ` (${reports.length})` : ''}`}
-              variant="secondary"
-              onPress={() =>
-                navigation.navigate('QCReportsList', {
-                  department: 'moulding',
-                  orderId: focused.orderId,
-                  title: 'Previous Reports',
-                })
-              }
-            />
-          </View>
+          {/* Two large actions — active mode only (req #3) */}
+          {!isArchived ? (
+            <View style={{ gap: spacing(2), marginBottom: spacing(3) }}>
+              <Button
+                label="＋  New QC Report"
+                onPress={() =>
+                  navigation.navigate('CreateQCReport', {
+                    department: 'moulding',
+                    orderId: focused.orderId,
+                    customerId: focused.customerId,
+                    productId: focused.productId,
+                  })
+                }
+              />
+              <Button
+                label={`Previous Reports${reports.length ? ` (${reports.length})` : ''}`}
+                variant="secondary"
+                onPress={() =>
+                  navigation.navigate('QCReportsList', {
+                    department: 'moulding',
+                    orderId: focused.orderId,
+                    title: 'Previous Reports',
+                  })
+                }
+              />
+            </View>
+          ) : null}
 
-          {/* Reports for THIS order only (req #3) */}
+          {/* Reports for THIS item code only (req #3) */}
           <AppText variant="h3" style={{ marginBottom: spacing(2) }}>
-            Uploaded defect reports
+            {isArchived ? 'QC case history' : 'Uploaded defect reports'}
           </AppText>
           {reportsQ.isLoading ? (
             <AppText tone="muted">Loading…</AppText>
           ) : reports.length === 0 ? (
             <AppText tone="muted" style={{ marginBottom: spacing(2) }}>
-              No reports yet. Tap “New QC Report” to add the first one.
+              {isArchived ? 'No QC cases were recorded for this item code.' : 'No reports yet. Tap “New QC Report” to add the first one.'}
             </AppText>
           ) : (
             <View style={{ gap: spacing(2) }}>
@@ -204,41 +273,45 @@ export function MouldingQCScreen() {
             </View>
           )}
 
-          {/* Done uploading (req #11) */}
-          <View style={{ marginTop: spacing(4) }}>
-            <Button
-              label={closeMut.isPending ? 'Finishing…' : 'Done Uploading QC Photos'}
-              variant="danger"
-              loading={closeMut.isPending}
-              onPress={confirmDone}
-            />
-            <AppText variant="caption" tone="muted" style={{ marginTop: spacing(2), textAlign: 'center' }}>
-              Keep uploading photos and defects until you press this — there is no limit.
-            </AppText>
-          </View>
+          {/* QC Done — completes + locks QC for this item code (req #11), active mode only */}
+          {!isArchived ? (
+            <View style={{ marginTop: spacing(4) }}>
+              <Button
+                label={closeMut.isPending ? 'Finishing…' : 'QC Done'}
+                variant="danger"
+                loading={closeMut.isPending}
+                onPress={confirmDone}
+              />
+              <AppText variant="caption" tone="muted" style={{ marginTop: spacing(2), textAlign: 'center' }}>
+                Keep uploading photos and defects until you press this. QC Done locks the item code
+                and moves it to Archived QC — no more uploads afterwards.
+              </AppText>
+            </View>
+          ) : null}
         </Card>
       ) : (
         <Card style={{ marginBottom: spacing(4) }}>
-          <AppText style={{ fontSize: 32, marginBottom: spacing(2) }}>🔍</AppText>
+          <AppText style={{ fontSize: 32, marginBottom: spacing(2) }}>{isArchived ? '📁' : '🔍'}</AppText>
           <AppText weight="600" style={{ marginBottom: spacing(1) }}>
-            No order selected
+            {isArchived ? 'No archived item codes' : 'No item code selected'}
           </AppText>
           <AppText tone="muted">
-            Open the Entry tab and pick a Company → Product → Order. It will appear here
-            automatically so you can report defects without re-selecting anything.
+            {isArchived
+              ? 'Item codes appear here after you press “QC Done”. Their report history is preserved.'
+              : 'Open the Entry tab and pick a Company → PO → Item Code. It will appear here automatically so you can report defects without re-selecting anything.'}
           </AppText>
         </Card>
       )}
 
-      {/* Other orders awaiting QC (post-production documentation, req #11) */}
+      {/* Other item codes in this tab */}
       {otherOrders.length > 0 ? (
         <View>
           <AppText variant="h3" style={{ marginBottom: spacing(2) }}>
-            Other orders awaiting QC
+            {isArchived ? 'Other archived item codes' : 'Other item codes awaiting QC'}
           </AppText>
           <View style={{ gap: spacing(2) }}>
             {otherOrders.map((o) => (
-              <OrderRow key={o.id} order={o} onPress={() => setFocusedId(o.id)} />
+              <OrderRow key={o.id} order={o} archived={isArchived} onPress={() => setFocusedId(o.id)} />
             ))}
           </View>
         </View>
@@ -305,7 +378,7 @@ function ReportRow({ report, onPress }: { report: QCReport; onPress: () => void 
   );
 }
 
-function OrderRow({ order, onPress }: { order: QCActiveOrder; onPress: () => void }) {
+function OrderRow({ order, archived, onPress }: { order: QCActiveOrder; archived?: boolean; onPress: () => void }) {
   const { colors, radius, spacing } = useTheme();
   return (
     <PressableScale onPress={onPress}>
@@ -322,8 +395,12 @@ function OrderRow({ order, onPress }: { order: QCActiveOrder; onPress: () => voi
         ]}
       >
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-          <AppText weight="700">{order.orderCode ?? '—'}</AppText>
-          {order.productionComplete ? (
+          <AppText weight="700">{order.itemCode ?? order.orderCode ?? '—'}</AppText>
+          {archived ? (
+            <AppText variant="caption" weight="700" tone="muted">
+              Archived
+            </AppText>
+          ) : order.productionComplete ? (
             <AppText variant="caption" weight="700" style={{ color: colors.status.success.fg }}>
               Production done
             </AppText>

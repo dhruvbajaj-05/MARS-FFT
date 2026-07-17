@@ -12,7 +12,16 @@ const mongoose = require('mongoose');
 
 const DEPARTMENTS = ['moulding', 'assembly']; // extensible: 'incoming', 'final', 'dispatch'
 const SEVERITIES = ['minor', 'major', 'critical'];
-const STATUSES = ['open', 'investigating', 'resolved', 'rejected'];
+// Simplified lifecycle (2026-07): a QC case is either Open or Closed. Legacy values
+// (investigating / resolved / rejected) are normalized to open/closed by the pre-save
+// hook below and are still tolerated inside the audit trail (statusHistory).
+const STATUSES = ['open', 'closed'];
+
+// Map any historical status value onto the simplified open/closed model.
+function normalizeStatus(status) {
+  if (status === 'closed' || status === 'resolved' || status === 'rejected') return 'closed';
+  return 'open';
+}
 
 // A threaded comment (Admin + engineers now; customers read-only later).
 const commentSchema = new mongoose.Schema(
@@ -26,10 +35,12 @@ const commentSchema = new mongoose.Schema(
   { _id: true }
 );
 
-// One entry per status transition, so a report carries its full audit trail.
+// One entry per status transition, so a report carries its full audit trail. `status`
+// is a free String (no enum) so legacy transition values stay intact for audit even
+// after the lifecycle was simplified to open/closed.
 const statusHistorySchema = new mongoose.Schema(
   {
-    status: { type: String, enum: STATUSES, required: true },
+    status: { type: String, required: true },
     byId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     byName: { type: String, trim: true },
     note: { type: String, trim: true },
@@ -63,6 +74,9 @@ const qcReportSchema = new mongoose.Schema(
     photos: [{ type: mongoose.Schema.Types.ObjectId, ref: 'MediaAsset' }],
 
     status: { type: String, enum: STATUSES, required: true, default: 'open' },
+    // Set when the case is Closed. Closing also physically deletes the case's images
+    // (service layer) while keeping the record + comments for audit.
+    closedAt: { type: Date, default: null },
     comments: { type: [commentSchema], default: [] },
     statusHistory: { type: [statusHistorySchema], default: [] },
 
@@ -71,6 +85,14 @@ const qcReportSchema = new mongoose.Schema(
   },
   { timestamps: { createdAt: true, updatedAt: true } }
 );
+
+// Coerce any legacy status onto open/closed so old records can still be saved.
+qcReportSchema.pre('save', function normalizeStatusHook(next) {
+  if (this.status && !STATUSES.includes(this.status)) {
+    this.status = normalizeStatus(this.status);
+  }
+  next();
+});
 
 qcReportSchema.index({ department: 1, orderId: 1, createdAt: -1 });
 qcReportSchema.index({ department: 1, status: 1 });
@@ -83,3 +105,4 @@ module.exports = mongoose.model('QCReport', qcReportSchema);
 module.exports.DEPARTMENTS = DEPARTMENTS;
 module.exports.SEVERITIES = SEVERITIES;
 module.exports.STATUSES = STATUSES;
+module.exports.normalizeStatus = normalizeStatus;
