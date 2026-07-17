@@ -21,6 +21,11 @@ export const queryKeys = {
   mouldingDashboard: ['moulding', 'dashboard'] as const,
   molds: (productId: string) => ['moulding', 'molds', productId] as const,
   orderMolds: (orderId: string) => ['moulding', 'order-molds', orderId] as const,
+  productionStore: {
+    itemCode: (purchaseOrderId: string) => ['moulding', 'production-store', 'item-code', purchaseOrderId] as const,
+    cumulative: (purchaseOrderId: string) => ['moulding', 'production-store', 'cumulative', purchaseOrderId] as const,
+  },
+  mouldingPoDashboard: ['moulding', 'po-dashboard'] as const,
   assortment: (customerId: string, productId: string) =>
     ['assembly', 'assortment', customerId, productId] as const,
 
@@ -55,6 +60,8 @@ export const queryKeys = {
       ['qc', 'order-context', orderId, department] as const,
     activeOrders: (department: string) => ['qc', 'active-orders', department] as const,
     archivedOrders: (department: string) => ['qc', 'archived-orders', department] as const,
+    activePOs: (department: string) => ['qc', 'active-pos', department] as const,
+    archivedPOs: (department: string) => ['qc', 'archived-pos', department] as const,
     summary: (orderId: string, department: string) => ['qc', 'summary', orderId, department] as const,
     notifications: (params?: unknown) => ['qc', 'notifications', params ?? {}] as const,
   },

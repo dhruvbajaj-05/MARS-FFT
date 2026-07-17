@@ -10,6 +10,7 @@ const MouldingRecord = require('../models/MouldingRecord');
 const AssemblyRecord = require('../models/AssemblyRecord');
 const OrderMold = require('../models/OrderMold');
 const Order = require('../models/Order');
+const PurchaseOrder = require('../models/PurchaseOrder');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
 const User = require('../models/User');
@@ -577,6 +578,137 @@ function listArchivedOrders({ department }) {
   return listDeptOrders({ department, archived: true });
 }
 
+// ---------------------------------------------------------------------------
+// PO-level QC lists (req #12/#13) — the Moulding QC screen works at PO level.
+// A PO is ACTIVE for a department while ANY of its involved item-code jobs is not yet
+// qc-closed for that department; ARCHIVED once EVERY involved job is qc-closed.
+// ---------------------------------------------------------------------------
+async function listDeptPOs({ department, archived = false }) {
+  assertDepartment(department);
+
+  // Item-code jobs this department is involved in.
+  const idQueries = [QCReport.distinct('orderId', { department })];
+  if (department === 'assembly') {
+    idQueries.push(AssemblyRecord.distinct('orderId'));
+  } else {
+    idQueries.push(OrderMold.distinct('orderId'));
+    idQueries.push(MouldingRecord.distinct('orderId'));
+  }
+  const idGroups = await Promise.all(idQueries);
+  const idSet = new Set();
+  for (const group of idGroups) for (const id of group) idSet.add(String(id));
+  if (idSet.size === 0) return { purchaseOrders: [] };
+  const ids = [...idSet].map((s) => new mongoose.Types.ObjectId(s));
+
+  const orders = await Order.find({ _id: { $in: ids }, purchaseOrderId: { $ne: null } })
+    .select('purchaseOrderId customerId qcClosedDepartments')
+    .lean();
+  if (orders.length === 0) return { purchaseOrders: [] };
+
+  // Group involved jobs by PO; classify by whether all involved jobs are qc-closed.
+  const byPo = new Map();
+  const orderToPo = new Map();
+  for (const o of orders) {
+    const pid = String(o.purchaseOrderId);
+    orderToPo.set(String(o._id), pid);
+    if (!byPo.has(pid)) byPo.set(pid, { total: 0, closed: 0 });
+    const g = byPo.get(pid);
+    g.total += 1;
+    if ((o.qcClosedDepartments || []).includes(department)) g.closed += 1;
+  }
+  const wantPoIds = [];
+  for (const [pid, g] of byPo) {
+    const allClosed = g.total > 0 && g.closed === g.total;
+    if (archived ? allClosed : !allClosed) wantPoIds.push(pid);
+  }
+  if (wantPoIds.length === 0) return { purchaseOrders: [] };
+  const wantObjIds = wantPoIds.map((s) => new mongoose.Types.ObjectId(s));
+
+  const [poDocs, reportAgg, totalJobsAgg] = await Promise.all([
+    PurchaseOrder.find({ _id: { $in: wantObjIds } }).lean(),
+    QCReport.aggregate([
+      { $match: { department, orderId: { $in: ids } } },
+      {
+        $group: {
+          _id: '$orderId',
+          count: { $sum: 1 },
+          open: { $sum: { $cond: [{ $eq: ['$status', 'open'] }, 1, 0] } },
+          lastAt: { $max: '$createdAt' },
+        },
+      },
+    ]),
+    // Total item-code jobs in each PO (for display — not just the QC-involved ones).
+    Order.aggregate([
+      { $match: { purchaseOrderId: { $in: wantObjIds } } },
+      { $group: { _id: '$purchaseOrderId', total: { $sum: 1 } } },
+    ]),
+  ]);
+  const totalJobsByPo = new Map(totalJobsAgg.map((r) => [String(r._id), r.total]));
+  const customers = await Customer.find({ _id: { $in: [...new Set(poDocs.map((p) => String(p.customerId)))] } })
+    .select('name')
+    .lean();
+  const cName = new Map(customers.map((c) => [String(c._id), c.name]));
+
+  // Roll report counts up to the PO.
+  const poReport = new Map();
+  for (const r of reportAgg) {
+    const pid = orderToPo.get(String(r._id));
+    if (!pid) continue;
+    if (!poReport.has(pid)) poReport.set(pid, { count: 0, open: 0, lastAt: null });
+    const g = poReport.get(pid);
+    g.count += r.count;
+    g.open += r.open;
+    if (r.lastAt && (!g.lastAt || new Date(r.lastAt) > new Date(g.lastAt))) g.lastAt = r.lastAt;
+  }
+
+  const rows = poDocs.map((po) => {
+    const rep = poReport.get(String(po._id)) || { count: 0, open: 0, lastAt: null };
+    return {
+      id: String(po._id),
+      poNumber: po.poNumber || null,
+      customerId: String(po.customerId),
+      customerName: cName.get(String(po.customerId)) || null,
+      itemCount: totalJobsByPo.get(String(po._id)) || 0,
+      reportCount: rep.count,
+      openCount: rep.open,
+      lastReportAt: rep.lastAt || null,
+    };
+  });
+  rows.sort((a, b) => {
+    const at = a.lastReportAt ? new Date(a.lastReportAt).getTime() : 0;
+    const bt = b.lastReportAt ? new Date(b.lastReportAt).getTime() : 0;
+    return bt - at;
+  });
+  return { purchaseOrders: rows };
+}
+
+function listActivePOs({ department }) {
+  return listDeptPOs({ department, archived: false });
+}
+function listArchivedPOs({ department }) {
+  return listDeptPOs({ department, archived: true });
+}
+
+// "Done with Moulding QC for this PO" — mark every job in the PO qc-closed for the
+// department, moving the whole PO to QC Archive. Idempotent.
+async function closePO({ purchaseOrderId, department }) {
+  assertDepartment(department);
+  if (!mongoose.Types.ObjectId.isValid(purchaseOrderId)) {
+    throw badRequest('Invalid purchaseOrderId', 'invalid_id');
+  }
+  const jobs = await Order.find({ purchaseOrderId });
+  if (jobs.length === 0) throw notFound('Purchase order not found', 'purchase_order_not_found');
+  let closed = 0;
+  for (const job of jobs) {
+    if (!job.qcClosedDepartments.includes(department)) {
+      job.qcClosedDepartments.push(department);
+      await job.save();
+      closed += 1;
+    }
+  }
+  return { purchaseOrderId: String(purchaseOrderId), department, closedJobs: closed, totalJobs: jobs.length };
+}
+
 // Mark QC documentation finished for one order + department (the "Done Uploading QC
 // Photos" button). Removes it from the active QC list; reports stay visible to Admin +
 // customer. Idempotent.
@@ -694,6 +826,9 @@ module.exports = {
   orderContext,
   listActiveOrders,
   listArchivedOrders,
+  listActivePOs,
+  listArchivedPOs,
+  closePO,
   closeOrder,
   summary,
   listDefectTypes,

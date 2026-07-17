@@ -41,6 +41,16 @@ router.get('/summary', ...protect(...QC_AUTHORS), controller.summary);
 // Active + archived QC item codes for a department + "Done Uploading QC Photos" (req #11).
 router.get('/active-orders', ...protect(...QC_AUTHORS), controller.activeOrders);
 router.get('/archived-orders', ...protect(...QC_AUTHORS), controller.archivedOrders);
+
+// PO-level QC lists + "Done with Moulding QC for this PO" (req #12/#13).
+router.get('/active-pos', ...protect(...QC_AUTHORS), controller.activePOs);
+router.get('/archived-pos', ...protect(...QC_AUTHORS), controller.archivedPOs);
+router.post(
+  '/close-po',
+  ...protect(...QC_AUTHORS),
+  requireBody(['purchaseOrderId', 'department']),
+  controller.closePO
+);
 router.post(
   '/close-order',
   ...protect(...QC_AUTHORS),

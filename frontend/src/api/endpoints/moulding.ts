@@ -5,10 +5,13 @@ import type {
   MouldingRecord,
   MouldingStatus,
   MoldsResponse,
+  MouldingPODashboard,
   OrderMold,
   OrderMoldInput,
   OrderMoldsResponse,
   Paginated,
+  ProductionCumulativeStore,
+  ProductionItemCodeStore,
   RecoveryEntry,
 } from '@/api/types';
 import type { ListParams } from './master';
@@ -98,6 +101,9 @@ export const mouldingApi = {
       .get<{ customers: MouldingDashboardCustomer[] }>('/moulding/dashboard')
       .then((r) => r.data.customers),
 
+  // PO-level moulding dashboard: Active / Archived POs.
+  poDashboard: () => apiClient.get<MouldingPODashboard>('/moulding/po-dashboard').then((r) => r.data),
+
   // Learned molds for a product (dropdown + part/cavity autofill).
   molds: (productId: string) =>
     apiClient.get<MoldsResponse>('/moulding/molds', { params: { productId } }).then((r) => r.data),
@@ -120,6 +126,16 @@ export const mouldingApi = {
 
   status: (orderId: string) =>
     apiClient.get<MouldingStatus>('/moulding/status', { params: { orderId } }).then((r) => r.data),
+
+  // Production Store — two live views by Mould for one PO.
+  productionStoreItemCode: (purchaseOrderId: string) =>
+    apiClient
+      .get<ProductionItemCodeStore>('/moulding/production-store/item-code', { params: { purchaseOrderId } })
+      .then((r) => r.data),
+  productionStoreCumulative: (purchaseOrderId: string) =>
+    apiClient
+      .get<ProductionCumulativeStore>('/moulding/production-store/cumulative', { params: { purchaseOrderId } })
+      .then((r) => r.data),
 
   // Remembered rejection reasons for the multi-select list.
   rejectionReasons: () =>

@@ -157,6 +157,19 @@ export interface MouldingDashboardCustomer {
   products: MouldingDashboardProduct[];
 }
 
+// PO-level moulding dashboard (Active / Archived POs).
+export interface MouldingPOCard {
+  id: string;
+  poNumber: string | null;
+  customerName: string | null;
+  itemCount: number;
+  activeItems: number;
+}
+export interface MouldingPODashboard {
+  active: MouldingPOCard[];
+  archived: MouldingPOCard[];
+}
+
 // ---- Recovery entry (rejected shots → surplus) ----
 export interface RecoveryEntry {
   partName: string;
@@ -643,13 +656,60 @@ export interface OrderMoldSuggestion {
   requiredShots: number;
   requiredQuantity: number;
 }
+// A mould already configured on another item-code job in the SAME purchase order — offered
+// for reuse (identity + cavity + part) with a NEW required-shots target (never inherited).
+export interface POMoldSuggestion {
+  moldName: string;
+  partName: string;
+  cavity: number;
+}
 export interface OrderMoldsResponse {
   orderId: string;
   customerId: string;
   productId: string;
   molds: OrderMold[];
   suggestions: OrderMoldSuggestion[];
+  poSuggestions?: POMoldSuggestion[];
 }
+// ---- Production Store (live views from moulding records; by Mould) ----
+export interface ProductionStoreMould {
+  moldName: string;
+  partName: string;
+  cavity: number;
+  produced: number;
+  requiredPieces: number;
+  surplus: number;
+}
+export interface ProductionStoreItem {
+  orderId: string;
+  itemCode: string | null;
+  productName: string | null;
+  moulds: ProductionStoreMould[];
+  totalProduced: number;
+  totalSurplus: number;
+}
+export interface ProductionStorePO {
+  id: string;
+  poNumber: string | null;
+  customerId: string;
+  customerName: string | null;
+}
+export interface ProductionItemCodeStore {
+  purchaseOrder: ProductionStorePO;
+  items: ProductionStoreItem[];
+}
+export interface POCumulativeMould {
+  moldName: string;
+  cavity: number;
+  totalProduced: number;
+  totalSurplus: number;
+  breakdown: { orderId: string; itemCode: string | null; productName: string | null; produced: number; surplus: number }[];
+}
+export interface ProductionCumulativeStore {
+  purchaseOrder: ProductionStorePO;
+  moulds: POCumulativeMould[];
+}
+
 export interface OrderMoldInput {
   orderId: string;
   customerId?: string;
@@ -813,6 +873,7 @@ export interface AdminMouldingRecord {
   id: string;
   orderId: string | null;
   orderCode: string | null;
+  itemCode: string | null;
   customerId: string | null;
   customer: string | null;
   productId: string | null;
@@ -834,6 +895,7 @@ export interface AdminAssemblyRecord {
   id: string;
   orderId: string | null;
   orderCode: string | null;
+  itemCode: string | null;
   customerId: string | null;
   customer: string | null;
   productId: string | null;
@@ -853,6 +915,7 @@ export interface AdminQCRecord {
   id: string;
   orderId: string | null;
   orderCode: string | null;
+  itemCode: string | null;
   customerId: string | null;
   customer: string | null;
   productId: string | null;
@@ -872,6 +935,7 @@ export interface AdminDispatchRecord {
   id: string;
   orderId: string | null;
   orderCode: string | null;
+  itemCode: string | null;
   customerId: string | null;
   customer: string | null;
   productId: string | null;
@@ -999,6 +1063,21 @@ export interface QCActiveOrder {
 }
 export interface QCActiveOrdersResponse {
   orders: QCActiveOrder[];
+}
+
+// A Purchase Order inside a department's QC tab (PO-level active/archive, req #12).
+export interface QCActivePO {
+  id: string;
+  poNumber: string | null;
+  customerId: string;
+  customerName: string | null;
+  itemCount: number;
+  reportCount: number;
+  openCount: number;
+  lastReportAt: string | null;
+}
+export interface QCActivePOsResponse {
+  purchaseOrders: QCActivePO[];
 }
 
 export interface QCNotification {

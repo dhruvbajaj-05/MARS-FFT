@@ -58,6 +58,35 @@ async function archivedOrders(req, res, next) {
   }
 }
 
+// GET /api/v1/qc-reports/active-pos?department=  — POs in a department's active QC
+async function activePOs(req, res, next) {
+  try {
+    res.status(200).json(await qcReportService.listActivePOs({ department: req.query.department }));
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/qc-reports/archived-pos?department=  — POs moved to QC Archive
+async function archivedPOs(req, res, next) {
+  try {
+    res.status(200).json(await qcReportService.listArchivedPOs({ department: req.query.department }));
+  } catch (err) {
+    next(err);
+  }
+}
+
+// POST /api/v1/qc-reports/close-po  { purchaseOrderId, department } — "Done with QC for this PO"
+async function closePO(req, res, next) {
+  try {
+    res.status(200).json(
+      await qcReportService.closePO({ purchaseOrderId: req.body.purchaseOrderId, department: req.body.department })
+    );
+  } catch (err) {
+    next(err);
+  }
+}
+
 // POST /api/v1/qc-reports/close-order  { orderId, department } — "Done Uploading QC Photos"
 async function closeOrder(req, res, next) {
   try {
@@ -157,6 +186,9 @@ module.exports = {
   orderContext,
   activeOrders,
   archivedOrders,
+  activePOs,
+  archivedPOs,
+  closePO,
   closeOrder,
   summary,
   listDefectTypes,

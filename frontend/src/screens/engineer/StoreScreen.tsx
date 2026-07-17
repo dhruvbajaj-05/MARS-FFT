@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import React, { useState } from 'react';
 import { Pressable, RefreshControl, StyleSheet, View } from 'react-native';
 
+import { mouldingApi } from '@/api/endpoints/moulding';
 import { outsourcedApi, storeApi } from '@/api/endpoints/store';
 import { queryKeys } from '@/api/queryKeys';
 import type { ComponentOrderNode, ComponentPart, OutsourcedItem, OutsourcedReceipt } from '@/api/types';
@@ -486,8 +487,140 @@ function FinishedGoodsStore() {
   );
 }
 
+// ---- Production Store (Moulding): two live views by Mould ----
+//   Item Code Store  → PO → Item Code → Mould (produced good parts + surplus overage)
+//   PO Cumulative    → PO → Mould (same physical mould summed across item codes, traceable)
+function MouldRow({ moldName, produced, surplus, required, sub }: { moldName: string; produced: number; surplus: number; required?: number; sub?: string }) {
+  const { colors, spacing } = useTheme();
+  return (
+    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: spacing(2), borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}>
+      <View style={{ flex: 1 }}>
+        <AppText weight="700">{moldName}</AppText>
+        {sub ? <AppText variant="caption" tone="muted">{sub}</AppText> : null}
+      </View>
+      <View style={{ alignItems: 'flex-end' }}>
+        <AppText weight="700" style={{ color: colors.status.success.fg }}>{produced.toLocaleString()} good</AppText>
+        <AppText variant="caption" tone="muted">
+          {required ? `target ${required.toLocaleString()}` : 'no target'}
+          {surplus > 0 ? `  ·  +${surplus.toLocaleString()} surplus` : ''}
+        </AppText>
+      </View>
+    </View>
+  );
+}
+
+function ProductionStore() {
+  const { spacing, colors, radius } = useTheme();
+  const cp = usePOItemCode();
+  const [tab, setTab] = useState<'item' | 'cumulative'>('item');
+
+  const itemQ = useQuery({
+    queryKey: queryKeys.productionStore.itemCode(cp.purchaseOrderId ?? 'none'),
+    queryFn: () => mouldingApi.productionStoreItemCode(cp.purchaseOrderId!),
+    enabled: !!cp.purchaseOrderId && tab === 'item',
+  });
+  const cumQ = useQuery({
+    queryKey: queryKeys.productionStore.cumulative(cp.purchaseOrderId ?? 'none'),
+    queryFn: () => mouldingApi.productionStoreCumulative(cp.purchaseOrderId!),
+    enabled: !!cp.purchaseOrderId && tab === 'cumulative',
+  });
+
+  return (
+    <Screen scroll refreshControl={<RefreshControl refreshing={cp.refreshing} onRefresh={cp.refetch} />}>
+      <AppText variant="h2" style={{ marginBottom: spacing(1) }}>Production Store</AppText>
+      <AppText tone="muted" style={{ marginBottom: spacing(4) }}>
+        Good parts produced per mould — per item code, or combined across the PO for shared moulds.
+      </AppText>
+
+      <Card style={{ marginBottom: spacing(4) }}>
+        <Select label="Customer" value={cp.customerId} options={cp.customerOptions} onChange={cp.selectCustomer} placeholder="Select a customer…" />
+        <Select
+          label="Purchase Order"
+          value={cp.purchaseOrderId}
+          options={cp.purchaseOrderOptions}
+          onChange={(v) => cp.selectPurchaseOrder(v)}
+          placeholder={cp.customerId ? 'Select a purchase order…' : 'Select a customer first'}
+          emptyHint="No purchase orders for this customer"
+        />
+      </Card>
+
+      {/* Two-view toggle */}
+      <View style={{ flexDirection: 'row', backgroundColor: colors.surfaceAlt, borderRadius: radius.pill, padding: 4, marginBottom: spacing(4) }}>
+        {([['item', 'Item Code Store'], ['cumulative', 'PO Cumulative']] as const).map(([k, label]) => {
+          const on = tab === k;
+          return (
+            <Pressable key={k} onPress={() => setTab(k)} style={{ flex: 1 }}>
+              <View style={{ backgroundColor: on ? colors.primary : 'transparent', borderRadius: radius.pill, paddingVertical: spacing(2), alignItems: 'center' }}>
+                <AppText weight="700" style={{ color: on ? colors.primaryText : colors.textMuted }}>{label}</AppText>
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {!cp.purchaseOrderId ? (
+        <AppText tone="muted">Select a customer and purchase order to view production.</AppText>
+      ) : tab === 'item' ? (
+        <QueryBoundary isLoading={itemQ.isLoading} isError={itemQ.isError} error={itemQ.error} data={itemQ.data} onRetry={itemQ.refetch}>
+          {(d) => {
+            const withProd = d.items.filter((i) => i.moulds.length > 0);
+            return withProd.length === 0 ? (
+              <AppText tone="muted">No production recorded yet for this PO.</AppText>
+            ) : (
+              <View style={{ gap: spacing(3) }}>
+                {withProd.map((i) => (
+                  <Card key={i.orderId}>
+                    <AppText weight="700" style={{ fontSize: 16 }}>{i.itemCode ?? '—'}</AppText>
+                    <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>{i.productName}</AppText>
+                    {i.moulds.map((m) => (
+                      <MouldRow key={m.moldName} moldName={m.moldName} produced={m.produced} surplus={m.surplus} required={m.requiredPieces} sub={`${m.partName} · ${m.cavity} cav`} />
+                    ))}
+                  </Card>
+                ))}
+              </View>
+            );
+          }}
+        </QueryBoundary>
+      ) : (
+        <QueryBoundary isLoading={cumQ.isLoading} isError={cumQ.isError} error={cumQ.error} data={cumQ.data} onRetry={cumQ.refetch}>
+          {(d) =>
+            d.moulds.length === 0 ? (
+              <AppText tone="muted">No production recorded yet for this PO.</AppText>
+            ) : (
+              <View style={{ gap: spacing(3) }}>
+                {d.moulds.map((m) => (
+                  <Card key={m.moldName}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <AppText weight="700" style={{ fontSize: 16 }}>{m.moldName}</AppText>
+                      <AppText weight="700" style={{ color: colors.status.success.fg }}>
+                        {m.totalProduced.toLocaleString()} good{m.totalSurplus > 0 ? ` · +${m.totalSurplus.toLocaleString()}` : ''}
+                      </AppText>
+                    </View>
+                    <AppText variant="caption" tone="muted" style={{ marginTop: 2, marginBottom: spacing(1) }}>
+                      Combined across item codes using this mould
+                    </AppText>
+                    {m.breakdown.filter((b) => b.produced > 0).map((b) => (
+                      <View key={b.orderId} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
+                        <AppText variant="caption">{b.itemCode ?? '—'} · {b.productName}</AppText>
+                        <AppText variant="caption" weight="600">{b.produced.toLocaleString()}{b.surplus > 0 ? ` (+${b.surplus.toLocaleString()})` : ''}</AppText>
+                      </View>
+                    ))}
+                  </Card>
+                ))}
+              </View>
+            )
+          }
+        </QueryBoundary>
+      )}
+    </Screen>
+  );
+}
+
 export function StoreScreen() {
   const user = useCurrentUser();
+  // Moulding engineers get the mould-based Production Store (produced parts by item code /
+  // cumulative). Assembly keeps the component store; QC/Dispatch see finished goods.
+  if (user?.role === ROLES.MOULDING_ENGINEER) return <ProductionStore />;
   const isFinished =
     user?.role === ROLES.QC_ENGINEER || user?.role === ROLES.PACKING_DISPATCH_ENGINEER;
 

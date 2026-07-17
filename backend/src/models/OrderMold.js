@@ -23,6 +23,11 @@ const orderMoldSchema = new mongoose.Schema(
     partName: { type: String, required: true, trim: true },
     cavity: { type: Number, required: true, default: 1, min: 1 },
     requiredShots: { type: Number, required: true, default: 0, min: 0 },
+    // Concurrency-safe enforcement counter: total shots pushed against THIS (order, mould)
+    // target. Guarded-incremented on production submit so simultaneous submissions can never
+    // exceed requiredShots; recomputed from records on edit/delete (records stay the source
+    // of truth for store/reconcile — this is purely a guard).
+    completedShots: { type: Number, required: true, default: 0, min: 0 },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   },
   { timestamps: { createdAt: true, updatedAt: true } }

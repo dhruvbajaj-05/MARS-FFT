@@ -57,7 +57,7 @@ function MouldingCard({ r }: { r: AdminMouldingRecord }) {
           }}
         >
           <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg }}>
-            {r.orderCode ?? '—'}
+            {r.itemCode ?? r.orderCode ?? '—'}
           </AppText>
         </View>
       </View>

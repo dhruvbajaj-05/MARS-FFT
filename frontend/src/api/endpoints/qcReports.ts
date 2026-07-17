@@ -2,6 +2,7 @@ import { apiClient } from '@/api/client';
 import type {
   Paginated,
   QCActiveOrdersResponse,
+  QCActivePOsResponse,
   QCDepartment,
   QCNotification,
   QCOrderContext,
@@ -60,6 +61,25 @@ export const qcReportsApi = {
     apiClient
       .get<QCActiveOrdersResponse>('/qc-reports/archived-orders', { params: { department } })
       .then((r) => r.data.orders),
+
+  // PO-level QC lists (Moulding QC works at PO level).
+  activePOs: (department: QCDepartment) =>
+    apiClient
+      .get<QCActivePOsResponse>('/qc-reports/active-pos', { params: { department } })
+      .then((r) => r.data.purchaseOrders),
+  archivedPOs: (department: QCDepartment) =>
+    apiClient
+      .get<QCActivePOsResponse>('/qc-reports/archived-pos', { params: { department } })
+      .then((r) => r.data.purchaseOrders),
+
+  // "Done with Moulding QC for this PO" — archives the whole PO for the department.
+  closePO: (purchaseOrderId: string, department: QCDepartment) =>
+    apiClient
+      .post<{ purchaseOrderId: string; department: QCDepartment; closedJobs: number; totalJobs: number }>(
+        '/qc-reports/close-po',
+        { purchaseOrderId, department }
+      )
+      .then((r) => r.data),
 
   // "Done Uploading QC Photos" — closes QC for one order + department.
   closeOrder: (orderId: string, department: QCDepartment) =>

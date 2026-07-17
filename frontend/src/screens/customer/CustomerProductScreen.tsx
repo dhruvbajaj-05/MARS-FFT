@@ -89,9 +89,8 @@ function OrderCard({ order, onPress }: { order: CustomerProductOrderRow; onPress
       >
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing(3) }}>
           <View>
-            <AppText variant="h3">{order.orderCode}</AppText>
+            <AppText variant="h3">{order.poNumber ?? order.orderCode}</AppText>
             <AppText variant="caption" tone="muted">
-              {order.poNumber ? `${order.poNumber} · ` : ''}
               {order.orderQuantity.toLocaleString()} units · {relativeTime(order.createdAt, 'Placed')}
             </AppText>
           </View>

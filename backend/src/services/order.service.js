@@ -42,6 +42,12 @@ async function nextOrderCode() {
   return formatOrderCode(seq);
 }
 
+// Mint `n` sequential, unique OrderIDs in a single atomic op (for bulk PO job creation).
+async function nextOrderCodesBatch(n) {
+  const seqs = await Counter.nextSeqBatch(ORDER_CODE_SEQ, n);
+  return seqs.map(formatOrderCode);
+}
+
 // Shape an order document for client responses. Produced/Pending/Progress are computed
 // at read time elsewhere — not stored. orderCode + lifecycle flags drive the working
 // screens vs history split.
@@ -296,5 +302,6 @@ module.exports = {
   deleteOrder,
   toPublicOrder,
   nextOrderCode,
+  nextOrderCodesBatch,
   formatOrderCode,
 };

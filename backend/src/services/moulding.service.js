@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const MouldingRecord = require('../models/MouldingRecord');
 const MediaAsset = require('../models/MediaAsset');
 const Order = require('../models/Order');
+const PurchaseOrder = require('../models/PurchaseOrder');
 const Customer = require('../models/Customer');
 const Product = require('../models/Product');
 const moldService = require('./mold.service');
@@ -37,6 +38,18 @@ async function computeTargetPieces(orderId) {
     { $group: { _id: null, total: { $sum: { $multiply: ['$requiredShots', '$cavity'] } } } },
   ]);
   return agg?.total ?? 0;
+}
+
+// Recompute the (order, mould) enforcement counter from the record history and persist it.
+// Keeps OrderMold.completedShots exact after edits/deletes (self-healing — never drifts).
+async function recomputeCompletedShots(orderId, moldName) {
+  const [agg] = await MouldingRecord.aggregate([
+    { $match: { orderId: new mongoose.Types.ObjectId(String(orderId)), moldName } },
+    { $group: { _id: null, total: { $sum: '$shotsDone' } } },
+  ]);
+  const total = agg?.total ?? 0;
+  await OrderMold.updateOne({ orderId, moldName }, { $set: { completedShots: total } });
+  return total;
 }
 
 async function computeOrderStatus(orderId) {
@@ -272,6 +285,34 @@ async function createMouldingRecord({ payload, file, createdBy }) {
 
   const requiredShots = source ? source.requiredShots : Number(payload.requiredShots) || 0;
 
+  // ---- Per-(order, mould) target enforcement (concurrency-safe) ----------------
+  // When this mould has a configured target on THIS order (OrderMold.requiredShots > 0),
+  // atomically reserve the shots against `completedShots` with a guard so two engineers
+  // submitting near the target at the same time can never push it over. If the guard fails,
+  // tell the engineer exactly how many shots remain. Records stay the source of truth; this
+  // counter is recomputed on edit/delete.
+  let reservedOnMold = null;
+  if (orderMold && orderMold.requiredShots > 0) {
+    const guarded = await OrderMold.findOneAndUpdate(
+      {
+        _id: orderMold._id,
+        $expr: {
+          $lte: [{ $add: [{ $ifNull: ['$completedShots', 0] }, fields.shotsDone] }, '$requiredShots'],
+        },
+      },
+      { $inc: { completedShots: fields.shotsDone } },
+      { new: true }
+    );
+    if (!guarded) {
+      const remaining = Math.max(0, orderMold.requiredShots - (orderMold.completedShots || 0));
+      throw conflict(
+        `Only ${remaining} shot${remaining === 1 ? '' : 's'} remain for mould ${moldName} on this item code (target ${orderMold.requiredShots}). You tried to push ${fields.shotsDone}.`,
+        'target_exceeded'
+      );
+    }
+    reservedOnMold = orderMold._id;
+  }
+
   // rejectionReasons: accept array (new) or single string (legacy).
   const rejectionReasons = Array.isArray(payload.rejectionReasons)
     ? payload.rejectionReasons.map((r) => String(r).trim()).filter(Boolean)
@@ -279,24 +320,34 @@ async function createMouldingRecord({ payload, file, createdBy }) {
       ? [String(payload.rejectionReason).trim()]
       : [];
 
-  const record = await MouldingRecord.create({
-    orderId: payload.orderId,
-    productId: payload.productId,
-    customerId: payload.customerId,
-    moldName,
-    partName,
-    machineNumber: String(payload.machineNumber).trim(),
-    shift: fields.shift,
-    cavity: fields.cavity,
-    shotsDone: fields.shotsDone,
-    rejectedShots: fields.rejectedShots,
-    productionQuantity: fields.productionQuantity,
-    goodParts: fields.goodParts,
-    rejectionReasons,
-    rejectionReason: null,
-    comments: payload.comments ? String(payload.comments).trim() : undefined,
-    createdBy,
-  });
+  let record;
+  try {
+    record = await MouldingRecord.create({
+      orderId: payload.orderId,
+      productId: payload.productId,
+      customerId: payload.customerId,
+      moldName,
+      partName,
+      machineNumber: String(payload.machineNumber).trim(),
+      shift: fields.shift,
+      cavity: fields.cavity,
+      shotsDone: fields.shotsDone,
+      rejectedShots: fields.rejectedShots,
+      productionQuantity: fields.productionQuantity,
+      goodParts: fields.goodParts,
+      rejectionReasons,
+      rejectionReason: null,
+      comments: payload.comments ? String(payload.comments).trim() : undefined,
+      createdBy,
+    });
+  } catch (err) {
+    // Release the reserved shots if the record couldn't be written, so the guard counter
+    // never drifts above the real record total.
+    if (reservedOnMold) {
+      await OrderMold.updateOne({ _id: reservedOnMold }, { $inc: { completedShots: -fields.shotsDone } }).catch(() => {});
+    }
+    throw err;
+  }
 
   // Remember any new rejection reasons for the multi-select list.
   if (rejectionReasons.length > 0) {
@@ -364,6 +415,24 @@ async function updateMouldingRecord(id, payload, user) {
     if (!Number.isFinite(newRejectedShots) || newRejectedShots < 0) throw badRequest('rejectedShots must be >= 0', 'invalid_quantity');
     if (newRejectedShots > newShotsDone) throw badRequest('rejectedShots cannot exceed shotsDone', 'inconsistent_quantities');
 
+    // Enforce the (order, mould) target on edit too: other records' shots + this edit must
+    // not exceed the configured requiredShots.
+    const om = await OrderMold.findOne({ orderId: record.orderId, moldName: record.moldName });
+    if (om && om.requiredShots > 0) {
+      const [agg] = await MouldingRecord.aggregate([
+        { $match: { orderId: record.orderId, moldName: record.moldName, _id: { $ne: record._id } } },
+        { $group: { _id: null, total: { $sum: '$shotsDone' } } },
+      ]);
+      const others = agg?.total ?? 0;
+      if (others + newShotsDone > om.requiredShots) {
+        const remaining = Math.max(0, om.requiredShots - others);
+        throw conflict(
+          `Edit exceeds target: mould ${record.moldName} allows ${remaining} more shot${remaining === 1 ? '' : 's'} on this item code (target ${om.requiredShots}).`,
+          'target_exceeded'
+        );
+      }
+    }
+
     record.shotsDone = newShotsDone;
     record.rejectedShots = newRejectedShots;
     record.productionQuantity = newShotsDone * record.cavity;
@@ -382,6 +451,9 @@ async function updateMouldingRecord(id, payload, user) {
   }
 
   await record.save();
+
+  // Keep the (order, mould) enforcement counter exact after the edit.
+  await recomputeCompletedShots(record.orderId, record.moldName);
 
   // Recompute balances from the full record history — surplus is consumed before finished,
   // finished before pending, automatically (see reconcile.service).
@@ -404,8 +476,11 @@ async function deleteMouldingRecord(id, user) {
     throw forbidden('Delete window has expired (12 hours after creation)', 'delete_window_expired');
   }
 
-  const { customerId, productId } = record;
+  const { customerId, productId, orderId, moldName } = record;
   await MouldingRecord.deleteOne({ _id: record._id });
+
+  // Keep the (order, mould) enforcement counter exact after the delete.
+  await recomputeCompletedShots(orderId, moldName);
 
   // Recompute from the remaining records. If parts were already consumed by assembly, the
   // shortfall surfaces correctly as increased Pending (no false "already consumed" error).
@@ -505,6 +580,43 @@ async function getMouldingDashboard() {
   return result;
 }
 
+// PO-level moulding dashboard (req #4). Groups the item-code jobs by their Purchase Order and
+// classifies each PO by moulding completion: ACTIVE = at least one job still in production;
+// ARCHIVED = every job's production is Completed. One aggregation (no N+1).
+async function getMouldingPODashboard() {
+  const rows = await Order.aggregate([
+    { $match: { purchaseOrderId: { $ne: null } } },
+    {
+      $group: {
+        _id: '$purchaseOrderId',
+        customerId: { $first: '$customerId' },
+        itemCount: { $sum: 1 },
+        activeItems: { $sum: { $cond: [{ $eq: ['$productionStatus', 'Active'] }, 1, 0] } },
+      },
+    },
+    { $lookup: { from: PurchaseOrder.collection.name, localField: '_id', foreignField: '_id', as: 'po' } },
+    { $unwind: '$po' },
+    { $lookup: { from: Customer.collection.name, localField: 'customerId', foreignField: '_id', as: 'cust' } },
+    { $unwind: { path: '$cust', preserveNullAndEmptyArrays: true } },
+    { $sort: { 'po.createdAt': -1 } },
+  ]);
+
+  const active = [];
+  const archived = [];
+  for (const r of rows) {
+    const card = {
+      id: String(r._id),
+      poNumber: r.po.poNumber || null,
+      customerName: r.cust ? r.cust.name : null,
+      itemCount: r.itemCount,
+      activeItems: r.activeItems,
+    };
+    if (r.activeItems > 0) active.push(card);
+    else archived.push(card);
+  }
+  return { active, archived };
+}
+
 // Shared filter builder for list queries.
 function buildFilter(query) {
   const filter = {};
@@ -582,6 +694,7 @@ module.exports = {
   deleteMouldingRecord,
   recoverPieces,
   getMouldingDashboard,
+  getMouldingPODashboard,
   listMyRecords,
   listAllRecords,
   getRecordById,

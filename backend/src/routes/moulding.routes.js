@@ -90,6 +90,26 @@ router.post(
   mouldingController.createOrderMold
 );
 
+// Production Store — two live views for a PO (moulding engineer + admin). Before /:id so
+// "production-store" is not captured as a record id.
+router.get(
+  '/production-store/item-code',
+  ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER),
+  mouldingController.productionStoreItemCode
+);
+router.get(
+  '/production-store/cumulative',
+  ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER),
+  mouldingController.productionStoreCumulative
+);
+
+// PO-level moulding dashboard: Active / Archived POs. Before /:id.
+router.get(
+  '/po-dashboard',
+  ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER),
+  mouldingController.poDashboard
+);
+
 // Read-all — admin only.
 router.get('/', ...protect(ROLES.ADMIN), mouldingController.listAll);
 

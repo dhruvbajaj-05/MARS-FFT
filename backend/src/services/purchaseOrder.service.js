@@ -7,6 +7,7 @@ const Product = require('../models/Product');
 const Customer = require('../models/Customer');
 const Counter = require('../models/Counter');
 const orderService = require('./order.service');
+const reconcileService = require('./reconcile.service');
 const { notFound, badRequest, conflict } = require('../utils/httpError');
 const { parsePagination, buildList } = require('../utils/pagination');
 
@@ -93,36 +94,49 @@ async function validateLines(customerId, lines) {
   return byId;
 }
 
-// Create a PO and one Item Code job per line (reusing order.service.createOrder so reconcile
-// fires per job exactly as before).
+// Create a PO and one Item Code job per line. Optimized for speed: all jobs are minted +
+// inserted in bulk (one code-block reservation + one insertMany), and stores are reconciled
+// ONCE per distinct product in parallel — instead of the old 2×N sequential reconciles that
+// made PO creation feel slow (and let admins double-submit). Reconcile is best-effort: a new
+// job has no production yet, it only draws down any existing product surplus.
 async function createPurchaseOrder({ customerId, lines, notes, createdBy }) {
   const customerExists = await Customer.exists({ _id: customerId });
   if (!customerExists) {
     throw badRequest('customerId does not reference an existing customer', 'invalid_customer');
   }
-  await validateLines(customerId, lines);
+  const byId = await validateLines(customerId, lines); // validates products/quantities up front
 
-  const poNumber = await nextPoNumber();
   const po = await PurchaseOrder.create({
-    poNumber,
+    poNumber: await nextPoNumber(),
     customerId,
     notes: notes ? String(notes).trim() : undefined,
     createdBy,
   });
 
-  const jobs = [];
-  for (const line of lines) {
-    // createOrder validates the chain again, mints orderCode, and reconciles.
-    const job = await orderService.createOrder({
-      customerId,
-      productId: line.productId,
-      orderQuantity: line.orderQuantity,
-      purchaseOrderId: po._id,
-      createdBy,
-    });
-    jobs.push(job);
-  }
+  // Reserve all OrderIDs in one atomic op, then bulk-insert the jobs.
+  const codes = await orderService.nextOrderCodesBatch(lines.length);
+  const docs = lines.map((line, i) => ({
+    orderCode: codes[i],
+    purchaseOrderId: po._id,
+    customerId,
+    productId: line.productId,
+    orderQuantity: Number(line.orderQuantity),
+    createdBy,
+  }));
+  const created = await Order.insertMany(docs);
 
+  // Reconcile once per DISTINCT product, all in parallel (best-effort — never block the PO).
+  const uniqueProductIds = [...new Set(lines.map((l) => String(l.productId)))];
+  await Promise.all(
+    uniqueProductIds.map((pid) =>
+      Promise.all([
+        reconcileService.reconcileProduct(String(customerId), pid),
+        reconcileService.reconcileOutsourced(String(customerId), pid),
+      ]).catch((e) => console.warn('[po] reconcile failed:', e.message))
+    )
+  );
+
+  const jobs = created.map((o) => toPublicJob(o, byId.get(String(o.productId))));
   return { purchaseOrder: toPublicPO(po, { jobCount: jobs.length }), jobs };
 }
 

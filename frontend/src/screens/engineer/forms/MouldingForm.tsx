@@ -6,7 +6,7 @@ import { masterApi } from '@/api/endpoints/master';
 import { mouldingApi } from '@/api/endpoints/moulding';
 import { storeApi } from '@/api/endpoints/store';
 import { queryKeys } from '@/api/queryKeys';
-import type { OrderMold, OrderMoldSuggestion } from '@/api/types';
+import type { OrderMold, OrderMoldSuggestion, POMoldSuggestion } from '@/api/types';
 import {
   AppText,
   Banner,
@@ -260,6 +260,18 @@ export function MouldingForm() {
     setMShots(s.requiredShots ? String(s.requiredShots) : '');
   };
 
+  // Reuse a physical mould already set up on another item code in this PO (req #6): copy its
+  // identity + cavity + part, but leave Required Shots BLANK — the target is per item code.
+  const poSuggestions: POMoldSuggestion[] = orderMolds.data?.poSuggestions ?? [];
+  const adoptPoSuggestion = (s: POMoldSuggestion) => {
+    setMMoldName(s.moldName);
+    setMPartName(s.partName);
+    setMCavity(String(s.cavity));
+    setMShots('');
+    setEditingMold(null);
+    setMoldOk(null);
+  };
+
   const activeMold = useMemo(
     () => moldList.find((m) => m.moldName === selectedMold) ?? null,
     [moldList, selectedMold]
@@ -271,6 +283,15 @@ export function MouldingForm() {
     Number.isFinite(shotsNum) && Number.isFinite(rejectedShotsNum) && cavity > 0
       ? (shotsNum - rejectedShotsNum) * cavity
       : null;
+
+  // Per-(item code, mould) target enforcement. Remaining = requiredShots − shots already done
+  // on this mould for this item code. null = no target configured (free production). The
+  // backend enforces this too (concurrency-safe), so this is a friendly guard, not the gate.
+  const selectedMoldProgress = prodStatus.data?.moldProgress?.find((m) => m.moldName === selectedMold);
+  const targetShots = activeMold?.requiredShots ?? 0;
+  const doneShots = selectedMoldProgress?.shotsDone ?? 0;
+  const remainingShots = targetShots > 0 ? Math.max(0, targetShots - doneShots) : null;
+  const exceedsTarget = remainingShots !== null && Number.isFinite(shotsNum) && shotsNum > remainingShots;
 
   const canSaveMold = !!(cp.jobId && mMoldName.trim() && mPartName.trim() && Number(mCavity) >= 1);
 
@@ -286,7 +307,9 @@ export function MouldingForm() {
     rejectedShotsNum >= 0 &&
     rejectedShotsNum <= shotsNum &&
     goodPreview !== null &&
-    goodPreview >= 0
+    goodPreview >= 0 &&
+    !exceedsTarget &&
+    !(remainingShots !== null && remainingShots === 0)
   );
 
   const isProductionComplete = prodStatus.data?.status === 'Completed';
@@ -440,6 +463,37 @@ export function MouldingForm() {
             </View>
           )}
 
+          {poSuggestions.length > 0 ? (
+            <View style={{ marginBottom: spacing(3) }}>
+              <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg, marginBottom: spacing(1) }}>
+                Reuse a mould from this PO — tap, then set new Required Shots
+              </AppText>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2) }}>
+                {poSuggestions.map((s) => (
+                  <Pressable
+                    key={s.moldName}
+                    onPress={() => adoptPoSuggestion(s)}
+                    style={{
+                      backgroundColor: colors.status.info.bg,
+                      borderRadius: 8,
+                      paddingVertical: spacing(1),
+                      paddingHorizontal: spacing(2),
+                      borderWidth: 1,
+                      borderColor: colors.status.info.fg,
+                    }}
+                  >
+                    <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg }}>
+                      {s.moldName}
+                    </AppText>
+                    <AppText variant="caption" tone="muted">
+                      {s.partName} · {s.cavity} cav
+                    </AppText>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+          ) : null}
+
           {suggestions.length > 0 ? (
             <View style={{ marginBottom: spacing(3) }}>
               <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>
@@ -545,6 +599,21 @@ export function MouldingForm() {
                 Cavity: <AppText weight="600">{activeMold.cavity}</AppText>
               </AppText>
             </View>
+          ) : null}
+
+          {/* Remaining shots against this item code's target for the selected mould */}
+          {remainingShots !== null ? (
+            <Banner
+              tone={remainingShots === 0 ? 'success' : exceedsTarget ? 'danger' : 'info'}
+              persistent
+              message={
+                remainingShots === 0
+                  ? `Target reached for ${selectedMold} — ${doneShots.toLocaleString()} / ${targetShots.toLocaleString()} shots. This mould is complete for this item code.`
+                  : exceedsTarget
+                    ? `Only ${remainingShots.toLocaleString()} shot${remainingShots === 1 ? '' : 's'} remain for ${selectedMold} (${doneShots.toLocaleString()} / ${targetShots.toLocaleString()}). Reduce your entry.`
+                    : `Remaining: ${remainingShots.toLocaleString()} of ${targetShots.toLocaleString()} shots for ${selectedMold} (${doneShots.toLocaleString()} done).`
+              }
+            />
           ) : null}
 
           {/* Shots-based entry (req #2) */}

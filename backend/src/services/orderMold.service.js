@@ -157,12 +157,40 @@ async function listForOrder(orderId) {
       requiredQuantity: s.requiredQuantity,
     }));
 
+  // PO-level suggestions: physical moulds already configured on OTHER item-code jobs in the
+  // SAME purchase order (req #6). The engineer reuses the mould identity + cavity + part and
+  // only sets a NEW Required Shots for this item code. requiredShots is intentionally omitted
+  // so the previous item code's target is never inherited.
+  let poSuggestions = [];
+  if (order.purchaseOrderId) {
+    const siblingJobs = await Order.find({
+      purchaseOrderId: order.purchaseOrderId,
+      _id: { $ne: order._id },
+    })
+      .select('_id')
+      .lean();
+    if (siblingJobs.length > 0) {
+      const sibMolds = await OrderMold.find({ orderId: { $in: siblingJobs.map((o) => o._id) } })
+        .select('moldName partName cavity')
+        .lean();
+      const seen = new Set(definedNames); // don't re-offer moulds already on this order
+      for (const m of sibMolds) {
+        const key = String(m.moldName).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        poSuggestions.push({ moldName: m.moldName, partName: m.partName, cavity: m.cavity });
+      }
+      poSuggestions.sort((a, b) => a.moldName.localeCompare(b.moldName));
+    }
+  }
+
   return {
     orderId: String(orderId),
     customerId: order.customerId.toString(),
     productId: order.productId.toString(),
     molds: defined,
     suggestions,
+    poSuggestions,
   };
 }
 

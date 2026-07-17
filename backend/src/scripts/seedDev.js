@@ -137,6 +137,7 @@ async function run() {
     partName: 'Truck Body',
     cavity: 2,
     requiredShots: 6500,
+    completedShots: 1200, // matches the seeded moulding record below (enforcement counter)
     createdBy: admin._id,
   });
   // goodParts = (shotsDone - rejectedShots) * cavity = (1200 - 20) * 2 = 2360
@@ -159,6 +160,45 @@ async function run() {
   // Re-derive the store balances from the moulding history (never $inc).
   await reconcileService.reconcileProduct(acme._id.toString(), garbage._id.toString());
   log('seeded sample moulding on job', firstJob.orderCode, '+ reconciled');
+
+  // SHARED MOULD scenario (BM01 used by two item codes with DIFFERENT required shots) so the
+  // Production Store item-code / PO-cumulative views and mould-reuse have live data.
+  const fireJob = po1.jobs[1]; // Middle Truck Fire (37560)
+  const bm01 = [
+    { job: firstJob, product: garbage, requiredShots: 200, doneShots: 100 }, // 37500 / BM01
+    { job: fireJob, product: fire, requiredShots: 100, doneShots: 60 }, //      37560 / BM01
+  ];
+  for (const b of bm01) {
+    await OrderMold.create({
+      orderId: b.job.id,
+      customerId: acme._id,
+      productId: b.product._id,
+      moldName: 'BM01',
+      partName: 'Wheel',
+      cavity: 11,
+      requiredShots: b.requiredShots,
+      completedShots: b.doneShots,
+      createdBy: admin._id,
+    });
+    await MouldingRecord.create({
+      orderId: b.job.id,
+      productId: b.product._id,
+      customerId: acme._id,
+      moldName: 'BM01',
+      partName: 'Wheel',
+      machineNumber: 'IMM-02',
+      shift: 'A',
+      cavity: 11,
+      shotsDone: b.doneShots,
+      rejectedShots: 0,
+      productionQuantity: b.doneShots * 11,
+      goodParts: b.doneShots * 11,
+      rejectionReasons: [],
+      createdBy: admin._id,
+    });
+  }
+  await reconcileService.reconcileProduct(acme._id.toString(), fire._id.toString());
+  log('seeded shared mould BM01 on 37500 (target 200 shots) + 37560 (target 100 shots)');
 
   log('done. Log in as admin@fft.local /', DEV_PASSWORD);
   await mongoose.connection.close();

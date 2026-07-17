@@ -168,10 +168,12 @@ export function PurchaseOrdersScreen() {
 
         <FormField label="Notes (optional)" value={notes} onChangeText={setNotes} placeholder="e.g. Q3 toy line" />
         <Button
-          label="Create Purchase Order"
+          label={create.isPending ? 'Creating PO…' : 'Create Purchase Order'}
           loading={create.isPending}
-          disabled={!canCreate}
+          disabled={!canCreate || create.isPending}
           onPress={() => {
+            // Hard guard against double-tap: never fire a second request while one is in flight.
+            if (create.isPending) return;
             setOk(null);
             create.mutate();
           }}

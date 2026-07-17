@@ -1,6 +1,34 @@
 'use strict';
 
 const mouldingService = require('../services/moulding.service');
+const productionStoreService = require('../services/productionStore.service');
+
+// GET /api/v1/moulding/production-store/item-code?purchaseOrderId=
+async function productionStoreItemCode(req, res, next) {
+  try {
+    res.status(200).json(await productionStoreService.getItemCodeStore(req.query.purchaseOrderId));
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/moulding/production-store/cumulative?purchaseOrderId=
+async function productionStoreCumulative(req, res, next) {
+  try {
+    res.status(200).json(await productionStoreService.getPOCumulativeStore(req.query.purchaseOrderId));
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/moulding/po-dashboard — Active / Archived POs for moulding.
+async function poDashboard(req, res, next) {
+  try {
+    res.status(200).json(await mouldingService.getMouldingPODashboard());
+  } catch (err) {
+    next(err);
+  }
+}
 
 // POST /api/v1/moulding  (moulding_engineer)
 async function create(req, res, next) {
@@ -178,6 +206,9 @@ module.exports = {
   createMold,
   listOrderMolds,
   createOrderMold,
+  productionStoreItemCode,
+  productionStoreCumulative,
+  poDashboard,
   rejectionReasons,
   saveRejectionReason,
   getById,
