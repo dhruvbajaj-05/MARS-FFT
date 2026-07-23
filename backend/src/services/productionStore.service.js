@@ -71,11 +71,17 @@ async function computePoMouldRows(purchaseOrderId) {
     for (const moldName of moldNames) {
       const t = targetByKey.get(`${job._id}|${moldName}`);
       const pr = prodByKey.get(`${job._id}|${moldName}`);
-      const produced = pr ? pr.produced || 0 : 0;
+      const produced = pr ? pr.produced || 0 : 0;  // GOOD pieces reaching the store
+      const shots = pr ? pr.shots || 0 : 0;         // total shots (incl. rejected)
       const cavity = (t && t.cavity) || (pr && pr.cavity) || 1;
       const partName = (t && t.partName) || (pr && pr.partName) || '';
-      const requiredPieces = t ? (t.requiredShots || 0) * (t.cavity || 1) : 0;
-      const surplus = requiredPieces > 0 ? Math.max(0, produced - requiredPieces) : 0;
+      const requiredShots = t ? t.requiredShots || 0 : 0;
+      const requiredPieces = requiredShots * (t ? t.cavity || 1 : 1);
+      // Surplus is measured in SHOTS first (shots beyond target), then converted to pieces.
+      // Rejected shots still count toward the target, so surplus uses gross shots — NOT good
+      // pieces. e.g. target 31,200 shots, 32,000 done, 11 cavity ⇒ 800 × 11 = 8,800 surplus.
+      const surplusShots = requiredShots > 0 ? Math.max(0, shots - requiredShots) : 0;
+      const surplus = surplusShots * cavity;
       rows.push({
         orderId: String(job._id),
         itemCode: info.itemCode,
@@ -84,6 +90,8 @@ async function computePoMouldRows(purchaseOrderId) {
         partName,
         cavity,
         produced,
+        shots,
+        requiredShots,
         requiredPieces,
         surplus,
       });
@@ -117,6 +125,8 @@ async function getItemCodeStore(purchaseOrderId) {
         partName: r.partName,
         cavity: r.cavity,
         produced: r.produced,
+        shots: r.shots,
+        requiredShots: r.requiredShots,
         requiredPieces: r.requiredPieces,
         surplus: r.surplus,
       }))
@@ -139,10 +149,12 @@ async function getPOCumulativeStore(purchaseOrderId) {
   const byMold = new Map();
   for (const r of rows) {
     if (!byMold.has(r.moldName)) {
-      byMold.set(r.moldName, { moldName: r.moldName, cavity: r.cavity, totalProduced: 0, totalSurplus: 0, breakdown: [] });
+      byMold.set(r.moldName, { moldName: r.moldName, cavity: r.cavity, totalProduced: 0, totalShots: 0, totalRequiredShots: 0, totalSurplus: 0, breakdown: [] });
     }
     const m = byMold.get(r.moldName);
     m.totalProduced += r.produced;
+    m.totalShots += r.shots;
+    m.totalRequiredShots += r.requiredShots;
     m.totalSurplus += r.surplus;
     // Traceability: which item code contributed how much.
     m.breakdown.push({

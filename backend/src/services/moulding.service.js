@@ -29,13 +29,12 @@ function deriveStatus({ recordCount, totalGoodParts }, targetPieces) {
   return 'In Progress';
 }
 
-// Sum of (requiredShots × cavity) across all molds set up for an order.
-// This is the true piece target for moulding — distinct from order.orderQuantity which is
-// in customer-facing sets/units, not moulded pieces.
-async function computeTargetPieces(orderId) {
+// Sum of requiredShots across all molds set up for an order — the true SHOT target that
+// governs production completion (rejected shots count toward it).
+async function computeTargetShots(orderId) {
   const [agg] = await OrderMold.aggregate([
     { $match: { orderId: new mongoose.Types.ObjectId(String(orderId)) } },
-    { $group: { _id: null, total: { $sum: { $multiply: ['$requiredShots', '$cavity'] } } } },
+    { $group: { _id: null, total: { $sum: '$requiredShots' } } },
   ]);
   return agg?.total ?? 0;
 }
@@ -87,23 +86,46 @@ async function computeOrderStatus(orderId) {
   const prodByMold = Object.fromEntries(moldProdArr.map((m) => [m._id, m]));
 
   // Per-mold progress — each OrderMold is the authoritative source for targets.
+  // Production PROGRESS is measured in SHOTS (machine cycles), NOT pieces: rejected shots
+  // still count toward the target, and a mould is complete once its shots reach requiredShots.
+  // Good pieces / surplus (pieces) are a separate Store concern.
   const moldProgress = orderMolds.map((m) => {
     const prod = prodByMold[m.moldName] || { shotsDone: 0, goodParts: 0 };
-    const requiredPieces = (m.requiredShots || 0) * m.cavity;
+    const requiredShots = m.requiredShots || 0;
+    const cavity = m.cavity || 1;
+    const shotsDone = prod.shotsDone || 0;
+    const goodParts = prod.goodParts || 0;
+    const requiredPieces = requiredShots * cavity;
+    const isComplete = requiredShots > 0 && shotsDone >= requiredShots;
+    // Progress is DISPLAYED capped at the target and never exceeds 100%: once a mould reaches
+    // its shot target it shows "13,590 / 13,590 ✓ Done", and the overage is tracked as SURPLUS
+    // (shots beyond target × cavity) — the store's separate concern. `shotsDone`/`goodParts`
+    // remain the true actuals; `display*` are what the UI shows so it visually stops at target.
+    const displayShots = requiredShots > 0 ? Math.min(shotsDone, requiredShots) : shotsDone;
+    const surplusShots = requiredShots > 0 ? Math.max(0, shotsDone - requiredShots) : 0;
     return {
       moldName: m.moldName,
       partName: m.partName,
-      cavity: m.cavity,
-      requiredShots: m.requiredShots || 0,
+      cavity,
+      requiredShots,
       requiredPieces,
-      shotsDone: prod.shotsDone || 0,
-      goodParts: prod.goodParts || 0,
-      isComplete: requiredPieces > 0 && (prod.goodParts || 0) >= requiredPieces,
+      shotsDone,
+      goodParts,
+      // UI-facing, capped at the target so progress never exceeds the plan.
+      displayShots,
+      displayGoodParts: requiredPieces > 0 ? Math.min(goodParts, requiredPieces) : goodParts,
+      surplusShots,
+      surplusPieces: surplusShots * cavity,
+      progressPct: requiredShots > 0 ? Math.min(100, Math.round((shotsDone / requiredShots) * 100)) : (shotsDone > 0 ? 100 : 0),
+      // Complete when the SHOT target is reached (rejected shots included).
+      isComplete,
     };
   });
 
-  // Overall status: ALL molds with a piece target must be complete.
-  const moldsWithTargets = moldProgress.filter((m) => m.requiredPieces > 0);
+  // Overall status: ALL molds with a shot target must have reached it.
+  const moldsWithTargets = moldProgress.filter((m) => m.requiredShots > 0);
+  const totalTargetShots = moldsWithTargets.reduce((s, m) => s + m.requiredShots, 0);
+  const totalShotsDone = moldsWithTargets.reduce((s, m) => s + m.shotsDone, 0);
   const totalTargetPieces = moldsWithTargets.reduce((s, m) => s + m.requiredPieces, 0);
 
   let status;
@@ -119,9 +141,13 @@ async function computeOrderStatus(orderId) {
   }
 
   const orderQuantity = totalTargetPieces > 0 ? totalTargetPieces : order.orderQuantity;
-  const progressPct = orderQuantity > 0
-    ? Math.min(100, Math.round((totalGoodParts / orderQuantity) * 100))
-    : (totalRecords > 0 ? 100 : 0);
+  // Progress % tracks SHOTS against the shot target (falls back to good-parts/qty when no
+  // shot target is configured, so untargeted orders still show sensible progress).
+  const progressPct = totalTargetShots > 0
+    ? Math.min(100, Math.round((totalShotsDone / totalTargetShots) * 100))
+    : orderQuantity > 0
+      ? Math.min(100, Math.round((totalGoodParts / orderQuantity) * 100))
+      : (totalRecords > 0 ? 100 : 0);
 
   return {
     orderId: order._id.toString(),
@@ -138,17 +164,65 @@ async function computeOrderStatus(orderId) {
   };
 }
 
-// Auto-complete the moulding workspace when all good parts reach the order quantity.
-// This replaces the admin "Complete Production" button (req #13).
-async function autoCompleteOrderIfDone(order, orderStatus) {
-  if (orderStatus.status === 'Completed' && order.productionStatus === 'Active') {
+// Keep the Item Code (Order) and its Purchase Order completion state in lock-step with the
+// derived production status — the SINGLE source of truth. No manual "Complete Production"
+// button anywhere: an Item Code is Done the instant every mould reaches its target, and a PO
+// auto-archives the instant every Item Code is Done. Edits/deletes that drop production back
+// below target automatically reopen the Item Code (and un-archive the PO).
+async function syncCompletionState(order, orderStatus) {
+  const done = orderStatus.status === 'Completed';
+  let changed = false;
+  if (done && order.productionStatus !== 'Completed') {
     order.productionStatus = 'Completed';
-    order.productionCompletedAt = new Date();
-    if (order.assemblyStatus === 'Completed') {
+    order.productionCompletedAt = order.productionCompletedAt || new Date();
+    if (order.assemblyStatus === 'Completed' && order.status !== 'Completed') {
       order.status = 'Completed';
-      order.completedAt = new Date();
+      order.completedAt = order.completedAt || new Date();
     }
-    await order.save();
+    changed = true;
+  } else if (!done && order.productionStatus === 'Completed') {
+    order.productionStatus = 'Active';
+    order.productionCompletedAt = null;
+    if (order.status === 'Completed') {
+      order.status = 'Active';
+      order.completedAt = null;
+    }
+    changed = true;
+  }
+  if (changed) await order.save();
+  if (order.purchaseOrderId) await syncPurchaseOrderArchive(order.purchaseOrderId);
+}
+
+// A PurchaseOrder auto-archives (read-only) once every Item Code's PRODUCTION is Completed,
+// and auto-reopens if any Item Code drops back into production. Purely derived — never a button.
+async function syncPurchaseOrderArchive(purchaseOrderId) {
+  const jobs = await Order.find({ purchaseOrderId }).select('productionStatus').lean();
+  if (jobs.length === 0) return;
+  const allProductionDone = jobs.every((j) => j.productionStatus === 'Completed');
+  const po = await PurchaseOrder.findById(purchaseOrderId);
+  if (!po) return;
+  if (allProductionDone && po.status !== 'Archived') {
+    po.status = 'Archived';
+    po.archivedAt = po.archivedAt || new Date();
+    po.completedAt = po.completedAt || new Date();
+    await po.save();
+  } else if (!allProductionDone && po.status === 'Archived') {
+    po.status = 'Open';
+    po.archivedAt = null;
+    await po.save();
+  }
+}
+
+// Read-only guard: once a PO is archived (all production complete) it is history — no more
+// production entries, mould edits, QC uploads or store writes for any of its Item Codes.
+async function assertPurchaseOrderNotArchived(order) {
+  if (!order.purchaseOrderId) return;
+  const po = await PurchaseOrder.findById(order.purchaseOrderId).select('status');
+  if (po && po.status === 'Archived') {
+    throw conflict(
+      'This purchase order is complete and archived — it is read-only. Production, mould setup and QC are closed.',
+      'po_archived'
+    );
   }
 }
 
@@ -235,6 +309,9 @@ async function validateChain({ orderId, productId, customerId }) {
 async function createMouldingRecord({ payload, file, createdBy }) {
   const order = await validateChain(payload);
 
+  // Archived PO = read-only (all Item Codes' production complete). Nothing new is accepted.
+  await assertPurchaseOrderNotArchived(order);
+
   if (order.status === 'Archived') {
     throw conflict(
       'Production for this order is already completed — the moulding workspace is closed.',
@@ -243,16 +320,18 @@ async function createMouldingRecord({ payload, file, createdBy }) {
   }
 
   if (order.productionStatus === 'Completed') {
-    // Self-heal: if the order was auto-completed incorrectly (goodParts vs order sets mismatch),
-    // reset it so the engineer can continue pushing production.
-    const targetPieces = await computeTargetPieces(order._id);
-    if (targetPieces > 0) {
+    // Self-heal: production completion is measured in SHOTS. If the order was auto-completed
+    // but its moulds have NOT all reached their shot targets, reopen it so the engineer can
+    // continue. Otherwise the workspace stays closed. (Per-mould over-target entries are still
+    // blocked individually by the completion lock below.)
+    const targetShots = await computeTargetShots(order._id);
+    if (targetShots > 0) {
       const [existingAgg] = await MouldingRecord.aggregate([
         { $match: { orderId: order._id } },
-        { $group: { _id: null, total: { $sum: '$goodParts' } } },
+        { $group: { _id: null, total: { $sum: '$shotsDone' } } },
       ]);
-      const currentGoodParts = existingAgg?.total ?? 0;
-      if (currentGoodParts < targetPieces) {
+      const currentShots = existingAgg?.total ?? 0;
+      if (currentShots < targetShots) {
         order.productionStatus = 'Active';
         order.productionCompletedAt = null;
         await order.save();
@@ -285,29 +364,29 @@ async function createMouldingRecord({ payload, file, createdBy }) {
 
   const requiredShots = source ? source.requiredShots : Number(payload.requiredShots) || 0;
 
-  // ---- Per-(order, mould) target enforcement (concurrency-safe) ----------------
-  // When this mould has a configured target on THIS order (OrderMold.requiredShots > 0),
-  // atomically reserve the shots against `completedShots` with a guard so two engineers
-  // submitting near the target at the same time can never push it over. If the guard fails,
-  // tell the engineer exactly how many shots remain. Records stay the source of truth; this
-  // counter is recomputed on edit/delete.
+  // ---- Per-(order, mould) completion lock (concurrency-safe) --------------------
+  // The target is measured in SHOTS. Over-production is allowed ON THE ENTRY THAT REACHES
+  // the target: factories don't stop the machine exactly on the number, so the single entry
+  // that crosses requiredShots is accepted in full (its overage flows to Surplus). But once
+  // the target has been reached, the mould is COMPLETE and no further entries are accepted.
+  //
+  // We enforce this atomically: increment completedShots only while it is still BELOW the
+  // target. The first entry that finds completedShots < requiredShots wins (even if it
+  // overshoots); every entry after that finds completedShots >= requiredShots and is rejected.
   let reservedOnMold = null;
   if (orderMold && orderMold.requiredShots > 0) {
     const guarded = await OrderMold.findOneAndUpdate(
       {
         _id: orderMold._id,
-        $expr: {
-          $lte: [{ $add: [{ $ifNull: ['$completedShots', 0] }, fields.shotsDone] }, '$requiredShots'],
-        },
+        $expr: { $lt: [{ $ifNull: ['$completedShots', 0] }, '$requiredShots'] },
       },
       { $inc: { completedShots: fields.shotsDone } },
       { new: true }
     );
     if (!guarded) {
-      const remaining = Math.max(0, orderMold.requiredShots - (orderMold.completedShots || 0));
       throw conflict(
-        `Only ${remaining} shot${remaining === 1 ? '' : 's'} remain for mould ${moldName} on this item code (target ${orderMold.requiredShots}). You tried to push ${fields.shotsDone}.`,
-        'target_exceeded'
+        `Mould ${moldName} has reached its target of ${orderMold.requiredShots} shots for this item code and is now complete — no further production can be entered.`,
+        'mould_completed'
       );
     }
     reservedOnMold = orderMold._id;
@@ -386,8 +465,8 @@ async function createMouldingRecord({ payload, file, createdBy }) {
 
   const orderStatus = await computeOrderStatus(payload.orderId);
 
-  // Auto-complete moulding workspace when order quantity is fully produced (req #13).
-  await autoCompleteOrderIfDone(order, orderStatus);
+  // Item Code Done → PO auto-archive, all derived from the same production state (no button).
+  await syncCompletionState(order, orderStatus);
 
   return { record: toPublicMouldingRecord(record), orderStatus };
 }
@@ -415,24 +494,7 @@ async function updateMouldingRecord(id, payload, user) {
     if (!Number.isFinite(newRejectedShots) || newRejectedShots < 0) throw badRequest('rejectedShots must be >= 0', 'invalid_quantity');
     if (newRejectedShots > newShotsDone) throw badRequest('rejectedShots cannot exceed shotsDone', 'inconsistent_quantities');
 
-    // Enforce the (order, mould) target on edit too: other records' shots + this edit must
-    // not exceed the configured requiredShots.
-    const om = await OrderMold.findOne({ orderId: record.orderId, moldName: record.moldName });
-    if (om && om.requiredShots > 0) {
-      const [agg] = await MouldingRecord.aggregate([
-        { $match: { orderId: record.orderId, moldName: record.moldName, _id: { $ne: record._id } } },
-        { $group: { _id: null, total: { $sum: '$shotsDone' } } },
-      ]);
-      const others = agg?.total ?? 0;
-      if (others + newShotsDone > om.requiredShots) {
-        const remaining = Math.max(0, om.requiredShots - others);
-        throw conflict(
-          `Edit exceeds target: mould ${record.moldName} allows ${remaining} more shot${remaining === 1 ? '' : 's'} on this item code (target ${om.requiredShots}).`,
-          'target_exceeded'
-        );
-      }
-    }
-
+    // No target cap on edit either — over-production is allowed and flows to Surplus.
     record.shotsDone = newShotsDone;
     record.rejectedShots = newRejectedShots;
     record.productionQuantity = newShotsDone * record.cavity;
@@ -458,6 +520,11 @@ async function updateMouldingRecord(id, payload, user) {
   // Recompute balances from the full record history — surplus is consumed before finished,
   // finished before pending, automatically (see reconcile.service).
   await reconcileService.reconcileProduct(record.customerId.toString(), record.productId.toString());
+
+  // An edit can push a mould over its target (Item Code Done) or pull it back under (reopen);
+  // re-derive the Item Code + PO completion state from the same production truth.
+  const editedOrder = await Order.findById(record.orderId);
+  if (editedOrder) await syncCompletionState(editedOrder, await computeOrderStatus(record.orderId));
 
   return toPublicMouldingRecord(record);
 }
@@ -485,6 +552,10 @@ async function deleteMouldingRecord(id, user) {
   // Recompute from the remaining records. If parts were already consumed by assembly, the
   // shortfall surfaces correctly as increased Pending (no false "already consumed" error).
   await reconcileService.reconcileProduct(customerId.toString(), productId.toString());
+
+  // Deleting production can drop a mould back under target — reopen the Item Code + PO.
+  const remainingOrder = await Order.findById(orderId);
+  if (remainingOrder) await syncCompletionState(remainingOrder, await computeOrderStatus(orderId));
   return { deleted: true };
 }
 
@@ -497,6 +568,10 @@ async function recoverPieces({ orderId, productId, customerId, recoveries, creat
   if (!Array.isArray(recoveries) || recoveries.length === 0) {
     throw badRequest('recoveries array is required', 'missing_recoveries');
   }
+
+  // Archived PO is read-only — no surplus recovery into a completed job's store either.
+  const recoverOrder = await Order.findById(orderId);
+  if (recoverOrder) await assertPurchaseOrderNotArchived(recoverOrder);
 
   const results = [];
   for (const r of recoveries) {

@@ -3,6 +3,7 @@
 const mongoose = require('mongoose');
 const OrderMold = require('../models/OrderMold');
 const Order = require('../models/Order');
+const PurchaseOrder = require('../models/PurchaseOrder');
 const MouldingRecord = require('../models/MouldingRecord');
 const moldService = require('./mold.service');
 const reconcileService = require('./reconcile.service');
@@ -55,6 +56,18 @@ async function validateOrder({ orderId, customerId, productId }) {
 // stay attached to the mold.
 async function upsertOrderMold({ orderId, customerId, productId, moldName, partName, cavity, requiredShots, originalMoldName, createdBy }) {
   const order = await validateOrder({ orderId, customerId, productId });
+
+  // Archived PO (all Item Codes' production complete) is read-only — no mould editing/setup.
+  if (order.purchaseOrderId) {
+    const po = await PurchaseOrder.findById(order.purchaseOrderId).select('status');
+    if (po && po.status === 'Archived') {
+      throw conflict(
+        'This purchase order is complete and archived — mould setup is read-only.',
+        'po_archived'
+      );
+    }
+  }
+
   const cust = order.customerId.toString();
   const prod = order.productId.toString();
 

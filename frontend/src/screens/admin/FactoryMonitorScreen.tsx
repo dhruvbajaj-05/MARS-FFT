@@ -42,27 +42,29 @@ function MouldingCard({ r }: { r: AdminMouldingRecord }) {
   const { colors, spacing, radius } = useTheme();
   return (
     <Card style={{ marginBottom: spacing(4), padding: spacing(4) }}>
-      {/* Header: mould name is the headline, order code on the right */}
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing(1) }}>
-        <AppText variant="h3" style={{ flex: 1 }} numberOfLines={1}>
-          {r.moldName}
-        </AppText>
+      {/* Header: ITEM CODE is the headline, mould name on the right */}
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+        <View style={{ flex: 1 }}>
+          <AppText variant="caption" weight="700" tone="muted">ITEM CODE</AppText>
+          <AppText weight="800" style={{ fontSize: 28, color: colors.status.info.fg }} numberOfLines={1}>
+            {r.itemCode ?? r.orderCode ?? '—'}
+          </AppText>
+        </View>
         <View
           style={{
-            backgroundColor: colors.status.info.bg,
+            backgroundColor: colors.surfaceAlt,
             borderRadius: radius.sm,
             paddingHorizontal: spacing(2),
             paddingVertical: spacing(1),
             marginLeft: spacing(2),
           }}
         >
-          <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg }}>
-            {r.itemCode ?? r.orderCode ?? '—'}
-          </AppText>
+          <AppText variant="caption" weight="700">{r.moldName}</AppText>
         </View>
       </View>
-      <AppText tone="muted" style={{ marginBottom: spacing(3) }}>
-        {r.customer ?? '—'}  ·  {r.product ?? '—'}  ·  {r.partName}
+      <AppText weight="600" style={{ marginBottom: spacing(3) }}>
+        {r.partName}
+        <AppText tone="muted" weight="400">{'   '}{r.customer ?? '—'} · {r.product ?? '—'}</AppText>
       </AppText>
 
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2), marginBottom: spacing(3) }}>
@@ -118,7 +120,7 @@ function MouldingCard({ r }: { r: AdminMouldingRecord }) {
   );
 }
 
-function AssemblyCard({ r }: { r: AdminAssemblyRecord }) {
+export function AssemblyCard({ r }: { r: AdminAssemblyRecord }) {
   const { colors, spacing, radius } = useTheme();
   return (
     <Card style={{ marginBottom: spacing(3) }}>
@@ -181,7 +183,7 @@ function AssemblyCard({ r }: { r: AdminAssemblyRecord }) {
   );
 }
 
-function QCCard({ r }: { r: AdminQCRecord }) {
+export function QCCard({ r }: { r: AdminQCRecord }) {
   const { colors, spacing, radius } = useTheme();
   const approvalPct =
     r.sampleSize > 0 ? Math.round((r.acceptedQuantity / r.sampleSize) * 100) : 0;
@@ -246,7 +248,7 @@ function QCCard({ r }: { r: AdminQCRecord }) {
   );
 }
 
-function DispatchCard({ r }: { r: AdminDispatchRecord }) {
+export function DispatchCard({ r }: { r: AdminDispatchRecord }) {
   const { colors, spacing } = useTheme();
   return (
     <Card style={{ marginBottom: spacing(3) }}>

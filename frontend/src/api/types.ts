@@ -102,11 +102,26 @@ export interface PurchaseOrder {
   createdAt: string;
 }
 
+// One mould on an Item Code card, with its live Done/in-progress state.
+export interface POJobMould {
+  moldName: string;
+  partName: string;
+  cavity: number;
+  requiredShots: number;
+  displayShots: number;
+  surplusPieces: number;
+  isComplete: boolean;
+}
+
 // One Item Code production job inside a PO (an Order enriched with its product identity).
 export interface POJob extends Order {
   itemCode: string | null;
   productName: string | null;
   partName: string | null;
+  // Present in PO detail responses: the job's moulds + derived completion.
+  moulds?: POJobMould[];
+  productionComplete?: boolean;
+  progressPct?: number;
 }
 
 // Full PO detail: the container + its Item Code jobs.
@@ -293,6 +308,12 @@ export interface MoldProgress {
   requiredPieces: number;
   shotsDone: number;
   goodParts: number;
+  // UI-facing values, capped at the target so progress never exceeds the plan.
+  displayShots: number;
+  displayGoodParts: number;
+  surplusShots: number;
+  surplusPieces: number;
+  progressPct: number;
   isComplete: boolean;
 }
 export type MouldingStatus = OrderStatusBase & {

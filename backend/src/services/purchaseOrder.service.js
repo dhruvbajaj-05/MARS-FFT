@@ -205,14 +205,47 @@ async function getPurchaseOrder(id) {
   const productIds = [...new Set(orders.map((o) => String(o.productId)))];
   const products = await Product.find({ _id: { $in: productIds } }).lean();
   const pById = new Map(products.map((p) => [String(p._id), p]));
-  const jobs = orders.map((o) => toPublicJob(o, pById.get(String(o.productId))));
 
-  // Keep the cached PO status in sync with its jobs (Archived is manual, never overwritten).
-  const derived = derivePoStatus(orders);
-  if (po.status !== 'Archived' && po.status !== derived) {
-    po.status = derived;
-    po.completedAt = derived === 'Completed' ? po.completedAt || new Date() : null;
+  // Attach each Item Code's moulds + per-mould Done state so the dashboard can show the mould
+  // numbers (BM01 ✓ / BM04 ⏳) right on the Item Code card — engineers never have to open Entry
+  // to recall which moulds belong to a job. Status is derived from the same production truth.
+  const mouldingService = require('./moulding.service');
+  const statuses = await Promise.all(orders.map((o) => mouldingService.computeOrderStatus(o._id)));
+  const jobs = orders.map((o, i) => {
+    const st = statuses[i];
+    const moulds = (st.moldProgress || []).map((m) => ({
+      moldName: m.moldName,
+      partName: m.partName,
+      cavity: m.cavity,
+      requiredShots: m.requiredShots,
+      displayShots: m.displayShots,
+      surplusPieces: m.surplusPieces,
+      isComplete: m.isComplete,
+    }));
+    return {
+      ...toPublicJob(o, pById.get(String(o.productId))),
+      moulds,
+      productionComplete: st.status === 'Completed',
+      progressPct: st.progressPct,
+    };
+  });
+
+  // Keep the cached PO status in sync with its jobs (single source of truth). A PO auto-archives
+  // (read-only) the moment every Item Code's PRODUCTION is complete — no manual button. Read-path
+  // self-heal in case a write didn't run the sync; a manual Archive is never silently reopened.
+  const allProductionDone = orders.length > 0 && orders.every((o) => o.productionStatus === 'Completed');
+  if (allProductionDone && po.status !== 'Archived') {
+    po.status = 'Archived';
+    po.archivedAt = po.archivedAt || new Date();
+    po.completedAt = po.completedAt || new Date();
     await po.save();
+  } else if (po.status !== 'Archived') {
+    const derived = derivePoStatus(orders);
+    if (po.status !== derived) {
+      po.status = derived;
+      po.completedAt = derived === 'Completed' ? po.completedAt || new Date() : null;
+      await po.save();
+    }
   }
 
   return {

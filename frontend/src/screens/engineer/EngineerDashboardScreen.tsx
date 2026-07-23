@@ -64,31 +64,68 @@ function POCard({ po, archived }: { po: MouldingPOCard; archived?: boolean }) {
             {detail.isLoading ? (
               <AppText tone="muted" variant="caption">Loading item codes…</AppText>
             ) : (
-              (detail.data?.jobs ?? []).map((job) => (
-                <View
-                  key={job.id}
-                  style={{
-                    backgroundColor: colors.surfaceAlt,
-                    borderRadius: radius.md,
-                    padding: spacing(3),
-                    flexDirection: 'row',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                  }}
-                >
-                  <View style={{ flex: 1 }}>
-                    <AppText weight="700" style={{ fontSize: 15 }}>{job.itemCode ?? '—'}</AppText>
-                    <AppText variant="caption" tone="muted">{job.productName}</AppText>
-                  </View>
-                  <AppText
-                    variant="caption"
-                    weight="700"
-                    style={{ color: job.productionStatus === 'Completed' ? colors.status.success.fg : colors.status.progress.fg }}
+              (detail.data?.jobs ?? []).map((job) => {
+                const done = job.productionComplete ?? job.productionStatus === 'Completed';
+                const moulds = job.moulds ?? [];
+                return (
+                  <View
+                    key={job.id}
+                    style={{
+                      backgroundColor: colors.surfaceAlt,
+                      borderRadius: radius.md,
+                      padding: spacing(3),
+                    }}
                   >
-                    {job.productionStatus === 'Completed' ? 'Done' : 'In production'}
-                  </AppText>
-                </View>
-              ))
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <View style={{ flex: 1 }}>
+                        <AppText weight="700" style={{ fontSize: 15 }}>{job.itemCode ?? '—'}</AppText>
+                        <AppText variant="caption" tone="muted">{job.productName}</AppText>
+                      </View>
+                      <AppText
+                        variant="caption"
+                        weight="700"
+                        style={{ color: done ? colors.status.success.fg : colors.status.progress.fg }}
+                      >
+                        {done ? '✓ Done' : 'In production'}
+                      </AppText>
+                    </View>
+
+                    {/* Moulds belonging to this Item Code — engineers see them without opening Entry. */}
+                    {moulds.length > 0 ? (
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2), marginTop: spacing(2) }}>
+                        {moulds.map((m) => (
+                          <View
+                            key={m.moldName}
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 4,
+                              backgroundColor: colors.surface,
+                              borderRadius: radius.sm,
+                              borderWidth: 1,
+                              borderColor: m.isComplete ? colors.status.success.fg : colors.border,
+                              paddingHorizontal: spacing(2),
+                              paddingVertical: spacing(1),
+                            }}
+                          >
+                            <AppText
+                              variant="caption"
+                              weight="700"
+                              style={{ color: m.isComplete ? colors.status.success.fg : colors.textMuted }}
+                            >
+                              {m.isComplete ? '✓' : '⏳'} {m.moldName}
+                            </AppText>
+                          </View>
+                        ))}
+                      </View>
+                    ) : (
+                      <AppText variant="caption" tone="muted" style={{ marginTop: spacing(1) }}>
+                        No moulds set up yet
+                      </AppText>
+                    )}
+                  </View>
+                );
+              })
             )}
           </View>
         ) : null}

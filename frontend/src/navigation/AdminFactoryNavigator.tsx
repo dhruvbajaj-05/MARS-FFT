@@ -1,7 +1,7 @@
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import React from 'react';
 
-import { FactoryMonitorScreen } from '@/screens/admin/FactoryMonitorScreen';
+import { AdminRecordsScreen } from '@/screens/admin/AdminRecordsScreen';
 import { useTheme } from '@/theme/ThemeProvider';
 
 const Stack = createNativeStackNavigator();
@@ -18,7 +18,7 @@ export function AdminFactoryNavigator() {
     >
       <Stack.Screen
         name="FactoryMonitor"
-        component={FactoryMonitorScreen}
+        component={AdminRecordsScreen}
         options={{ title: 'Production Records' }}
       />
     </Stack.Navigator>

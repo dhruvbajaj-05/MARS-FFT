@@ -512,7 +512,7 @@ function MouldRow({ moldName, produced, surplus, required, sub }: { moldName: st
 function ProductionStore() {
   const { spacing, colors, radius } = useTheme();
   const cp = usePOItemCode();
-  const [tab, setTab] = useState<'item' | 'cumulative'>('item');
+  const [tab, setTab] = useState<'item' | 'cumulative' | 'outsourced'>('item');
 
   const itemQ = useQuery({
     queryKey: queryKeys.productionStore.itemCode(cp.purchaseOrderId ?? 'none'),
@@ -544,9 +544,9 @@ function ProductionStore() {
         />
       </Card>
 
-      {/* Two-view toggle */}
+      {/* Three-view toggle */}
       <View style={{ flexDirection: 'row', backgroundColor: colors.surfaceAlt, borderRadius: radius.pill, padding: 4, marginBottom: spacing(4) }}>
-        {([['item', 'Item Code Store'], ['cumulative', 'PO Cumulative']] as const).map(([k, label]) => {
+        {([['item', 'Item Code'], ['cumulative', 'PO Cumulative'], ['outsourced', 'Outsourced']] as const).map(([k, label]) => {
           const on = tab === k;
           return (
             <Pressable key={k} onPress={() => setTab(k)} style={{ flex: 1 }}>
@@ -581,7 +581,7 @@ function ProductionStore() {
             );
           }}
         </QueryBoundary>
-      ) : (
+      ) : tab === 'cumulative' ? (
         <QueryBoundary isLoading={cumQ.isLoading} isError={cumQ.isError} error={cumQ.error} data={cumQ.data} onRetry={cumQ.refetch}>
           {(d) =>
             d.moulds.length === 0 ? (
@@ -611,6 +611,29 @@ function ProductionStore() {
             )
           }
         </QueryBoundary>
+      ) : (
+        <View>
+          <Card style={{ marginBottom: spacing(3) }}>
+            <Select
+              label="Item Code"
+              value={cp.jobId}
+              options={cp.jobOptions}
+              onChange={(v) => cp.setJobId(v)}
+              placeholder="Select an item code…"
+              emptyHint="No item codes in this PO"
+            />
+          </Card>
+          {cp.jobId && cp.customerId && cp.productId ? (
+            <OutsourcedSection
+              customerId={cp.customerId}
+              productId={cp.productId}
+              orderId={cp.jobId}
+              canEdit
+            />
+          ) : (
+            <AppText tone="muted">Select an item code to view and record outsourced components.</AppText>
+          )}
+        </View>
       )}
     </Screen>
   );

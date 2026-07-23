@@ -130,7 +130,15 @@ async function reconcileProduct(customerId, productId, existingSession) {
         {
           $group: {
             _id: { orderId: '$orderId', partName: '$partName' },
-            produced: { $sum: '$goodParts' },
+            // GROSS pieces = shots × cavity. Target/surplus are measured in SHOTS: the surplus
+            // is the pieces from shots BEYOND the target, so we allocate against gross output
+            // and subtract rejects from the order's finished bucket (see `consumed` below).
+            producedGross: { $sum: '$productionQuantity' },
+            // Good pieces that actually reach the store = (shots − rejected) × cavity.
+            producedGood: { $sum: '$goodParts' },
+            // Rejected pieces = rejectedShots × cavity — removed from the order's finished
+            // bucket (NOT from surplus), so surplus stays a pure shots-overage figure.
+            rejectedPieces: { $sum: { $multiply: ['$rejectedShots', '$cavity'] } },
             moldName: { $first: '$moldName' },
             cavity: { $first: '$cavity' },
           },
@@ -165,11 +173,15 @@ async function reconcileProduct(customerId, productId, existingSession) {
       addPart(String(m.orderId), m.partName);
     }
 
-    // produced(order|part).
-    const produced = new Map();
+    // producedGross(order|part) = shots × cavity; rejectedPieces(order|part) = rejects × cavity.
+    // Surplus is derived from GROSS overage vs the shot target; rejects are then removed from
+    // the order's finished bucket (added to `consumed`), never from surplus.
+    const producedGross = new Map();
+    const rejectedPieces = new Map();
     for (const p of producedAgg) {
       const key = `${p._id.orderId}|${p._id.partName}`;
-      produced.set(key, p.produced || 0);
+      producedGross.set(key, p.producedGross || 0);
+      rejectedPieces.set(key, p.rejectedPieces || 0);
       if (!meta.has(key)) meta.set(key, { moldName: p.moldName || '', cavity: p.cavity || 1 });
       addPart(String(p._id.orderId), p._id.partName);
     }
@@ -208,9 +220,14 @@ async function reconcileProduct(customerId, productId, existingSession) {
           const key = `${o._id}|${part}`;
           return {
             orderId: String(o._id),
+            // required + supply are in PIECES but driven by the SHOT target: required =
+            // requiredShots × cavity, supply = shots × cavity. Overage vs required is therefore
+            // exactly (shots − requiredShots) × cavity → the shots-based surplus.
             required: required.get(key) || 0,
-            supply: produced.get(key) || 0,
-            consumed: normalConsumed.get(key) || 0,
+            supply: producedGross.get(key) || 0,
+            // Assembly consumption + rejected pieces both come out of the order's finished
+            // bucket. Rejects reduce good pieces reaching the store WITHOUT touching surplus.
+            consumed: (normalConsumed.get(key) || 0) + (rejectedPieces.get(key) || 0),
             completed: o.assemblyStatus === 'Completed' || o.status === 'Archived',
             m: meta.get(key) || { moldName: '', cavity: 1 },
           };

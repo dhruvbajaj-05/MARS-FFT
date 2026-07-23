@@ -181,6 +181,10 @@ export function MouldingForm() {
       qc.invalidateQueries({ queryKey: queryKeys.rejectionReasons });
       qc.invalidateQueries({ queryKey: queryKeys.orderMolds(cp.jobId!) });
       qc.invalidateQueries({ queryKey: queryKeys.mouldingDashboard });
+      // Reflect Item Code Done / PO auto-archive on the dashboard immediately (no manual refresh).
+      qc.invalidateQueries({ queryKey: queryKeys.mouldingPoDashboard });
+      qc.invalidateQueries({ queryKey: queryKeys.dept('moulding').status(cp.jobId!) });
+      if (cp.purchaseOrderId) qc.invalidateQueries({ queryKey: queryKeys.purchaseOrder(cp.purchaseOrderId) });
     },
   });
 
@@ -284,14 +288,21 @@ export function MouldingForm() {
       ? (shotsNum - rejectedShotsNum) * cavity
       : null;
 
-  // Per-(item code, mould) target enforcement. Remaining = requiredShots − shots already done
-  // on this mould for this item code. null = no target configured (free production). The
-  // backend enforces this too (concurrency-safe), so this is a friendly guard, not the gate.
+  // Per-(item code, mould) progress toward the target (measured in SHOTS). The target is a
+  // PLAN, never a cap: an entry is ALWAYS accepted in full, even when it overshoots. The
+  // single entry that reaches/crosses the target completes the mould and its overage flows to
+  // Surplus; only AFTER that is the mould locked (no further entries). We never reject or warn
+  // about "too many" shots — factories don't stop the machine exactly on the number.
   const selectedMoldProgress = prodStatus.data?.moldProgress?.find((m) => m.moldName === selectedMold);
   const targetShots = activeMold?.requiredShots ?? 0;
   const doneShots = selectedMoldProgress?.shotsDone ?? 0;
   const remainingShots = targetShots > 0 ? Math.max(0, targetShots - doneShots) : null;
-  const exceedsTarget = remainingShots !== null && Number.isFinite(shotsNum) && shotsNum > remainingShots;
+  // Mould already at/over its shot target → complete and locked for this item code.
+  const moldLocked = remainingShots !== null && remainingShots === 0;
+  // This entry reaches/crosses the target: fully accepted, and any excess shots become Surplus.
+  const completesMould = remainingShots !== null && remainingShots > 0 && Number.isFinite(shotsNum) && shotsNum >= remainingShots;
+  // Shots produced beyond the target → surplus (× cavity for the piece preview).
+  const surplusShots = completesMould ? Math.max(0, shotsNum - remainingShots!) : 0;
 
   const canSaveMold = !!(cp.jobId && mMoldName.trim() && mPartName.trim() && Number(mCavity) >= 1);
 
@@ -308,8 +319,8 @@ export function MouldingForm() {
     rejectedShotsNum <= shotsNum &&
     goodPreview !== null &&
     goodPreview >= 0 &&
-    !exceedsTarget &&
-    !(remainingShots !== null && remainingShots === 0)
+    // Locked once the mould has reached its shot target — no further entries accepted.
+    !moldLocked
   );
 
   const isProductionComplete = prodStatus.data?.status === 'Completed';
@@ -357,18 +368,22 @@ export function MouldingForm() {
         {cp.selectedJob ? (
           <View
             style={{
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-              backgroundColor: colors.surfaceAlt,
-              borderRadius: 8,
+              backgroundColor: colors.status.info.bg,
+              borderRadius: 12,
               padding: spacing(3),
             }}
           >
-            <AppText tone="muted">
-              Item: <AppText weight="600">{cp.itemCode ?? '—'}</AppText>
-            </AppText>
-            <AppText tone="muted">
-              Quantity: <AppText weight="600">{cp.selectedJob.orderQuantity} sets</AppText>
+            <AppText variant="caption" weight="700" tone="muted">ITEM CODE</AppText>
+            <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' }}>
+              <AppText weight="800" style={{ fontSize: 34, color: colors.status.info.fg }}>
+                {cp.itemCode ?? '—'}
+              </AppText>
+              <AppText tone="muted">
+                <AppText weight="700">{cp.selectedJob.orderQuantity}</AppText> sets
+              </AppText>
+            </View>
+            <AppText weight="600" style={{ marginTop: 2 }}>
+              {cp.selectedJob.partName ?? cp.selectedJob.productName ?? '—'}
             </AppText>
           </View>
         ) : null}
@@ -444,14 +459,23 @@ export function MouldingForm() {
                       </AppText>
                     </View>
                     {hasProg ? (
-                      <AppText
-                        variant="caption"
-                        style={{ color: mp.isComplete ? colors.status.success.fg : colors.textMuted, marginTop: 2 }}
-                      >
-                        {mp.goodParts.toLocaleString()} / {mp.requiredPieces.toLocaleString()} pieces
-                        {'  '}({mp.shotsDone.toLocaleString()} / {mp.requiredShots.toLocaleString()} shots)
-                        {mp.isComplete ? '  ✓ Done' : ''}
-                      </AppText>
+                      <>
+                        {/* Progress is capped at the target — it visually stops at 100% and shows
+                            ✓ Done; the overage is reported separately as Surplus (never mixed in). */}
+                        <AppText
+                          variant="caption"
+                          style={{ color: mp.isComplete ? colors.status.success.fg : colors.textMuted, marginTop: 2 }}
+                        >
+                          {mp.isComplete ? '✓ Done  ·  ' : ''}
+                          {mp.displayGoodParts.toLocaleString()} / {mp.requiredPieces.toLocaleString()} pieces
+                          {'  '}({mp.displayShots.toLocaleString()} / {mp.requiredShots.toLocaleString()} shots)
+                        </AppText>
+                        {mp.surplusPieces > 0 ? (
+                          <AppText variant="caption" style={{ color: colors.status.info.fg, marginTop: 2 }}>
+                            +{mp.surplusPieces.toLocaleString()} surplus pieces ({mp.surplusShots.toLocaleString()} shots)
+                          </AppText>
+                        ) : null}
+                      </>
                     ) : (
                       <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
                         Target: {m.requiredShots} shots × {m.cavity} cav = {m.requiredQuantity} pieces
@@ -601,17 +625,19 @@ export function MouldingForm() {
             </View>
           ) : null}
 
-          {/* Remaining shots against this item code's target for the selected mould */}
+          {/* Progress against this item code's target for the selected mould. The target is a
+              plan, not a cap — an entry is always accepted in full and anything beyond the
+              target flows to Surplus, so this NEVER blocks or rejects. */}
           {remainingShots !== null ? (
             <Banner
-              tone={remainingShots === 0 ? 'success' : exceedsTarget ? 'danger' : 'info'}
+              tone={moldLocked || completesMould ? 'success' : 'info'}
               persistent
               message={
-                remainingShots === 0
-                  ? `Target reached for ${selectedMold} — ${doneShots.toLocaleString()} / ${targetShots.toLocaleString()} shots. This mould is complete for this item code.`
-                  : exceedsTarget
-                    ? `Only ${remainingShots.toLocaleString()} shot${remainingShots === 1 ? '' : 's'} remain for ${selectedMold} (${doneShots.toLocaleString()} / ${targetShots.toLocaleString()}). Reduce your entry.`
-                    : `Remaining: ${remainingShots.toLocaleString()} of ${targetShots.toLocaleString()} shots for ${selectedMold} (${doneShots.toLocaleString()} done).`
+                moldLocked
+                  ? `${selectedMold} is complete for this item code — target of ${targetShots.toLocaleString()} shots reached (${doneShots.toLocaleString()} done). This mould is locked.`
+                  : completesMould
+                    ? `This entry completes ${selectedMold}.${surplusShots > 0 ? ` Surplus: ${surplusShots.toLocaleString()} shot${surplusShots === 1 ? '' : 's'} × ${cavity} = ${(surplusShots * cavity).toLocaleString()} pieces → Surplus.` : ''} The mould locks after this entry.`
+                    : `Progress for ${selectedMold}: ${doneShots.toLocaleString()} / ${targetShots.toLocaleString()} shots (${remainingShots.toLocaleString()} to target).`
               }
             />
           ) : null}
@@ -671,10 +697,18 @@ export function MouldingForm() {
         </Card>
       ) : null}
 
-      {/* Item code completed banner + recovery section (req #9) */}
+      {/* Production complete banner (only when the item code is finished) */}
       {cp.jobId && isProductionComplete ? (
         <Card style={{ marginBottom: spacing(4) }}>
           <Banner tone="success" persistent message="Production complete for this item code." />
+        </Card>
+      ) : null}
+
+      {/* Recover Good Pieces from Rejected Shots — available anytime during entry (req #9).
+          Physically inspected rejected shots that turn out good are recovered into Product
+          Surplus. No longer gated behind production completion. */}
+      {cp.jobId ? (
+        <Card style={{ marginBottom: spacing(4) }}>
           <Pressable
             onPress={() => setShowRecovery((s) => !s)}
             style={{
