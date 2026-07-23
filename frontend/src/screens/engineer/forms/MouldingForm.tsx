@@ -112,23 +112,18 @@ export function MouldingForm() {
     storeSurplus.data?.customers?.[0]?.products?.[0]?.surplus?.filter((s) => s.surplusQuantity > 0) ?? [];
 
   // ---- Surplus (auto-moved from over-production), shown right on the entry page ----
-  // Two live views, both DERIVED from the moulding records server-side (never a stored flag):
-  //   • THIS item code — surplus pieces per mould + the item-code total.
+  // The Entry page works in SHOTS, so surplus is shown in SHOTS here (the Store page shows the
+  // same surplus in PIECES). Both are DERIVED from the moulding records server-side:
+  //   • THIS item code — good-shot surplus per mould, from the live production status.
   //   • CUMULATIVE — the SAME physical mould pooled across every item code in this PO.
-  const itemCodeStore = useQuery({
-    queryKey: queryKeys.productionStore.itemCode(cp.purchaseOrderId ?? 'none'),
-    queryFn: () => mouldingApi.productionStoreItemCode(cp.purchaseOrderId!),
-    enabled: !!cp.purchaseOrderId,
-  });
   const cumulativeStore = useQuery({
     queryKey: queryKeys.productionStore.cumulative(cp.purchaseOrderId ?? 'none'),
     queryFn: () => mouldingApi.productionStoreCumulative(cp.purchaseOrderId!),
     enabled: !!cp.purchaseOrderId,
   });
-  const thisItem = itemCodeStore.data?.items.find((it) => it.orderId === cp.jobId) ?? null;
-  const itemSurplusMoulds = (thisItem?.moulds ?? []).filter((m) => m.surplus > 0);
-  const itemSurplusTotal = itemSurplusMoulds.reduce((s, m) => s + m.surplus, 0);
-  const cumulativeSurplusMoulds = (cumulativeStore.data?.moulds ?? []).filter((m) => m.totalSurplus > 0);
+  const itemSurplusMoulds = (prodStatus.data?.moldProgress ?? []).filter((m) => m.surplusShots > 0);
+  const itemSurplusTotalShots = itemSurplusMoulds.reduce((s, m) => s + m.surplusShots, 0);
+  const cumulativeSurplusMoulds = (cumulativeStore.data?.moulds ?? []).filter((m) => m.totalSurplusShots > 0);
 
   const resetSetupForm = () => {
     setMMoldName('');
@@ -287,13 +282,13 @@ export function MouldingForm() {
       return {
         label: `${m.moldName}  ✓ Done`,
         value: m.moldName,
-        hint: `Complete · locked${mp.surplusPieces > 0 ? ` · surplus ${mp.surplusPieces.toLocaleString()} pcs` : ''}`,
+        hint: `Complete · locked${mp.surplusShots > 0 ? ` · surplus ${mp.surplusShots.toLocaleString()} shots` : ''}`,
       };
     }
     return {
       label: m.moldName,
       value: m.moldName,
-      hint: `${m.partName} · ${m.cavity} cavity · target ${m.requiredQuantity || 0}`,
+      hint: `${m.partName} · ${m.cavity} cavity · target ${(m.requiredShots || 0).toLocaleString()} shots`,
     };
   });
 
@@ -320,29 +315,29 @@ export function MouldingForm() {
     () => moldList.find((m) => m.moldName === selectedMold) ?? null,
     [moldList, selectedMold]
   );
-  const cavity = activeMold?.cavity ?? 0;
   const shotsNum = Number(shotsDone);
   const rejectedShotsNum = Number(rejectedShots);
-  const goodPreview =
-    Number.isFinite(shotsNum) && Number.isFinite(rejectedShotsNum) && cavity > 0
-      ? (shotsNum - rejectedShotsNum) * cavity
+  // Entry page works in SHOTS. Good shots for THIS entry = total − rejected (rejected never count).
+  const goodShotsThisEntry =
+    Number.isFinite(shotsNum) && Number.isFinite(rejectedShotsNum)
+      ? shotsNum - rejectedShotsNum
       : null;
 
-  // Per-(item code, mould) progress toward the target (measured in SHOTS). The target is a
-  // PLAN, never a cap: an entry is ALWAYS accepted in full, even when it overshoots. The
-  // single entry that reaches/crosses the target completes the mould and its overage flows to
-  // Surplus; only AFTER that is the mould locked (no further entries). We never reject or warn
-  // about "too many" shots — factories don't stop the machine exactly on the number.
+  // Per-(item code, mould) progress toward the target, measured in GOOD SHOTS (rejected shots
+  // do NOT count). The target is a PLAN, never a cap: an entry is ALWAYS accepted in full, even
+  // when its good shots overshoot. The single entry that reaches/crosses the target completes
+  // the mould and its good overage flows to Surplus; only AFTER that is the mould locked.
   const selectedMoldProgress = prodStatus.data?.moldProgress?.find((m) => m.moldName === selectedMold);
   const targetShots = activeMold?.requiredShots ?? 0;
-  const doneShots = selectedMoldProgress?.shotsDone ?? 0;
+  const doneShots = selectedMoldProgress?.goodShots ?? 0;
   const remainingShots = targetShots > 0 ? Math.max(0, targetShots - doneShots) : null;
-  // Mould already at/over its shot target → complete and locked for this item code.
+  // Mould already at/over its good-shot target → complete and locked for this item code.
   const moldLocked = remainingShots !== null && remainingShots === 0;
-  // This entry reaches/crosses the target: fully accepted, and any excess shots become Surplus.
-  const completesMould = remainingShots !== null && remainingShots > 0 && Number.isFinite(shotsNum) && shotsNum >= remainingShots;
-  // Shots produced beyond the target → surplus (× cavity for the piece preview).
-  const surplusShots = completesMould ? Math.max(0, shotsNum - remainingShots!) : 0;
+  // This entry's good shots reach/cross the target: fully accepted, excess good shots → Surplus.
+  const completesMould =
+    remainingShots !== null && remainingShots > 0 && goodShotsThisEntry !== null && goodShotsThisEntry >= remainingShots;
+  // Good shots produced beyond the target → surplus (in shots on the entry page).
+  const surplusShots = completesMould ? Math.max(0, goodShotsThisEntry! - remainingShots!) : 0;
 
   const canSaveMold = !!(cp.jobId && mMoldName.trim() && mPartName.trim() && Number(mCavity) >= 1);
 
@@ -357,9 +352,9 @@ export function MouldingForm() {
     Number.isFinite(rejectedShotsNum) &&
     rejectedShotsNum >= 0 &&
     rejectedShotsNum <= shotsNum &&
-    goodPreview !== null &&
-    goodPreview >= 0 &&
-    // Locked once the mould has reached its shot target — no further entries accepted.
+    goodShotsThisEntry !== null &&
+    goodShotsThisEntry >= 0 &&
+    // Locked once the mould has reached its good-shot target — no further entries accepted.
     !moldLocked
   );
 
@@ -455,17 +450,21 @@ export function MouldingForm() {
               <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg, marginBottom: spacing(1) }}>
                 Current Store Surplus — usable before you produce
               </AppText>
-              {surplusRows.map((s) => (
-                <View
-                  key={`${s.moldName}-${s.partName}`}
-                  style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}
-                >
-                  <AppText variant="caption" weight="600">{s.moldName || s.partName}</AppText>
-                  <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg }}>
-                    Surplus: {s.surplusQuantity.toLocaleString()}
-                  </AppText>
-                </View>
-              ))}
+              {surplusRows.map((s) => {
+                // Entry page is in SHOTS: convert the store's surplus pieces back to shots (÷ cavity).
+                const surplusShotsAvail = s.cavity > 0 ? Math.floor(s.surplusQuantity / s.cavity) : 0;
+                return (
+                  <View
+                    key={`${s.moldName}-${s.partName}`}
+                    style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}
+                  >
+                    <AppText variant="caption" weight="600">{s.moldName || s.partName}</AppText>
+                    <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg }}>
+                      Surplus: {surplusShotsAvail.toLocaleString()} shots
+                    </AppText>
+                  </View>
+                );
+              })}
             </View>
           ) : null}
 
@@ -500,25 +499,24 @@ export function MouldingForm() {
                     </View>
                     {hasProg ? (
                       <>
-                        {/* Progress is capped at the target — it visually stops at 100% and shows
-                            ✓ Done; the overage is reported separately as Surplus (never mixed in). */}
+                        {/* Entry page is in SHOTS: good shots / target, capped at 100% with ✓ Done.
+                            The overage is reported separately as Surplus (in shots here). */}
                         <AppText
                           variant="caption"
                           style={{ color: mp.isComplete ? colors.status.success.fg : colors.textMuted, marginTop: 2 }}
                         >
                           {mp.isComplete ? '✓ Done  ·  ' : ''}
-                          {mp.displayGoodParts.toLocaleString()} / {mp.requiredPieces.toLocaleString()} pieces
-                          {'  '}({mp.displayShots.toLocaleString()} / {mp.requiredShots.toLocaleString()} shots)
+                          {mp.displayShots.toLocaleString()} / {mp.requiredShots.toLocaleString()} good shots
                         </AppText>
-                        {mp.surplusPieces > 0 ? (
+                        {mp.surplusShots > 0 ? (
                           <AppText variant="caption" style={{ color: colors.status.info.fg, marginTop: 2 }}>
-                            +{mp.surplusPieces.toLocaleString()} surplus pieces ({mp.surplusShots.toLocaleString()} shots)
+                            +{mp.surplusShots.toLocaleString()} surplus shots
                           </AppText>
                         ) : null}
                       </>
                     ) : (
                       <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
-                        Target: {m.requiredShots} shots × {m.cavity} cav = {m.requiredQuantity} pieces
+                        Target: {(m.requiredShots || 0).toLocaleString()} good shots
                       </AppText>
                     )}
                   </Pressable>
@@ -680,10 +678,10 @@ export function MouldingForm() {
               persistent
               message={
                 moldLocked
-                  ? `${selectedMold} is complete for this item code — target of ${targetShots.toLocaleString()} shots reached (${doneShots.toLocaleString()} done). This mould is locked.`
+                  ? `${selectedMold} is complete for this item code — target of ${targetShots.toLocaleString()} good shots reached (${doneShots.toLocaleString()} done). This mould is locked.`
                   : completesMould
-                    ? `This entry completes ${selectedMold}.${surplusShots > 0 ? ` Surplus: ${surplusShots.toLocaleString()} shot${surplusShots === 1 ? '' : 's'} × ${cavity} = ${(surplusShots * cavity).toLocaleString()} pieces → Surplus.` : ''} The mould locks after this entry.`
-                    : `Progress for ${selectedMold}: ${doneShots.toLocaleString()} / ${targetShots.toLocaleString()} shots (${remainingShots.toLocaleString()} to target).`
+                    ? `This entry completes ${selectedMold}.${surplusShots > 0 ? ` ${surplusShots.toLocaleString()} good shot${surplusShots === 1 ? '' : 's'} beyond target → Surplus.` : ''} The mould locks after this entry.`
+                    : `Progress for ${selectedMold}: ${doneShots.toLocaleString()} / ${targetShots.toLocaleString()} good shots (${remainingShots.toLocaleString()} to target).`
               }
             />
           ) : null}
@@ -740,12 +738,13 @@ export function MouldingForm() {
                 />
               ) : null}
 
-              {/* Good pieces preview (req #2 formula) — informational, never a red rejection. */}
-              {goodPreview !== null && goodPreview >= 0 ? (
+              {/* Good shots preview — the Entry page is in SHOTS. Informational, never a red rejection.
+                  (The pieces that reach the store = good shots × cavity are shown on the Store page.) */}
+              {goodShotsThisEntry !== null && goodShotsThisEntry >= 0 ? (
                 <Banner
                   tone="info"
                   persistent
-                  message={`Good Pieces = (${shotsNum} − ${rejectedShotsNum}) × ${cavity} = ${goodPreview}`}
+                  message={`Good Shots = ${shotsNum} − ${rejectedShotsNum} = ${goodShotsThisEntry} shots`}
                 />
               ) : null}
 
@@ -770,8 +769,9 @@ export function MouldingForm() {
         </Card>
       ) : null}
 
-      {/* Surplus — auto-moved from over-production, in PIECES, kept in the store. Always visible
-          so the engineer can SEE where the extra shots went: per mould for this item code, and
+      {/* Surplus — auto-moved from over-production. The Entry page is in SHOTS, so surplus is
+          shown here in SHOTS (the Store page shows the same surplus in PIECES). Always visible so
+          the engineer can SEE where the extra good shots went: per mould for this item code, and
           cumulative for the same physical mould pooled across every item code in this PO. */}
       {cp.jobId ? (
         <Card style={{ marginBottom: spacing(4) }}>
@@ -785,11 +785,12 @@ export function MouldingForm() {
           >
             <AppText variant="h3">Surplus</AppText>
             <AppText weight="800" style={{ color: colors.status.info.fg }}>
-              {itemSurplusTotal.toLocaleString()} pcs
+              {itemSurplusTotalShots.toLocaleString()} shots
             </AppText>
           </View>
           <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(3) }}>
-            Pieces produced beyond a mould's target are moved here automatically and stay in the store.
+            Good shots produced beyond a mould's target are moved to surplus automatically (shown as
+            pieces in the Store).
           </AppText>
 
           {/* This item code — per mould */}
@@ -809,7 +810,7 @@ export function MouldingForm() {
                   {m.partName ? ` · ${m.partName}` : ''}
                 </AppText>
                 <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg }}>
-                  +{m.surplus.toLocaleString()} pcs
+                  +{m.surplusShots.toLocaleString()} shots
                 </AppText>
               </View>
             ))
@@ -829,18 +830,18 @@ export function MouldingForm() {
                 CUMULATIVE · SAME MOULD ACROSS THIS PO
               </AppText>
               {cumulativeSurplusMoulds.map((m) => {
-                const parts = m.breakdown.filter((b) => b.surplus > 0);
+                const parts = m.breakdown.filter((b) => b.surplusShots > 0);
                 return (
                   <View key={m.moldName} style={{ paddingVertical: 3 }}>
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                       <AppText variant="caption" weight="600">{m.moldName}</AppText>
                       <AppText variant="caption" weight="700" style={{ color: colors.status.success.fg }}>
-                        +{m.totalSurplus.toLocaleString()} pcs
+                        +{m.totalSurplusShots.toLocaleString()} shots
                       </AppText>
                     </View>
                     {parts.length > 1 ? (
                       <AppText variant="caption" tone="muted">
-                        {parts.map((b) => `${b.itemCode ?? 'Item'}: ${b.surplus.toLocaleString()}`).join('  ·  ')}
+                        {parts.map((b) => `${b.itemCode ?? 'Item'}: ${b.surplusShots.toLocaleString()}`).join('  ·  ')}
                       </AppText>
                     ) : null}
                   </View>

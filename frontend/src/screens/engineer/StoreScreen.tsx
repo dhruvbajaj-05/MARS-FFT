@@ -490,20 +490,27 @@ function FinishedGoodsStore() {
 // ---- Production Store (Moulding): two live views by Mould ----
 //   Item Code Store  → PO → Item Code → Mould (produced good parts + surplus overage)
 //   PO Cumulative    → PO → Mould (same physical mould summed across item codes, traceable)
-function MouldRow({ moldName, produced, surplus, required, sub }: { moldName: string; produced: number; surplus: number; required?: number; sub?: string }) {
+// Store rows are in PIECES: Required / Good Produced / Remaining (+ Surplus when over target).
+function MouldRow({ moldName, produced, surplus, required, remaining, sub }: { moldName: string; produced: number; surplus: number; required?: number; remaining?: number; sub?: string }) {
   const { colors, spacing } = useTheme();
+  const done = required !== undefined && required > 0 && produced >= required;
   return (
-    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: spacing(2), borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}>
-      <View style={{ flex: 1 }}>
-        <AppText weight="700">{moldName}</AppText>
-        {sub ? <AppText variant="caption" tone="muted">{sub}</AppText> : null}
-      </View>
-      <View style={{ alignItems: 'flex-end' }}>
-        <AppText weight="700" style={{ color: colors.status.success.fg }}>{produced.toLocaleString()} good</AppText>
-        <AppText variant="caption" tone="muted">
-          {required ? `target ${required.toLocaleString()}` : 'no target'}
-          {surplus > 0 ? `  ·  +${surplus.toLocaleString()} surplus` : ''}
+    <View style={{ paddingVertical: spacing(2), borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <View style={{ flex: 1 }}>
+          <AppText weight="700">{moldName}</AppText>
+          {sub ? <AppText variant="caption" tone="muted">{sub}</AppText> : null}
+        </View>
+        <AppText weight="700" style={{ color: done ? colors.status.success.fg : colors.text }}>
+          {done ? '✓ Done' : `${(remaining ?? 0).toLocaleString()} left`}
         </AppText>
+      </View>
+      {/* Pieces breakdown */}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(3), marginTop: 2 }}>
+        <AppText variant="caption" tone="muted">Required {required ? required.toLocaleString() : '—'} pcs</AppText>
+        <AppText variant="caption" style={{ color: colors.status.success.fg }}>Good {produced.toLocaleString()} pcs</AppText>
+        {required ? <AppText variant="caption" tone="muted">Remaining {(remaining ?? 0).toLocaleString()} pcs</AppText> : null}
+        {surplus > 0 ? <AppText variant="caption" style={{ color: colors.status.info.fg }}>Surplus {surplus.toLocaleString()} pcs</AppText> : null}
       </View>
     </View>
   );
@@ -573,7 +580,7 @@ function ProductionStore() {
                     <AppText weight="700" style={{ fontSize: 16 }}>{i.itemCode ?? '—'}</AppText>
                     <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>{i.productName}</AppText>
                     {i.moulds.map((m) => (
-                      <MouldRow key={m.moldName} moldName={m.moldName} produced={m.produced} surplus={m.surplus} required={m.requiredPieces} sub={`${m.partName} · ${m.cavity} cav`} />
+                      <MouldRow key={m.moldName} moldName={m.moldName} produced={m.produced} surplus={m.surplus} required={m.requiredPieces} remaining={m.remaining} sub={`${m.partName} · ${m.cavity} cav`} />
                     ))}
                   </Card>
                 ))}

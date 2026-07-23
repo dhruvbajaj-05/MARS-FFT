@@ -130,15 +130,11 @@ async function reconcileProduct(customerId, productId, existingSession) {
         {
           $group: {
             _id: { orderId: '$orderId', partName: '$partName' },
-            // GROSS pieces = shots × cavity. Target/surplus are measured in SHOTS: the surplus
-            // is the pieces from shots BEYOND the target, so we allocate against gross output
-            // and subtract rejects from the order's finished bucket (see `consumed` below).
-            producedGross: { $sum: '$productionQuantity' },
-            // Good pieces that actually reach the store = (shots − rejected) × cavity.
+            // GOOD pieces that reach the store = (shots − rejected) × cavity. Target, completion
+            // and surplus are all measured against GOOD output: rejected shots do NOT count toward
+            // the target, so an edit that raises rejects lowers good output, which automatically
+            // shrinks surplus (and can drop the order back below target — reopening it).
             producedGood: { $sum: '$goodParts' },
-            // Rejected pieces = rejectedShots × cavity — removed from the order's finished
-            // bucket (NOT from surplus), so surplus stays a pure shots-overage figure.
-            rejectedPieces: { $sum: { $multiply: ['$rejectedShots', '$cavity'] } },
             moldName: { $first: '$moldName' },
             cavity: { $first: '$cavity' },
           },
@@ -173,15 +169,12 @@ async function reconcileProduct(customerId, productId, existingSession) {
       addPart(String(m.orderId), m.partName);
     }
 
-    // producedGross(order|part) = shots × cavity; rejectedPieces(order|part) = rejects × cavity.
-    // Surplus is derived from GROSS overage vs the shot target; rejects are then removed from
-    // the order's finished bucket (added to `consumed`), never from surplus.
-    const producedGross = new Map();
-    const rejectedPieces = new Map();
+    // producedGood(order|part) = (shots − rejected) × cavity — the GOOD pieces that reach the
+    // store. Surplus is the good overage vs the requirement; there is no separate reject bucket.
+    const producedGood = new Map();
     for (const p of producedAgg) {
       const key = `${p._id.orderId}|${p._id.partName}`;
-      producedGross.set(key, p.producedGross || 0);
-      rejectedPieces.set(key, p.rejectedPieces || 0);
+      producedGood.set(key, p.producedGood || 0);
       if (!meta.has(key)) meta.set(key, { moldName: p.moldName || '', cavity: p.cavity || 1 });
       addPart(String(p._id.orderId), p._id.partName);
     }
@@ -220,14 +213,13 @@ async function reconcileProduct(customerId, productId, existingSession) {
           const key = `${o._id}|${part}`;
           return {
             orderId: String(o._id),
-            // required + supply are in PIECES but driven by the SHOT target: required =
-            // requiredShots × cavity, supply = shots × cavity. Overage vs required is therefore
-            // exactly (shots − requiredShots) × cavity → the shots-based surplus.
+            // required + supply are in PIECES: required = requiredShots × cavity, supply = GOOD
+            // pieces = (shots − rejected) × cavity. Overage vs required is exactly
+            // (goodShots − requiredShots) × cavity → the good-based surplus.
             required: required.get(key) || 0,
-            supply: producedGross.get(key) || 0,
-            // Assembly consumption + rejected pieces both come out of the order's finished
-            // bucket. Rejects reduce good pieces reaching the store WITHOUT touching surplus.
-            consumed: (normalConsumed.get(key) || 0) + (rejectedPieces.get(key) || 0),
+            supply: producedGood.get(key) || 0,
+            // Only assembly consumption leaves the store; rejects never entered it.
+            consumed: normalConsumed.get(key) || 0,
             completed: o.assemblyStatus === 'Completed' || o.status === 'Archived',
             m: meta.get(key) || { moldName: '', cavity: 1 },
           };

@@ -307,6 +307,9 @@ export interface MoldProgress {
   requiredShots: number;
   requiredPieces: number;
   shotsDone: number;
+  // Rejected shots don't count toward the target; completion is on goodShots = shotsDone − rejected.
+  rejectedShots: number;
+  goodShots: number;
   goodParts: number;
   // UI-facing values, capped at the target so progress never exceeds the plan.
   displayShots: number;
@@ -698,7 +701,11 @@ export interface ProductionStoreMould {
   partName: string;
   cavity: number;
   produced: number;
+  shots: number;
+  requiredShots: number;
   requiredPieces: number;
+  remaining: number;
+  surplusShots: number;
   surplus: number;
 }
 export interface ProductionStoreItem {
@@ -707,6 +714,8 @@ export interface ProductionStoreItem {
   productName: string | null;
   moulds: ProductionStoreMould[];
   totalProduced: number;
+  totalRequired: number;
+  totalRemaining: number;
   totalSurplus: number;
 }
 export interface ProductionStorePO {
@@ -723,8 +732,11 @@ export interface POCumulativeMould {
   moldName: string;
   cavity: number;
   totalProduced: number;
+  totalRequiredPieces: number;
+  totalRemaining: number;
+  totalSurplusShots: number;
   totalSurplus: number;
-  breakdown: { orderId: string; itemCode: string | null; productName: string | null; produced: number; surplus: number }[];
+  breakdown: { orderId: string; itemCode: string | null; productName: string | null; produced: number; surplusShots: number; surplus: number }[];
 }
 export interface ProductionCumulativeStore {
   purchaseOrder: ProductionStorePO;

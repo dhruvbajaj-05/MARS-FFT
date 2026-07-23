@@ -44,7 +44,9 @@ async function computeTargetShots(orderId) {
 async function recomputeCompletedShots(orderId, moldName) {
   const [agg] = await MouldingRecord.aggregate([
     { $match: { orderId: new mongoose.Types.ObjectId(String(orderId)), moldName } },
-    { $group: { _id: null, total: { $sum: '$shotsDone' } } },
+    // The completion counter tracks GOOD shots (shots − rejected): rejected shots never count
+    // toward the target, so raising rejects on an edit lowers this and reopens the mould.
+    { $group: { _id: null, total: { $sum: { $subtract: ['$shotsDone', { $ifNull: ['$rejectedShots', 0] }] } } } },
   ]);
   const total = agg?.total ?? 0;
   await OrderMold.updateOne({ orderId, moldName }, { $set: { completedShots: total } });
@@ -68,6 +70,7 @@ async function computeOrderStatus(orderId) {
         $group: {
           _id: '$moldName',
           shotsDone: { $sum: '$shotsDone' },
+          rejectedShots: { $sum: '$rejectedShots' },
           goodParts: { $sum: '$goodParts' },
           productionQuantity: { $sum: '$productionQuantity' },
           recordCount: { $sum: 1 },
@@ -86,23 +89,25 @@ async function computeOrderStatus(orderId) {
   const prodByMold = Object.fromEntries(moldProdArr.map((m) => [m._id, m]));
 
   // Per-mold progress — each OrderMold is the authoritative source for targets.
-  // Production PROGRESS is measured in SHOTS (machine cycles), NOT pieces: rejected shots
-  // still count toward the target, and a mould is complete once its shots reach requiredShots.
-  // Good pieces / surplus (pieces) are a separate Store concern.
+  // Completion + progress are measured in GOOD SHOTS (shotsDone − rejectedShots): rejected
+  // shots do NOT count toward the target, so a mould is complete only once its GOOD shots reach
+  // requiredShots. The Entry page shows SHOTS; good pieces / surplus (pieces) are a Store concern.
   const moldProgress = orderMolds.map((m) => {
-    const prod = prodByMold[m.moldName] || { shotsDone: 0, goodParts: 0 };
+    const prod = prodByMold[m.moldName] || { shotsDone: 0, rejectedShots: 0, goodParts: 0 };
     const requiredShots = m.requiredShots || 0;
     const cavity = m.cavity || 1;
     const shotsDone = prod.shotsDone || 0;
+    const rejectedShots = prod.rejectedShots || 0;
+    const goodShots = Math.max(0, shotsDone - rejectedShots);
     const goodParts = prod.goodParts || 0;
     const requiredPieces = requiredShots * cavity;
-    const isComplete = requiredShots > 0 && shotsDone >= requiredShots;
-    // Progress is DISPLAYED capped at the target and never exceeds 100%: once a mould reaches
-    // its shot target it shows "13,590 / 13,590 ✓ Done", and the overage is tracked as SURPLUS
-    // (shots beyond target × cavity) — the store's separate concern. `shotsDone`/`goodParts`
-    // remain the true actuals; `display*` are what the UI shows so it visually stops at target.
-    const displayShots = requiredShots > 0 ? Math.min(shotsDone, requiredShots) : shotsDone;
-    const surplusShots = requiredShots > 0 ? Math.max(0, shotsDone - requiredShots) : 0;
+    const isComplete = requiredShots > 0 && goodShots >= requiredShots;
+    // Progress is DISPLAYED capped at the target and never exceeds 100%: once a mould's GOOD
+    // shots reach the target it shows "13,590 / 13,590 ✓ Done", and the overage is tracked as
+    // SURPLUS (good shots beyond target × cavity → the store's pieces figure). `shotsDone`/
+    // `goodShots`/`goodParts` remain the true actuals; `display*` are what the UI caps at target.
+    const displayShots = requiredShots > 0 ? Math.min(goodShots, requiredShots) : goodShots;
+    const surplusShots = requiredShots > 0 ? Math.max(0, goodShots - requiredShots) : 0;
     return {
       moldName: m.moldName,
       partName: m.partName,
@@ -110,22 +115,24 @@ async function computeOrderStatus(orderId) {
       requiredShots,
       requiredPieces,
       shotsDone,
+      rejectedShots,
+      goodShots,
       goodParts,
       // UI-facing, capped at the target so progress never exceeds the plan.
       displayShots,
       displayGoodParts: requiredPieces > 0 ? Math.min(goodParts, requiredPieces) : goodParts,
       surplusShots,
       surplusPieces: surplusShots * cavity,
-      progressPct: requiredShots > 0 ? Math.min(100, Math.round((shotsDone / requiredShots) * 100)) : (shotsDone > 0 ? 100 : 0),
-      // Complete when the SHOT target is reached (rejected shots included).
+      progressPct: requiredShots > 0 ? Math.min(100, Math.round((goodShots / requiredShots) * 100)) : (goodShots > 0 ? 100 : 0),
+      // Complete when the GOOD-shot target is reached (rejected shots excluded).
       isComplete,
     };
   });
 
-  // Overall status: ALL molds with a shot target must have reached it.
+  // Overall status: ALL molds with a shot target must have reached it (in GOOD shots).
   const moldsWithTargets = moldProgress.filter((m) => m.requiredShots > 0);
   const totalTargetShots = moldsWithTargets.reduce((s, m) => s + m.requiredShots, 0);
-  const totalShotsDone = moldsWithTargets.reduce((s, m) => s + m.shotsDone, 0);
+  const totalShotsDone = moldsWithTargets.reduce((s, m) => s + m.goodShots, 0);
   const totalTargetPieces = moldsWithTargets.reduce((s, m) => s + m.requiredPieces, 0);
 
   let status;
@@ -328,7 +335,8 @@ async function createMouldingRecord({ payload, file, createdBy }) {
     if (targetShots > 0) {
       const [existingAgg] = await MouldingRecord.aggregate([
         { $match: { orderId: order._id } },
-        { $group: { _id: null, total: { $sum: '$shotsDone' } } },
+        // Good shots only (rejected shots don't count toward the target).
+        { $group: { _id: null, total: { $sum: { $subtract: ['$shotsDone', { $ifNull: ['$rejectedShots', 0] }] } } } },
       ]);
       const currentShots = existingAgg?.total ?? 0;
       if (currentShots < targetShots) {
@@ -365,14 +373,16 @@ async function createMouldingRecord({ payload, file, createdBy }) {
   const requiredShots = source ? source.requiredShots : Number(payload.requiredShots) || 0;
 
   // ---- Per-(order, mould) completion lock (concurrency-safe) --------------------
-  // The target is measured in SHOTS. Over-production is allowed ON THE ENTRY THAT REACHES
-  // the target: factories don't stop the machine exactly on the number, so the single entry
-  // that crosses requiredShots is accepted in full (its overage flows to Surplus). But once
-  // the target has been reached, the mould is COMPLETE and no further entries are accepted.
+  // The target is measured in GOOD SHOTS (shotsDone − rejectedShots): rejected shots never
+  // count toward it. Over-production is allowed ON THE ENTRY THAT REACHES the target: factories
+  // don't stop the machine exactly on the number, so the single entry that crosses requiredShots
+  // is accepted in full (its good overage flows to Surplus). Once the target has been reached,
+  // the mould is COMPLETE and no further entries are accepted.
   //
-  // We enforce this atomically: increment completedShots only while it is still BELOW the
-  // target. The first entry that finds completedShots < requiredShots wins (even if it
+  // We enforce this atomically: increment completedShots (good shots) only while it is still
+  // BELOW the target. The first entry that finds completedShots < requiredShots wins (even if it
   // overshoots); every entry after that finds completedShots >= requiredShots and is rejected.
+  const goodShotsDelta = Math.max(0, fields.shotsDone - fields.rejectedShots);
   let reservedOnMold = null;
   if (orderMold && orderMold.requiredShots > 0) {
     const guarded = await OrderMold.findOneAndUpdate(
@@ -380,12 +390,12 @@ async function createMouldingRecord({ payload, file, createdBy }) {
         _id: orderMold._id,
         $expr: { $lt: [{ $ifNull: ['$completedShots', 0] }, '$requiredShots'] },
       },
-      { $inc: { completedShots: fields.shotsDone } },
+      { $inc: { completedShots: goodShotsDelta } },
       { new: true }
     );
     if (!guarded) {
       throw conflict(
-        `Mould ${moldName} has reached its target of ${orderMold.requiredShots} shots for this item code and is now complete — no further production can be entered.`,
+        `Mould ${moldName} has reached its target of ${orderMold.requiredShots} good shots for this item code and is now complete — no further production can be entered.`,
         'mould_completed'
       );
     }
@@ -420,10 +430,10 @@ async function createMouldingRecord({ payload, file, createdBy }) {
       createdBy,
     });
   } catch (err) {
-    // Release the reserved shots if the record couldn't be written, so the guard counter
+    // Release the reserved good shots if the record couldn't be written, so the guard counter
     // never drifts above the real record total.
     if (reservedOnMold) {
-      await OrderMold.updateOne({ _id: reservedOnMold }, { $inc: { completedShots: -fields.shotsDone } }).catch(() => {});
+      await OrderMold.updateOne({ _id: reservedOnMold }, { $inc: { completedShots: -goodShotsDelta } }).catch(() => {});
     }
     throw err;
   }

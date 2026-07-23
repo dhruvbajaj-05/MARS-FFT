@@ -44,6 +44,7 @@ async function computePoMouldRows(purchaseOrderId) {
           _id: { orderId: '$orderId', moldName: '$moldName' },
           produced: { $sum: '$goodParts' },
           shots: { $sum: '$shotsDone' },
+          rejected: { $sum: '$rejectedShots' },
           partName: { $first: '$partName' },
           cavity: { $first: '$cavity' },
         },
@@ -73,15 +74,19 @@ async function computePoMouldRows(purchaseOrderId) {
       const pr = prodByKey.get(`${job._id}|${moldName}`);
       const produced = pr ? pr.produced || 0 : 0;  // GOOD pieces reaching the store
       const shots = pr ? pr.shots || 0 : 0;         // total shots (incl. rejected)
+      const rejected = pr ? pr.rejected || 0 : 0;
+      const goodShots = Math.max(0, shots - rejected);
       const cavity = (t && t.cavity) || (pr && pr.cavity) || 1;
       const partName = (t && t.partName) || (pr && pr.partName) || '';
       const requiredShots = t ? t.requiredShots || 0 : 0;
       const requiredPieces = requiredShots * (t ? t.cavity || 1 : 1);
-      // Surplus is measured in SHOTS first (shots beyond target), then converted to pieces.
-      // Rejected shots still count toward the target, so surplus uses gross shots — NOT good
-      // pieces. e.g. target 31,200 shots, 32,000 done, 11 cavity ⇒ 800 × 11 = 8,800 surplus.
-      const surplusShots = requiredShots > 0 ? Math.max(0, shots - requiredShots) : 0;
+      // Surplus is measured in GOOD SHOTS first (good shots beyond target), then converted to
+      // pieces. Rejected shots do NOT count toward the target, so surplus uses good shots.
+      // e.g. target 4,000 shots, 4,300 good, 7 cavity ⇒ 300 × 7 = 2,100 surplus pieces.
+      const surplusShots = requiredShots > 0 ? Math.max(0, goodShots - requiredShots) : 0;
       const surplus = surplusShots * cavity;
+      // Store is in PIECES: remaining good pieces still needed to reach the target.
+      const remaining = Math.max(0, requiredPieces - produced);
       rows.push({
         orderId: String(job._id),
         itemCode: info.itemCode,
@@ -93,6 +98,8 @@ async function computePoMouldRows(purchaseOrderId) {
         shots,
         requiredShots,
         requiredPieces,
+        remaining,
+        surplusShots,
         surplus,
       });
     }
@@ -128,6 +135,8 @@ async function getItemCodeStore(purchaseOrderId) {
         shots: r.shots,
         requiredShots: r.requiredShots,
         requiredPieces: r.requiredPieces,
+        remaining: r.remaining,
+        surplusShots: r.surplusShots,
         surplus: r.surplus,
       }))
       .sort((a, b) => a.moldName.localeCompare(b.moldName));
@@ -137,6 +146,8 @@ async function getItemCodeStore(purchaseOrderId) {
       productName: info.productName,
       moulds,
       totalProduced: moulds.reduce((s, m) => s + m.produced, 0),
+      totalRequired: moulds.reduce((s, m) => s + m.requiredPieces, 0),
+      totalRemaining: moulds.reduce((s, m) => s + m.remaining, 0),
       totalSurplus: moulds.reduce((s, m) => s + m.surplus, 0),
     };
   });
@@ -149,12 +160,15 @@ async function getPOCumulativeStore(purchaseOrderId) {
   const byMold = new Map();
   for (const r of rows) {
     if (!byMold.has(r.moldName)) {
-      byMold.set(r.moldName, { moldName: r.moldName, cavity: r.cavity, totalProduced: 0, totalShots: 0, totalRequiredShots: 0, totalSurplus: 0, breakdown: [] });
+      byMold.set(r.moldName, { moldName: r.moldName, cavity: r.cavity, totalProduced: 0, totalShots: 0, totalRequiredShots: 0, totalRequiredPieces: 0, totalRemaining: 0, totalSurplusShots: 0, totalSurplus: 0, breakdown: [] });
     }
     const m = byMold.get(r.moldName);
     m.totalProduced += r.produced;
     m.totalShots += r.shots;
     m.totalRequiredShots += r.requiredShots;
+    m.totalRequiredPieces += r.requiredPieces;
+    m.totalRemaining += r.remaining;
+    m.totalSurplusShots += r.surplusShots;
     m.totalSurplus += r.surplus;
     // Traceability: which item code contributed how much.
     m.breakdown.push({
@@ -162,6 +176,7 @@ async function getPOCumulativeStore(purchaseOrderId) {
       itemCode: r.itemCode,
       productName: r.productName,
       produced: r.produced,
+      surplusShots: r.surplusShots,
       surplus: r.surplus,
     });
   }
