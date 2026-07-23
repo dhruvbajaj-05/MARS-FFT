@@ -111,6 +111,25 @@ export function MouldingForm() {
   const surplusRows =
     storeSurplus.data?.customers?.[0]?.products?.[0]?.surplus?.filter((s) => s.surplusQuantity > 0) ?? [];
 
+  // ---- Surplus (auto-moved from over-production), shown right on the entry page ----
+  // Two live views, both DERIVED from the moulding records server-side (never a stored flag):
+  //   • THIS item code — surplus pieces per mould + the item-code total.
+  //   • CUMULATIVE — the SAME physical mould pooled across every item code in this PO.
+  const itemCodeStore = useQuery({
+    queryKey: queryKeys.productionStore.itemCode(cp.purchaseOrderId ?? 'none'),
+    queryFn: () => mouldingApi.productionStoreItemCode(cp.purchaseOrderId!),
+    enabled: !!cp.purchaseOrderId,
+  });
+  const cumulativeStore = useQuery({
+    queryKey: queryKeys.productionStore.cumulative(cp.purchaseOrderId ?? 'none'),
+    queryFn: () => mouldingApi.productionStoreCumulative(cp.purchaseOrderId!),
+    enabled: !!cp.purchaseOrderId,
+  });
+  const thisItem = itemCodeStore.data?.items.find((it) => it.orderId === cp.jobId) ?? null;
+  const itemSurplusMoulds = (thisItem?.moulds ?? []).filter((m) => m.surplus > 0);
+  const itemSurplusTotal = itemSurplusMoulds.reduce((s, m) => s + m.surplus, 0);
+  const cumulativeSurplusMoulds = (cumulativeStore.data?.moulds ?? []).filter((m) => m.totalSurplus > 0);
+
   const resetSetupForm = () => {
     setMMoldName('');
     setMPartName('');
@@ -186,6 +205,12 @@ export function MouldingForm() {
       qc.invalidateQueries({ queryKey: queryKeys.dept('moulding').status(cp.jobId!) });
       if (cp.purchaseOrderId) qc.invalidateQueries({ queryKey: queryKeys.purchaseOrder(cp.purchaseOrderId) });
     },
+    onError: () => {
+      // If the mould locked between load and submit, pull fresh status so it flips to ✓ Done
+      // (and the surplus shows) instead of leaving a stale, submittable form.
+      qc.invalidateQueries({ queryKey: queryKeys.dept('moulding').status(cp.jobId!) });
+      qc.invalidateQueries({ queryKey: ['moulding'] });
+    },
   });
 
   const recoverMutation = useMutation({
@@ -246,16 +271,31 @@ export function MouldingForm() {
   };
 
   const moldError = saveMold.error instanceof ApiError ? friendlyMessage(saveMold.error) : null;
-  const error = submit.error instanceof ApiError ? friendlyMessage(submit.error) : null;
+  // The mould-completion lock is NOT an error the engineer did anything wrong — it means the
+  // mould already hit its target and its overage is now surplus. Surface it as a calm "Done"
+  // message, never a red failure. Any OTHER submit error stays as a plain notice (no red).
+  const submitApiError = submit.error instanceof ApiError ? submit.error : null;
+  const moldAlreadyComplete = submitApiError?.code === 'mould_completed';
+  const error = submitApiError && !moldAlreadyComplete ? friendlyMessage(submitApiError) : null;
   const recoverError = recoverMutation.error instanceof ApiError ? friendlyMessage(recoverMutation.error) : null;
 
   const moldList: OrderMold[] = orderMolds.data?.molds ?? [];
   const suggestions: OrderMoldSuggestion[] = orderMolds.data?.suggestions ?? [];
-  const moldOptions: SelectOption[] = moldList.map((m) => ({
-    label: m.moldName,
-    value: m.moldName,
-    hint: `${m.partName} · ${m.cavity} cavity · target ${m.requiredQuantity || 0}`,
-  }));
+  const moldOptions: SelectOption[] = moldList.map((m) => {
+    const mp = prodStatus.data?.moldProgress?.find((p) => p.moldName === m.moldName);
+    if (mp?.isComplete) {
+      return {
+        label: `${m.moldName}  ✓ Done`,
+        value: m.moldName,
+        hint: `Complete · locked${mp.surplusPieces > 0 ? ` · surplus ${mp.surplusPieces.toLocaleString()} pcs` : ''}`,
+      };
+    }
+    return {
+      label: m.moldName,
+      value: m.moldName,
+      hint: `${m.partName} · ${m.cavity} cavity · target ${m.requiredQuantity || 0}`,
+    };
+  });
 
   const adoptSuggestion = (s: OrderMoldSuggestion) => {
     setMMoldName(s.moldName);
@@ -548,7 +588,7 @@ export function MouldingForm() {
           ) : null}
 
           {moldOk ? <Banner tone="success" message={moldOk} /> : null}
-          {moldError ? <Banner tone="danger" message={moldError} /> : null}
+          {moldError ? <Banner tone="info" message={moldError} /> : null}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing(1) }}>
             <AppText variant="caption" tone="muted">
               {editingMold ? `Editing mold "${editingMold}"` : 'Add a new mold (tap a mold above to edit it)'}
@@ -582,7 +622,13 @@ export function MouldingForm() {
             Production Push
           </AppText>
           {ok ? <Banner tone="success" message={ok} /> : null}
-          {error ? <Banner tone="danger" message={error} /> : null}
+          {moldAlreadyComplete ? (
+            <Banner
+              tone="success"
+              message={`${selectedMold ?? 'This mould'} has already reached its target — it is complete and locked. Any extra shots you produced are counted as surplus below.`}
+            />
+          ) : null}
+          {error ? <Banner tone="info" message={error} /> : null}
 
           <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
             Current shift (from your phone clock):{' '}
@@ -642,58 +688,78 @@ export function MouldingForm() {
             />
           ) : null}
 
-          {/* Shots-based entry (req #2) */}
-          <FormField
-            label="Total Shots Produced"
-            value={shotsDone}
-            onChangeText={setShotsDone}
-            keyboardType="number-pad"
-            placeholder="e.g. 7000"
-          />
-          <FormField
-            label="Rejected Shots"
-            value={rejectedShots}
-            onChangeText={setRejectedShots}
-            keyboardType="number-pad"
-            placeholder="e.g. 300"
-          />
+          {/* When the mould is locked (target reached) we do NOT show a submittable form — the
+              engineer sees a calm "Done + surplus" panel, never a red rejection. Every OTHER
+              mould accepts any number of shots; the entry that crosses the target is taken in
+              full and its overage becomes surplus automatically. */}
+          {selectedMold && moldLocked ? (
+            <View
+              style={{
+                backgroundColor: colors.status.success.bg,
+                borderRadius: 8,
+                padding: spacing(3),
+              }}
+            >
+              <AppText weight="700" style={{ color: colors.status.success.fg }}>
+                ✓ {selectedMold} is complete for this item code
+              </AppText>
+              <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
+                Target of {targetShots.toLocaleString()} shots reached. This mould is locked — no
+                more entries needed. See its surplus in the Surplus section below.
+              </AppText>
+            </View>
+          ) : (
+            <>
+              {/* Shots-based entry (req #2) */}
+              <FormField
+                label="Total Shots Produced"
+                value={shotsDone}
+                onChangeText={setShotsDone}
+                keyboardType="number-pad"
+                placeholder="e.g. 7000"
+              />
+              <FormField
+                label="Rejected Shots"
+                value={rejectedShots}
+                onChangeText={setRejectedShots}
+                keyboardType="number-pad"
+                placeholder="e.g. 300"
+              />
 
-          {/* Multi-select rejection reasons (req #3) */}
-          {Number(rejectedShots) > 0 ? (
-            <MultiCheckbox
-              label="Defects (select all that apply)"
-              options={allReasonOptions}
-              selected={rejectionReasons}
-              onToggle={toggleReason}
-              newEntryValue={newReasonText}
-              onNewEntryChange={setNewReasonText}
-              onAddNewEntry={addNewReason}
-              newEntryPlaceholder="Add new defect…"
-            />
-          ) : null}
+              {/* Multi-select rejection reasons (req #3) */}
+              {Number(rejectedShots) > 0 ? (
+                <MultiCheckbox
+                  label="Defects (select all that apply)"
+                  options={allReasonOptions}
+                  selected={rejectionReasons}
+                  onToggle={toggleReason}
+                  newEntryValue={newReasonText}
+                  onNewEntryChange={setNewReasonText}
+                  onAddNewEntry={addNewReason}
+                  newEntryPlaceholder="Add new defect…"
+                />
+              ) : null}
 
-          {/* Good pieces preview (req #2 formula) */}
-          {goodPreview !== null ? (
-            <Banner
-              tone={goodPreview >= 0 ? 'info' : 'danger'}
-              persistent
-              message={
-                goodPreview >= 0
-                  ? `Good Pieces = (${shotsNum} − ${rejectedShotsNum}) × ${cavity} = ${goodPreview}`
-                  : `Rejected shots exceed total shots`
-              }
-            />
-          ) : null}
+              {/* Good pieces preview (req #2 formula) — informational, never a red rejection. */}
+              {goodPreview !== null && goodPreview >= 0 ? (
+                <Banner
+                  tone="info"
+                  persistent
+                  message={`Good Pieces = (${shotsNum} − ${rejectedShotsNum}) × ${cavity} = ${goodPreview}`}
+                />
+              ) : null}
 
-          <Button
-            label="Submit Production"
-            loading={submit.isPending}
-            disabled={!canSubmit}
-            onPress={() => {
-              setOk(null);
-              submit.mutate();
-            }}
-          />
+              <Button
+                label="Submit Production"
+                loading={submit.isPending}
+                disabled={!canSubmit}
+                onPress={() => {
+                  setOk(null);
+                  submit.mutate();
+                }}
+              />
+            </>
+          )}
         </Card>
       ) : null}
 
@@ -701,6 +767,87 @@ export function MouldingForm() {
       {cp.jobId && isProductionComplete ? (
         <Card style={{ marginBottom: spacing(4) }}>
           <Banner tone="success" persistent message="Production complete for this item code." />
+        </Card>
+      ) : null}
+
+      {/* Surplus — auto-moved from over-production, in PIECES, kept in the store. Always visible
+          so the engineer can SEE where the extra shots went: per mould for this item code, and
+          cumulative for the same physical mould pooled across every item code in this PO. */}
+      {cp.jobId ? (
+        <Card style={{ marginBottom: spacing(4) }}>
+          <View
+            style={{
+              flexDirection: 'row',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: spacing(1),
+            }}
+          >
+            <AppText variant="h3">Surplus</AppText>
+            <AppText weight="800" style={{ color: colors.status.info.fg }}>
+              {itemSurplusTotal.toLocaleString()} pcs
+            </AppText>
+          </View>
+          <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(3) }}>
+            Pieces produced beyond a mould's target are moved here automatically and stay in the store.
+          </AppText>
+
+          {/* This item code — per mould */}
+          <AppText variant="caption" weight="700" tone="muted" style={{ marginBottom: spacing(1) }}>
+            THIS ITEM CODE{cp.itemCode ? ` · ${cp.itemCode}` : ''}
+          </AppText>
+          {itemSurplusMoulds.length === 0 ? (
+            <AppText variant="caption" tone="muted">No surplus for this item code yet.</AppText>
+          ) : (
+            itemSurplusMoulds.map((m) => (
+              <View
+                key={m.moldName}
+                style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}
+              >
+                <AppText variant="caption" weight="600">
+                  {m.moldName}
+                  {m.partName ? ` · ${m.partName}` : ''}
+                </AppText>
+                <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg }}>
+                  +{m.surplus.toLocaleString()} pcs
+                </AppText>
+              </View>
+            ))
+          )}
+
+          {/* Cumulative — same physical mould pooled across every item code in this PO */}
+          {cumulativeSurplusMoulds.length > 0 ? (
+            <View
+              style={{
+                marginTop: spacing(3),
+                borderTopWidth: 1,
+                borderTopColor: colors.border,
+                paddingTop: spacing(2),
+              }}
+            >
+              <AppText variant="caption" weight="700" tone="muted" style={{ marginBottom: spacing(1) }}>
+                CUMULATIVE · SAME MOULD ACROSS THIS PO
+              </AppText>
+              {cumulativeSurplusMoulds.map((m) => {
+                const parts = m.breakdown.filter((b) => b.surplus > 0);
+                return (
+                  <View key={m.moldName} style={{ paddingVertical: 3 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                      <AppText variant="caption" weight="600">{m.moldName}</AppText>
+                      <AppText variant="caption" weight="700" style={{ color: colors.status.success.fg }}>
+                        +{m.totalSurplus.toLocaleString()} pcs
+                      </AppText>
+                    </View>
+                    {parts.length > 1 ? (
+                      <AppText variant="caption" tone="muted">
+                        {parts.map((b) => `${b.itemCode ?? 'Item'}: ${b.surplus.toLocaleString()}`).join('  ·  ')}
+                      </AppText>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </View>
+          ) : null}
         </Card>
       ) : null}
 
@@ -729,7 +876,7 @@ export function MouldingForm() {
           {showRecovery && moldList.length > 0 ? (
             <View style={{ marginTop: spacing(3) }}>
               {recoveryOk ? <Banner tone="success" message={recoveryOk} /> : null}
-              {recoverError ? <Banner tone="danger" message={recoverError} /> : null}
+              {recoverError ? <Banner tone="info" message={recoverError} /> : null}
               {moldList.map((m) => (
                 <FormField
                   key={m.partName}
