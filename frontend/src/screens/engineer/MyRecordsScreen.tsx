@@ -110,7 +110,7 @@ function MouldingRecords() {
 // ---- Assembly-specific grouped records (Shift → Line → entries), same UI as Moulding ----
 function AssemblyRecords() {
   const { spacing } = useTheme();
-  const cp = usePOItemCode();
+  const cp = usePOItemCode({ includeArchivedPOs: true });
   const { customerId, productId, jobId } = cp;
 
   const params = {

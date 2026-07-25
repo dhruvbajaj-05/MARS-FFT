@@ -18,6 +18,10 @@ interface UsePOItemCodeOptions {
   // production is still active (Moulding) or assembly is still active (Assembly). Jobs that
   // fail the filter drop out of the Item Code dropdown automatically.
   jobFilter?: (job: POJob) => boolean;
+  // A PO auto-archives when its PRODUCTION completes — but that is exactly when Assembly
+  // begins. Assembly screens set this so archived (production-complete) POs stay selectable;
+  // Moulding leaves it off so you never mould an archived PO.
+  includeArchivedPOs?: boolean;
 }
 
 // Shared Company → Purchase Order → Item Code cascade used by every engineer entry form.
@@ -52,8 +56,11 @@ export function usePOItemCode(opts: UsePOItemCodeOptions = {}) {
     value: c.id,
   }));
 
-  // Engineers pick from open work: hide archived POs.
-  const poList: PurchaseOrder[] = (purchaseOrders.data?.data ?? []).filter((p) => p.status !== 'Archived');
+  // Engineers pick from open work: hide archived POs — unless the caller (Assembly) needs
+  // production-complete POs, which archive on production completion but are still assembling.
+  const poList: PurchaseOrder[] = (purchaseOrders.data?.data ?? []).filter(
+    (p) => opts.includeArchivedPOs || p.status !== 'Archived'
+  );
   const purchaseOrderOptions: SelectOption[] = poList.map((p) => ({
     label: p.poNumber ?? p.id,
     value: p.id,

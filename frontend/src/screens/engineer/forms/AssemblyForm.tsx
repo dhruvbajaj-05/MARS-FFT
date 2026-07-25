@@ -23,7 +23,7 @@ type Row = { partName: string; perSet: string; kind: 'moulded' | 'outsourced' };
 export function AssemblyForm() {
   const { spacing, colors } = useTheme();
   const qc = useQueryClient();
-  const cp = usePOItemCode({ jobFilter: (j) => j.assemblyStatus === 'Active' });
+  const cp = usePOItemCode({ jobFilter: (j) => j.assemblyStatus === 'Active', includeArchivedPOs: true });
 
   const [rows, setRows] = useState<Row[]>([]);
   const [rowsKey, setRowsKey] = useState<string | null>(null);

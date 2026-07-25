@@ -517,6 +517,10 @@ async function listDeptOrders({ department, archived = false }) {
   const idQueries = [QCReport.distinct('orderId', { department })];
   if (department === 'assembly') {
     idQueries.push(AssemblyRecord.distinct('orderId'));
+    // Orders whose production is complete are in the assembly phase — surface them in Assembly
+    // QC even before the first assembly record exists (mirrors how moulding QC lists a PO from
+    // its mould setup). qcClosedDepartments still moves them to Archive on "Done QC".
+    idQueries.push(Order.distinct('_id', { productionStatus: 'Completed' }));
   } else {
     idQueries.push(OrderMold.distinct('orderId'));
     idQueries.push(MouldingRecord.distinct('orderId'));
@@ -601,6 +605,10 @@ async function listDeptPOs({ department, archived = false }) {
   const idQueries = [QCReport.distinct('orderId', { department })];
   if (department === 'assembly') {
     idQueries.push(AssemblyRecord.distinct('orderId'));
+    // Orders whose production is complete are in the assembly phase — surface them in Assembly
+    // QC even before the first assembly record exists (mirrors how moulding QC lists a PO from
+    // its mould setup). qcClosedDepartments still moves them to Archive on "Done QC".
+    idQueries.push(Order.distinct('_id', { productionStatus: 'Completed' }));
   } else {
     idQueries.push(OrderMold.distinct('orderId'));
     idQueries.push(MouldingRecord.distinct('orderId'));
