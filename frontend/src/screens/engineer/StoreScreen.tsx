@@ -345,7 +345,9 @@ function ComponentStore() {
   const { spacing } = useTheme();
   const user = useCurrentUser();
   const canEditOutsourced = user?.role === ROLES.MOULDING_ENGINEER;
-  const cp = usePOItemCode();
+  // Assembly's Component Store: production-complete POs archive but are still being assembled,
+  // so keep them selectable (same reason as the Assembly entry form).
+  const cp = usePOItemCode({ includeArchivedPOs: true });
   const { customerId, productId, jobId } = cp;
 
   const ready = !!customerId && !!productId && !!jobId;
