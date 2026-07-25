@@ -9,6 +9,7 @@ import { isEngineer, ROLES, type Role } from '@/types/roles';
 import { AdminNavigator } from './AdminNavigator';
 import { CustomerNavigator } from './CustomerNavigator';
 import { EngineerNavigator } from './EngineerNavigator';
+import { QCEngineerNavigator } from './QCEngineerNavigator';
 
 const Stack = createNativeStackNavigator();
 
@@ -21,6 +22,9 @@ function UnsupportedRoleScreen() {
 function navigatorForRole(role: Role): React.ComponentType {
   if (role === ROLES.ADMIN) return AdminNavigator;
   if (role === ROLES.CUSTOMER) return CustomerNavigator;
+  // The QC Engineer has a dedicated defect-QC shell (Moulding QC + Assembly QC), not the
+  // shared engineer shell (req #8).
+  if (role === ROLES.QC_ENGINEER) return QCEngineerNavigator;
   if (isEngineer(role)) return EngineerNavigator;
   return UnsupportedRoleScreen;
 }

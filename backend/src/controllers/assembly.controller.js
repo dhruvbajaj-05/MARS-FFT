@@ -53,6 +53,16 @@ async function availability(req, res, next) {
   }
 }
 
+// GET /api/v1/assembly/po-dashboard  (admin, assembly_engineer)
+// PO-level Active / Archived dashboard, mirroring the Moulding PO dashboard.
+async function poDashboard(req, res, next) {
+  try {
+    res.status(200).json(await assemblyService.getAssemblyPODashboard());
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /api/v1/assembly/status?orderId=  (admin, assembly_engineer, qc_engineer)
 // QC engineers consume this to view assembly progress for an order.
 async function status(req, res, next) {
@@ -123,6 +133,7 @@ async function remove(req, res, next) {
 module.exports = {
   create,
   availability,
+  poDashboard,
   listMine,
   listAll,
   status,

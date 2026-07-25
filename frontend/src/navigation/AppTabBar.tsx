@@ -15,6 +15,9 @@ const ICONS: Record<string, string> = {
   Store: '📦',
   QC: '🔍',
   MyRecords: '📋',
+  // QC Engineer shell
+  MouldingQC: '🔩',
+  AssemblyQC: '🧩',
   // Admin
   AdminDashboard: '🏭',
   AdminFactory: '🔧',

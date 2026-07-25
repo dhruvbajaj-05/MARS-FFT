@@ -137,9 +137,12 @@ function toPublicAssemblyRecord(record) {
 function normalizeFields(input) {
   // Shift comes from the engineer's phone clock (see utils/shift.js); server time is a fallback.
   const numbers = { shift: resolveShift(input.shift) };
+  // operatorCount / rejectedQuantity are optional record-keeping — default to 0 when omitted
+  // (EOD entry only requires Produced Sets).
   for (const key of ['operatorCount', 'rejectedQuantity']) {
-    const value = Number(input[key]);
-    if (!Number.isFinite(value) || value < 0) {
+    const has = input[key] !== undefined && input[key] !== null && input[key] !== '';
+    const value = has ? Number(input[key]) : 0;
+    if (has && (!Number.isFinite(value) || value < 0)) {
       throw badRequest(`${key} must be a number >= 0`, 'invalid_quantity');
     }
     numbers[key] = value;
@@ -251,33 +254,28 @@ async function createAssemblyRecord({ payload, files, submittedBy }) {
     );
   }
 
-  // ---- ATOMIC PRE-VALIDATION: order portion AND surplus portion, before any deduction.
-  // (Rule 6/10: no partial consumption, no inventory loss.) Gather every shortage first.
+  // ---- ATOMIC PRE-VALIDATION (per-part cascade, req #4): a set draws each part from this
+  // item code's NORMAL store first and only dips into the product SURPLUS store once that
+  // part's normal store is exhausted. So we validate the TOTAL sets against normal + surplus
+  // combined (regardless of the order's required-set count); the actual split is derived by
+  // reconcile/allocateFifo. No partial consumption — gather every shortage first.
   const shortages = [];
-  if (normalSets > 0) {
+  if (totalSets > 0) {
     const availability = await storeService.getComponentAvailability(customerId, productId, { orderId });
     const mOnHand = new Map(availability.parts.map((p) => [p.partName, p.quantityOnHand]));
+    const mSurplusList = (await storeService.getSurplusByProduct({ customerId, productId })).get(`${customerId}|${productId}`) || [];
+    const mSurplus = new Map(mSurplusList.map((p) => [p.partName, p.quantityOnHand]));
     const oOnHand = await outsourcedService.getOrderQuantities({ customerId, productId, orderId });
-    for (const p of moulded) {
-      const need = p.perSet * normalSets;
-      if (need > 0 && (mOnHand.get(p.partName) || 0) < need) shortages.push(`${p.partName} order (need ${need}, have ${mOnHand.get(p.partName) || 0})`);
-    }
-    for (const p of outsourced) {
-      const need = p.perSet * normalSets;
-      if (need > 0 && (oOnHand.get(p.partName) || 0) < need) shortages.push(`${p.partName} outsourced (need ${need}, have ${oOnHand.get(p.partName) || 0})`);
-    }
-  }
-  if (extraSets > 0) {
-    const mList = (await storeService.getSurplusByProduct({ customerId, productId })).get(`${customerId}|${productId}`) || [];
-    const mSurplus = new Map(mList.map((p) => [p.partName, p.quantityOnHand]));
     const oSurplus = await outsourcedService.getSurplusQuantities({ customerId, productId });
     for (const p of moulded) {
-      const need = p.perSet * extraSets;
-      if (need > 0 && (mSurplus.get(p.partName) || 0) < need) shortages.push(`${p.partName} surplus (need ${need}, have ${mSurplus.get(p.partName) || 0})`);
+      const need = p.perSet * totalSets;
+      const have = (mOnHand.get(p.partName) || 0) + (mSurplus.get(p.partName) || 0);
+      if (need > 0 && have < need) shortages.push(`${p.partName} (need ${need}, have ${have} incl. surplus)`);
     }
     for (const p of outsourced) {
-      const need = p.perSet * extraSets;
-      if (need > 0 && (oSurplus.get(p.partName) || 0) < need) shortages.push(`${p.partName} outsourced surplus (need ${need}, have ${oSurplus.get(p.partName) || 0})`);
+      const need = p.perSet * totalSets;
+      const have = (oOnHand.get(p.partName) || 0) + (oSurplus.get(p.partName) || 0);
+      if (need > 0 && have < need) shortages.push(`${p.partName} outsourced (need ${need}, have ${have} incl. surplus)`);
     }
   }
   if (shortages.length > 0) {
@@ -297,7 +295,7 @@ async function createAssemblyRecord({ payload, files, submittedBy }) {
     orderId,
     customerId,
     productId,
-    assemblyLine: String(payload.assemblyLine).trim(),
+    assemblyLine: payload.assemblyLine ? String(payload.assemblyLine).trim() : '—',
     operatorCount: fields.operatorCount,
     shift: fields.shift,
     inputQuantity: fields.inputQuantity,
@@ -508,6 +506,45 @@ async function deleteAssemblyRecord(id, user) {
   return { deleted: true };
 }
 
+// PO-level Assembly dashboard: Active / Archived Purchase Orders (Assembly req #1). Mirrors
+// moulding.service.getMouldingPODashboard but classifies on `assemblyStatus` — a PO is active
+// while any of its item-code jobs still has assembly to do, archived once all are complete.
+async function getAssemblyPODashboard() {
+  const PurchaseOrder = require('../models/PurchaseOrder');
+  const Customer = require('../models/Customer');
+  const rows = await Order.aggregate([
+    { $match: { purchaseOrderId: { $ne: null } } },
+    {
+      $group: {
+        _id: '$purchaseOrderId',
+        customerId: { $first: '$customerId' },
+        itemCount: { $sum: 1 },
+        activeItems: { $sum: { $cond: [{ $eq: ['$assemblyStatus', 'Active'] }, 1, 0] } },
+      },
+    },
+    { $lookup: { from: PurchaseOrder.collection.name, localField: '_id', foreignField: '_id', as: 'po' } },
+    { $unwind: '$po' },
+    { $lookup: { from: Customer.collection.name, localField: 'customerId', foreignField: '_id', as: 'cust' } },
+    { $unwind: { path: '$cust', preserveNullAndEmptyArrays: true } },
+    { $sort: { 'po.createdAt': -1 } },
+  ]);
+
+  const active = [];
+  const archived = [];
+  for (const r of rows) {
+    const card = {
+      id: String(r._id),
+      poNumber: r.po.poNumber || null,
+      customerName: r.cust ? r.cust.name : null,
+      itemCount: r.itemCount,
+      activeItems: r.activeItems,
+    };
+    if (r.activeItems > 0) active.push(card);
+    else archived.push(card);
+  }
+  return { active, archived };
+}
+
 // Shared filter builder for list queries.
 function buildFilter(query) {
   const filter = {};
@@ -569,6 +606,7 @@ module.exports = {
   updateAssemblyRecord,
   deleteAssemblyRecord,
   getComponentAvailability,
+  getAssemblyPODashboard,
   listMyRecords,
   listAllRecords,
   getRecordById,

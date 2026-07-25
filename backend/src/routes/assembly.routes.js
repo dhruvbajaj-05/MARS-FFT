@@ -15,9 +15,10 @@ const router = express.Router();
 // SELECTED ORDER's finished components.
 // Shift is auto-detected server-side. assembledSets / extraSets are validated in the
 // service (a record is either normal sets OR extra-from-surplus sets).
+// EOD entry: the engineer only has to enter Produced Sets (assembledSets). Assembly Line /
+// Workers / Rejected / Remarks are optional record-keeping (defaulted in the service).
 const REQUIRED_FIELDS = [
-  'orderId', 'productId', 'customerId',
-  'assemblyLine', 'operatorCount', 'rejectedQuantity',
+  'orderId', 'productId', 'customerId', 'assembledSets',
 ];
 
 // Create an assembly record — assembly engineer only.
@@ -54,6 +55,13 @@ router.post(
 
 // This engineer's own records — assembly engineer only.
 router.get('/mine', ...protect(ROLES.ASSEMBLY_ENGINEER), assemblyController.listMine);
+
+// PO-level Assembly dashboard: Active / Archived POs — admin + assembly engineer. Before /:id.
+router.get(
+  '/po-dashboard',
+  ...protect(ROLES.ADMIN, ROLES.ASSEMBLY_ENGINEER),
+  assemblyController.poDashboard
+);
 
 // Computed assembly status for an order — admin + assembly engineer + QC engineer.
 router.get(

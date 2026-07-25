@@ -7,19 +7,34 @@ import { Alert, RefreshControl, View } from 'react-native';
 import { purchaseOrdersApi } from '@/api/endpoints/purchaseOrders';
 import { qcReportsApi } from '@/api/endpoints/qcReports';
 import { queryKeys } from '@/api/queryKeys';
-import type { QCActivePO } from '@/api/types';
+import type { QCActivePO, QCDepartment } from '@/api/types';
 import { AppText, Button, Card, PressableScale, Screen } from '@/components';
 import { useMouldingSession } from '@/features/moulding/MouldingSessionContext';
 import { useTheme } from '@/theme/ThemeProvider';
 import type { QCStackParamList } from './navTypes';
+import { useQCCapabilities, type QCCapabilities } from './useQCCapabilities';
 
-type Nav = NativeStackNavigationProp<QCStackParamList, 'MouldingQC'>;
+type Nav = NativeStackNavigationProp<QCStackParamList, 'DepartmentQC'>;
 type Mode = 'active' | 'archived';
 
-// The Moulding QC tab works at PO level (req #12): Active QC lists PO cards; tapping a PO
-// reveals its Item Code cards (Create / View QC Report). "Done with Moulding QC for this PO"
-// archives the whole PO. No re-selecting — context is auto-inherited from PO → Item Code.
-function POCard({ po, mode, initiallyOpen }: { po: QCActivePO; mode: Mode; initiallyOpen?: boolean }) {
+const DEPT_LABEL: Record<QCDepartment, string> = { moulding: 'Moulding', assembly: 'Assembly' };
+
+// One PO in a department's QC list: tapping it reveals its Item Code cards. Authors (QC
+// Engineer) get Create + "Done QC" controls; read-only viewers (moulding/assembly engineers)
+// only get "View QC Reports". Context is inherited PO → Item Code — no re-selecting.
+function POCard({
+  po,
+  mode,
+  department,
+  caps,
+  initiallyOpen,
+}: {
+  po: QCActivePO;
+  mode: Mode;
+  department: QCDepartment;
+  caps: QCCapabilities;
+  initiallyOpen?: boolean;
+}) {
   const { colors, spacing, radius } = useTheme();
   const navigation = useNavigation<Nav>();
   const qc = useQueryClient();
@@ -32,16 +47,16 @@ function POCard({ po, mode, initiallyOpen }: { po: QCActivePO; mode: Mode; initi
   });
 
   const closeMut = useMutation({
-    mutationFn: () => qcReportsApi.closePO(po.id, 'moulding'),
+    mutationFn: () => qcReportsApi.closePO(po.id, department),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.qc.activePOs('moulding') });
-      qc.invalidateQueries({ queryKey: queryKeys.qc.archivedPOs('moulding') });
+      qc.invalidateQueries({ queryKey: queryKeys.qc.activePOs(department) });
+      qc.invalidateQueries({ queryKey: queryKeys.qc.archivedPOs(department) });
     },
   });
 
   const confirmDone = () =>
     Alert.alert(
-      'Done with Moulding QC for this PO?',
+      `Done with ${DEPT_LABEL[department]} QC for this PO?`,
       `Are you sure? Once completed, ${po.poNumber ?? 'this PO'} moves to QC Archive. Existing reports stay viewable.`,
       [
         { text: 'Cancel', style: 'cancel' },
@@ -79,12 +94,12 @@ function POCard({ po, mode, initiallyOpen }: { po: QCActivePO; mode: Mode; initi
                 <AppText weight="700" style={{ fontSize: 15 }}>{job.itemCode ?? '—'}</AppText>
                 <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>{job.productName}</AppText>
                 <View style={{ flexDirection: 'row', gap: spacing(2) }}>
-                  {mode === 'active' ? (
+                  {mode === 'active' && caps.canCreate ? (
                     <Button
                       label="＋ Create QC Report"
                       onPress={() =>
                         navigation.navigate('CreateQCReport', {
-                          department: 'moulding',
+                          department,
                           orderId: job.id,
                           customerId: job.customerId ?? po.customerId,
                           productId: job.productId ?? undefined,
@@ -98,7 +113,7 @@ function POCard({ po, mode, initiallyOpen }: { po: QCActivePO; mode: Mode; initi
                     variant="secondary"
                     onPress={() =>
                       navigation.navigate('QCReportsList', {
-                        department: 'moulding',
+                        department,
                         orderId: job.id,
                         title: job.itemCode ?? 'QC Reports',
                       })
@@ -110,10 +125,10 @@ function POCard({ po, mode, initiallyOpen }: { po: QCActivePO; mode: Mode; initi
             ))
           )}
 
-          {mode === 'active' ? (
+          {mode === 'active' && caps.canArchive ? (
             <View style={{ marginTop: spacing(2) }}>
               <Button
-                label={closeMut.isPending ? 'Finishing…' : 'Done with Moulding QC for this PO'}
+                label={closeMut.isPending ? 'Finishing…' : `Done with ${DEPT_LABEL[department]} QC for this PO`}
                 variant="danger"
                 loading={closeMut.isPending}
                 onPress={confirmDone}
@@ -129,14 +144,18 @@ function POCard({ po, mode, initiallyOpen }: { po: QCActivePO; mode: Mode; initi
   );
 }
 
-export function MouldingQCScreen() {
+// A department's QC screen (Moulding QC / Assembly QC). Same UI for every role — the
+// per-report author controls are gated by QC capabilities (req #7/#8/#11).
+export function DepartmentQCScreen({ department }: { department: QCDepartment }) {
   const { colors, spacing, radius } = useTheme();
   const { active } = useMouldingSession();
+  const caps = useQCCapabilities();
   const [mode, setMode] = useState<Mode>('active');
+  const label = DEPT_LABEL[department];
 
   const query = useQuery({
-    queryKey: mode === 'active' ? queryKeys.qc.activePOs('moulding') : queryKeys.qc.archivedPOs('moulding'),
-    queryFn: () => (mode === 'active' ? qcReportsApi.activePOs('moulding') : qcReportsApi.archivedPOs('moulding')),
+    queryKey: mode === 'active' ? queryKeys.qc.activePOs(department) : queryKeys.qc.archivedPOs(department),
+    queryFn: () => (mode === 'active' ? qcReportsApi.activePOs(department) : qcReportsApi.archivedPOs(department)),
   });
   const pos = query.data ?? [];
   const isArchived = mode === 'archived';
@@ -148,10 +167,12 @@ export function MouldingQCScreen() {
       refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}
     >
       <AppText variant="h1" style={{ marginBottom: spacing(1) }}>
-        Moulding QC
+        {label} QC
       </AppText>
       <AppText tone="muted" style={{ marginBottom: spacing(3) }}>
-        Report defects by Purchase Order → Item Code — no re-selecting.
+        {caps.canCreate
+          ? 'Report defects by Purchase Order → Item Code — no re-selecting.'
+          : 'View defect reports by Purchase Order → Item Code (read-only).'}
       </AppText>
 
       {/* Active / Archived toggle */}
@@ -180,14 +201,21 @@ export function MouldingQCScreen() {
           </AppText>
           <AppText tone="muted">
             {isArchived
-              ? 'POs appear here after you press “Done with Moulding QC for this PO”. Report history is preserved.'
-              : 'Purchase orders with moulding activity appear here so you can document defects per item code.'}
+              ? `POs appear here after "Done with ${label} QC for this PO". Report history is preserved.`
+              : `Purchase orders with ${label.toLowerCase()} activity appear here so defects can be documented per item code.`}
           </AppText>
         </Card>
       ) : (
         <View style={{ gap: spacing(3) }}>
           {pos.map((po) => (
-            <POCard key={po.id} po={po} mode={mode} initiallyOpen={!isArchived && active?.purchaseOrderId === po.id} />
+            <POCard
+              key={po.id}
+              po={po}
+              mode={mode}
+              department={department}
+              caps={caps}
+              initiallyOpen={!isArchived && active?.purchaseOrderId === po.id}
+            />
           ))}
         </View>
       )}

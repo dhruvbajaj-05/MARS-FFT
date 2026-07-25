@@ -10,7 +10,7 @@ import { MyRecordsScreen } from '@/screens/engineer/MyRecordsScreen';
 import { StoreScreen } from '@/screens/engineer/StoreScreen';
 import { SettingsScreen } from '@/screens/shared/SettingsScreen';
 import { AppTabBar } from './AppTabBar';
-import { QCNavigator } from './QCNavigator';
+import { MouldingQCNavigator, AssemblyQCNavigator } from './QCNavigator';
 import { useTabScreenOptions } from './tabOptions';
 
 const Tab = createBottomTabNavigator();
@@ -27,6 +27,7 @@ export function EngineerNavigator() {
   const user = useCurrentUser();
   const dept = user ? departmentForRole(user.role) : null;
   const isMoulding = dept?.key === 'moulding';
+  const isAssembly = dept?.key === 'assembly';
 
   return (
     <MouldingSessionProvider>
@@ -34,8 +35,11 @@ export function EngineerNavigator() {
         <Tab.Screen name="EngineerDashboard" component={EngineerDashboardScreen} options={{ title: 'Dashboard' }} />
         <Tab.Screen name="CreateRecord" component={EntryScreen} options={{ title: 'Entry' }} />
         <Tab.Screen name="Store" component={StoreScreen} options={{ title: 'Store' }} />
+        {/* Moulding + Assembly engineers get a read-only QC tab for their own department (req #7). */}
         {isMoulding ? (
-          <Tab.Screen name="QC" component={QCNavigator} options={{ title: 'QC', headerShown: false }} />
+          <Tab.Screen name="QC" component={MouldingQCNavigator} options={{ title: 'QC', headerShown: false }} />
+        ) : isAssembly ? (
+          <Tab.Screen name="QC" component={AssemblyQCNavigator} options={{ title: 'QC', headerShown: false }} />
         ) : null}
         <Tab.Screen name="MyRecords" component={MyRecordsScreen} options={{ title: 'My Records' }} />
         <Tab.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />

@@ -5,6 +5,7 @@ import type {
   AssemblyRecord,
   AssemblyStatus,
   ComponentAvailability,
+  MouldingPODashboard,
   Paginated,
 } from '@/api/types';
 import type { ListParams } from './master';
@@ -64,6 +65,9 @@ export const assemblyApi = {
     apiClient.get<Paginated<AssemblyRecord>>('/assembly/mine', { params }).then((r) => r.data),
   status: (orderId: string) =>
     apiClient.get<AssemblyStatus>('/assembly/status', { params: { orderId } }).then((r) => r.data),
+  // PO-level Active / Archived dashboard (same shape as the Moulding PO dashboard).
+  poDashboard: () =>
+    apiClient.get<MouldingPODashboard>('/assembly/po-dashboard').then((r) => r.data),
   get: (id: string) =>
     apiClient.get<{ record: AssemblyRecord }>(`/assembly/${id}`).then((r) => r.data.record),
   // Edit / delete own record within the 12-hour window (re-derives component/outsourced stores).

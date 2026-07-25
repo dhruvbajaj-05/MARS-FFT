@@ -13,6 +13,7 @@ import { CommentThread, FullscreenImageViewer, StatusPicker, formatDateTime } fr
 import { resolveMediaUrl } from '@/utils/mediaUrl';
 import { useTheme } from '@/theme/ThemeProvider';
 import type { QCStackParamList } from './navTypes';
+import { useQCCapabilities } from './useQCCapabilities';
 
 // A QC case, simplified: images (until the case is closed), an Open/Closed control, and
 // the comment thread. Closing a case permanently deletes its images from storage — the
@@ -22,6 +23,7 @@ export function QCReportDetailScreen() {
   const { params } = useRoute<RouteProp<QCStackParamList, 'QCReportDetail'>>();
   const { reportId } = params;
   const qc = useQueryClient();
+  const caps = useQCCapabilities();
 
   const [viewerAt, setViewerAt] = useState<number | null>(null);
 
@@ -124,17 +126,22 @@ export function QCReportDetailScreen() {
                 {r.submittedByName ?? 'Engineer'} · {formatDateTime(r.createdAt)}
               </AppText>
 
-              {/* Status: Open / Closed */}
+              {/* Status: Open / Closed — QC engineer + admin can change; others read-only. */}
               <SectionCard icon="🚦" title="QC Status">
-                <StatusPicker value={r.status} onChange={changeStatus} disabled={statusMut.isPending} />
+                <StatusPicker
+                  value={r.status}
+                  onChange={changeStatus}
+                  disabled={!caps.canChangeStatus || statusMut.isPending}
+                />
               </SectionCard>
 
-              {/* Comments */}
+              {/* Comments — composer only for QC engineer + admin. */}
               <SectionCard icon="💬" title={`Comments (${r.comments.length})`}>
                 <CommentThread
                   comments={r.comments}
                   onAdd={(text) => commentMut.mutate(text)}
                   submitting={commentMut.isPending}
+                  readOnly={!caps.canComment}
                 />
               </SectionCard>
 

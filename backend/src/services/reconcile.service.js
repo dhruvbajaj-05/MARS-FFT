@@ -90,7 +90,15 @@ function allocateFifo(lines, startingPool) {
     const overage = supply - ownFill;       // beyond own requirement → surplus
     pool += overage;
 
-    let onHand = Math.max(0, filled - consumed);
+    // Per-part store→surplus cascade (Assembly req #4): consumption drains the order's OWN
+    // cell (its normal store = `filled`) first; any remainder draws from the shared product
+    // surplus pool. So a set consumes the item code's normal store first and only dips into
+    // surplus once that part's normal store is exhausted — regardless of order completion.
+    let onHand = filled - consumed;
+    if (onHand < 0) {
+      pool -= -onHand; // deficit beyond the normal store comes out of surplus
+      onHand = 0;
+    }
     const shortfall = Math.max(0, required - filled); // pending (moulded) / to-purchase (outsourced)
 
     // A completed order releases its remaining on-hand back into the product surplus pool so
@@ -183,22 +191,18 @@ async function reconcileProduct(customerId, productId, existingSession) {
     const recovered = new Map();
     for (const r of recoveredAgg) { recovered.set(r._id, r.qty || 0); allParts.add(r._id); }
 
-    // consumption: normal (order bucket) + extra (product surplus), moulded parts only.
+    // consumption (moulded parts only): ALL of a record's consumption is attributed to its
+    // order bucket; the store→surplus cascade lives in allocateFifo (order's normal store
+    // first, then the shared surplus pool). `c.quantity` = perSet × total sets is the frozen
+    // snapshot, so we no longer split normal/extra sets here.
     const normalConsumed = new Map(); // `${orderId}|${part}` → number
-    const extraConsumed = new Map();  // part → number
     for (const rec of assemblyRecs) {
+      if (!rec.orderId) continue;
       for (const c of rec.consumption || []) {
         if ((c.kind || 'moulded') !== 'moulded') continue;
-        const per = c.perSet || 0;
-        if (rec.orderId && rec.assembledSets) {
-          const key = `${rec.orderId}|${c.partName}`;
-          normalConsumed.set(key, (normalConsumed.get(key) || 0) + per * rec.assembledSets);
-          addPart(String(rec.orderId), c.partName);
-        }
-        if (rec.extraSets) {
-          extraConsumed.set(c.partName, (extraConsumed.get(c.partName) || 0) + per * rec.extraSets);
-          allParts.add(c.partName);
-        }
+        const key = `${rec.orderId}|${c.partName}`;
+        normalConsumed.set(key, (normalConsumed.get(key) || 0) + (c.quantity || 0));
+        addPart(String(rec.orderId), c.partName);
       }
     }
 
@@ -206,7 +210,7 @@ async function reconcileProduct(customerId, productId, existingSession) {
     const cellTargets = []; // { orderId, partName, moldName, cavity, requiredQuantity, quantityOnHand }
     const surplusTargets = []; // { partName, moldName, cavity, quantityOnHand }
     for (const part of allParts) {
-      const startingPool = (recovered.get(part) || 0) - (extraConsumed.get(part) || 0);
+      const startingPool = recovered.get(part) || 0;
       const lines = orders
         .filter((o) => (partsByOrder.get(String(o._id)) || new Set()).has(part))
         .map((o) => {
@@ -340,29 +344,23 @@ async function reconcileOutsourced(customerId, productId, existingSession) {
       addComp(String(r._id.orderId), r._id.componentName);
     }
 
-    // consumption (outsourced kind): normal (order) + extra (surplus).
+    // consumption (outsourced kind): ALL attributed to the order bucket; the store→surplus
+    // cascade lives in allocateFifo (see the moulded path). `c.quantity` = perSet × total sets.
     const normalConsumed = new Map();
-    const extraConsumed = new Map();
     for (const rec of assemblyRecs) {
+      if (!rec.orderId) continue;
       for (const c of rec.consumption || []) {
         if (c.kind !== 'outsourced') continue;
-        const per = c.perSet || 0;
-        if (rec.orderId && rec.assembledSets) {
-          const key = `${rec.orderId}|${c.partName}`;
-          normalConsumed.set(key, (normalConsumed.get(key) || 0) + per * rec.assembledSets);
-          addComp(String(rec.orderId), c.partName);
-        }
-        if (rec.extraSets) {
-          extraConsumed.set(c.partName, (extraConsumed.get(c.partName) || 0) + per * rec.extraSets);
-          allComps.add(c.partName);
-        }
+        const key = `${rec.orderId}|${c.partName}`;
+        normalConsumed.set(key, (normalConsumed.get(key) || 0) + (c.quantity || 0));
+        addComp(String(rec.orderId), c.partName);
       }
     }
 
     const cellTargets = [];    // { orderId, componentName, perSet, requiredQuantity, quantityOnHand, procurementNeed }
     const surplusTargets = []; // { componentName, quantityOnHand }
     for (const comp of allComps) {
-      const startingPool = -(extraConsumed.get(comp) || 0); // no "recovery" concept for outsourced
+      const startingPool = 0; // no "recovery" concept for outsourced; cascade handled in allocateFifo
       const lines = orders
         .filter((o) => (compsByOrder.get(String(o._id)) || new Set()).has(comp))
         .map((o) => {

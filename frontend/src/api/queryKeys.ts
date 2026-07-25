@@ -26,6 +26,7 @@ export const queryKeys = {
     cumulative: (purchaseOrderId: string) => ['moulding', 'production-store', 'cumulative', purchaseOrderId] as const,
   },
   mouldingPoDashboard: ['moulding', 'po-dashboard'] as const,
+  assemblyPoDashboard: ['assembly', 'po-dashboard'] as const,
   assortment: (customerId: string, productId: string) =>
     ['assembly', 'assortment', customerId, productId] as const,
 

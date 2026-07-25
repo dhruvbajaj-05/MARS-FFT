@@ -3,10 +3,12 @@ import React, { useState } from 'react';
 import { Alert, RefreshControl, View } from 'react-native';
 
 import type { Paginated } from '@/api/types';
+import { assemblyApi } from '@/api/endpoints/assembly';
 import { mouldingApi } from '@/api/endpoints/moulding';
 import { queryKeys } from '@/api/queryKeys';
 import { AppText, Banner, Button, Card, FormField, QueryBoundary, Screen, Select } from '@/components';
 import { MouldingRecordsList } from '@/features/moulding/MouldingRecordsList';
+import { AssemblyRecordsList } from '@/features/assembly/AssemblyRecordsList';
 import { departmentForRole } from '@/features/engineer/department';
 import { useCurrentUser } from '@/hooks/useAuth';
 import { useTheme } from '@/theme/ThemeProvider';
@@ -99,6 +101,75 @@ function MouldingRecords() {
               reasons={allReasons}
             />
           )}
+        </QueryBoundary>
+      )}
+    </Screen>
+  );
+}
+
+// ---- Assembly-specific grouped records (Shift → Line → entries), same UI as Moulding ----
+function AssemblyRecords() {
+  const { spacing } = useTheme();
+  const cp = usePOItemCode();
+  const { customerId, productId, jobId } = cp;
+
+  const params = {
+    page: 1,
+    limit: 200,
+    customerId: customerId ?? undefined,
+    productId: productId ?? undefined,
+    orderId: jobId ?? undefined,
+  };
+  const query = useQuery({
+    queryKey: queryKeys.dept('assembly').mine(params),
+    queryFn: () => assemblyApi.listMine(params),
+    enabled: !!jobId,
+  });
+
+  const itemCodeFor = (id?: string | null) =>
+    cp.jobList.find((o) => o.id === id)?.itemCode ?? cp.itemCode ?? 'Item';
+
+  return (
+    <Screen scroll refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}>
+      <AppText variant="h2" style={{ marginBottom: spacing(1) }}>
+        Assembly Records
+      </AppText>
+      <AppText tone="muted" variant="caption" style={{ marginBottom: spacing(3) }}>
+        Team-wide — every assembly engineer&apos;s production. You can edit/delete only your own
+        entries (within 12h).
+      </AppText>
+
+      <Card style={{ marginBottom: spacing(4) }}>
+        <Select label="Customer" value={customerId} options={cp.customerOptions} onChange={cp.selectCustomer} placeholder="Select a customer…" />
+        <Select
+          label="Purchase Order"
+          value={cp.purchaseOrderId}
+          options={cp.purchaseOrderOptions}
+          onChange={(v) => cp.selectPurchaseOrder(v)}
+          placeholder={customerId ? 'Select a purchase order…' : 'Select a customer first'}
+          emptyHint="No purchase orders for this customer"
+        />
+        <Select
+          label="Item Code"
+          value={jobId}
+          options={cp.jobOptions}
+          onChange={(v) => cp.setJobId(v)}
+          placeholder={cp.purchaseOrderId ? 'Select an item code…' : 'Select a purchase order first'}
+          emptyHint="No item codes in this PO"
+        />
+      </Card>
+
+      {!jobId ? (
+        <AppText tone="muted">Select a customer, purchase order and item code to view records.</AppText>
+      ) : (
+        <QueryBoundary
+          isLoading={query.isLoading}
+          isError={query.isError}
+          error={query.error}
+          data={query.data}
+          onRetry={query.refetch}
+        >
+          {(d) => <AssemblyRecordsList records={d.data} itemCodeFor={itemCodeFor} editable />}
         </QueryBoundary>
       )}
     </Screen>
@@ -316,6 +387,9 @@ export function MyRecordsScreen() {
 
   if (dept?.key === 'moulding') {
     return <MouldingRecords />;
+  }
+  if (dept?.key === 'assembly') {
+    return <AssemblyRecords />;
   }
 
   return <FlatRecords dept={dept ?? null} />;

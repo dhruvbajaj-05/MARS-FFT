@@ -3,6 +3,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Pressable, RefreshControl, View } from 'react-native';
 
 import { assemblyApi } from '@/api/endpoints/assembly';
+import { purchaseOrdersApi } from '@/api/endpoints/purchaseOrders';
+import { storeApi } from '@/api/endpoints/store';
 import { queryKeys } from '@/api/queryKeys';
 import { AppText, Banner, Button, Card, FormField, Screen, Select } from '@/components';
 import { ApiError, friendlyMessage } from '@/services/apiError';
@@ -33,6 +35,8 @@ export function AssemblyForm() {
   const [rejected, setRejected] = useState('');
   const [remarks, setRemarks] = useState('');
   const [ok, setOk] = useState<string | null>(null);
+  // Optional record-keeping fields are tucked away — EOD entry only requires Produced Sets.
+  const [showDetails, setShowDetails] = useState(false);
 
   // The selected item code's finished components (what we can assemble from).
   const availability = useQuery({
@@ -52,6 +56,27 @@ export function AssemblyForm() {
     queryKey: queryKeys.dept('assembly').status(cp.jobId ?? 'none'),
     queryFn: () => assemblyApi.status(cp.jobId!),
     enabled: !!cp.jobId,
+  });
+
+  // The moulds the Moulding dept created for this item code — the parts to build the
+  // assortment from (req #2). Sourced from the PO detail (accessible to the assembly role) so
+  // we never depend on the moulding-only order-molds endpoint. The engineer taps a mould's
+  // part to add it as an assortment row.
+  const poDetail = useQuery({
+    queryKey: queryKeys.purchaseOrder(cp.purchaseOrderId ?? 'none'),
+    queryFn: () => purchaseOrdersApi.get(cp.purchaseOrderId!),
+    enabled: !!cp.purchaseOrderId,
+  });
+
+  // Product-level surplus per part — so the consumption preview can show the normal→surplus
+  // cascade (consume this item code's normal store first, then draw from surplus; req #4).
+  const surplusQuery = useQuery({
+    queryKey: queryKeys.store.componentsByOrder({
+      customerId: cp.customerId ?? undefined,
+      productId: cp.productId ?? undefined,
+    }),
+    queryFn: () => storeApi.componentsByOrder({ customerId: cp.customerId!, productId: cp.productId! }),
+    enabled: !!cp.customerId && !!cp.productId,
   });
 
   // Seed the editable rows. Prefer the saved assortment; otherwise AUTO-POPULATE the part
@@ -128,29 +153,47 @@ export function AssemblyForm() {
     () => new Map((availability.data?.parts ?? []).map((p) => [p.partName, p.quantityOnHand])),
     [availability.data],
   );
+  // Product surplus per part (moulded) — the fallback store the cascade draws from.
+  const surplus = useMemo(() => {
+    const rows = surplusQuery.data?.customers?.[0]?.products?.[0]?.surplus ?? [];
+    return new Map(rows.map((s) => [s.partName, s.surplusQuantity]));
+  }, [surplusQuery.data]);
 
   const setsNum = Number.isFinite(Number(sets)) ? Number(sets) : 0;
-  // Single input → server splits into order portion + surplus (over-assembly) portion.
+  // Sets that count toward the order (for completion) vs any over-assembly beyond it.
   const required = cp.selectedJob?.orderQuantity ?? 0;
   const alreadyDone = asmStatus.data?.assembledQuantity ?? 0;
   const remainingRequired = Math.max(0, required - alreadyDone);
-  const normalSets = Math.min(setsNum, remainingRequired);
   const extraSets = Math.max(0, setsNum - remainingRequired);
 
-  // Consumption preview from the saved assortment. The normal (order) portion of moulded
-  // parts is checked against this item code's finished inventory; surplus/outsourced portions
-  // are validated server-side.
+  // Consumption preview (per-part cascade, req #4): each moulded part is consumed from this
+  // item code's NORMAL store first, then from product SURPLUS. A part is short only when
+  // normal + surplus together cannot cover the total need. Outsourced parts are validated
+  // server-side.
   const consumption = useMemo(() => {
     const parts = assortment.data?.parts ?? [];
     return parts.map((p) => {
       const kind = p.kind ?? 'moulded';
       const need = setsNum * p.perSet;
-      const orderNeed = normalSets * p.perSet;
       const have = onHand.get(p.partName) ?? 0;
+      const haveSurplus = surplus.get(p.partName) ?? 0;
       const checkable = kind === 'moulded';
-      return { partName: p.partName, perSet: p.perSet, kind, need, have, checkable, short: checkable && orderNeed > have };
+      const fromNormal = Math.min(need, have);
+      const fromSurplus = Math.max(0, Math.min(need - fromNormal, haveSurplus));
+      return {
+        partName: p.partName,
+        perSet: p.perSet,
+        kind,
+        need,
+        have,
+        haveSurplus,
+        fromNormal,
+        fromSurplus,
+        checkable,
+        short: checkable && need > have + haveSurplus,
+      };
     });
-  }, [assortment.data, setsNum, normalSets, onHand]);
+  }, [assortment.data, setsNum, onHand, surplus]);
 
   const anyShort = consumption.some((c) => c.short);
   const hasAssortment = (assortment.data?.parts.length ?? 0) > 0;
@@ -159,12 +202,20 @@ export function AssemblyForm() {
     setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   const removeRow = (i: number) => setRows((rs) => rs.filter((_, idx) => idx !== i));
 
+  // Add a part from a Moulding mould into the assortment (skips duplicates). Req #2.
+  const addMouldPart = (partName: string) =>
+    setRows((rs) =>
+      rs.some((r) => r.partName.trim().toLowerCase() === partName.trim().toLowerCase())
+        ? rs
+        : [...rs, { partName, perSet: '', kind: 'moulded' }],
+    );
+  const mouldParts = poDetail.data?.jobs.find((j) => j.id === cp.jobId)?.moulds ?? [];
+
   const nums = [operators, sets, rejected].map(Number);
   const canSubmit = !!(
     cp.customerId &&
     cp.productId &&
     cp.jobId &&
-    line.trim() &&
     hasAssortment &&
     setsNum > 0 &&
     !anyShort &&
@@ -253,9 +304,48 @@ export function AssemblyForm() {
           {assortError ? <Banner tone="danger" message={assortError} /> : null}
 
           <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
-            Part names are auto-filled from this item code&apos;s finished inventory — set the per-set
-            quantity. Tap a part&apos;s tag to switch between Moulded and Outsourced (kept separate).
+            Tap a mould from Moulding below to add its part, then set the per-set quantity. Tap a
+            part&apos;s tag to switch between Moulded and Outsourced (kept separate).
           </AppText>
+
+          {/* Moulds created by the Moulding dept for this item code — tap to add the part. */}
+          {mouldParts.length > 0 ? (
+            <View style={{ marginBottom: spacing(3) }}>
+              <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg, marginBottom: spacing(1) }}>
+                Moulds from Moulding — tap to add the part
+              </AppText>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2) }}>
+                {mouldParts.map((m) => {
+                  const added = rows.some(
+                    (r) => r.partName.trim().toLowerCase() === m.partName.trim().toLowerCase(),
+                  );
+                  return (
+                    <Pressable
+                      key={m.moldName}
+                      onPress={() => addMouldPart(m.partName)}
+                      disabled={added}
+                      style={{
+                        backgroundColor: added ? colors.surfaceAlt : colors.status.info.bg,
+                        borderRadius: 8,
+                        paddingVertical: spacing(1),
+                        paddingHorizontal: spacing(2),
+                        borderWidth: 1,
+                        borderColor: added ? colors.border : colors.status.info.fg,
+                      }}
+                    >
+                      <AppText variant="caption" weight="700" style={{ color: added ? colors.textMuted : colors.status.info.fg }}>
+                        {added ? '✓ ' : '+ '}{m.moldName}
+                      </AppText>
+                      <AppText variant="caption" tone="muted">
+                        {m.partName} · {m.cavity} cav
+                      </AppText>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          ) : null}
+
           {rows.map((r, i) => (
             <View key={i} style={{ marginBottom: spacing(2) }}>
               <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: spacing(2) }}>
@@ -295,30 +385,26 @@ export function AssemblyForm() {
         </Card>
       ) : null}
 
-      {/* Assembly entry */}
+      {/* Assembly entry — End of Day: the engineer only enters Produced Sets (req #3). */}
       {cp.jobId ? (
         <Card>
           <AppText variant="h3" style={{ marginBottom: spacing(2) }}>
-            Assembly Entry
+            End of Day — Produced Sets
           </AppText>
           {ok ? <Banner tone="success" message={ok} /> : null}
           {error ? <Banner tone="danger" message={error} /> : null}
 
           <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
-            Shift is detected automatically from the current time.
+            Enter the sets produced today — components are deducted automatically from the
+            assortment (normal store first, then surplus). Shift is detected automatically.
           </AppText>
-          <FormField label="Assembly line" value={line} onChangeText={setLine} placeholder="e.g. Line 2" />
-          <FormField label="Number of workers" value={operators} onChangeText={setOperators} keyboardType="number-pad" placeholder="e.g. 8" />
-
-          <FormField label="Assembled sets" value={sets} onChangeText={setSets} keyboardType="number-pad" placeholder="e.g. 1000" />
-          <FormField label="Rejected sets" value={rejected} onChangeText={setRejected} keyboardType="number-pad" placeholder="e.g. 5" />
-          <FormField label="Remarks (optional)" value={remarks} onChangeText={setRemarks} multiline />
+          <FormField label="Produced sets" value={sets} onChangeText={setSets} keyboardType="number-pad" placeholder="e.g. 100" />
 
           {extraSets > 0 ? (
             <Banner
               tone="info"
               persistent
-              message={`Over-assembly: ${normalSets} set(s) consume this item code, ${extraSets} extra set(s) consume Product Surplus (moulded + outsourced). Surplus must be sufficient or the submission is rejected.`}
+              message={`This exceeds the ${remainingRequired} set(s) still required — ${extraSets} extra set(s) are over-assembly and also consume the normal store first, then surplus.`}
             />
           ) : null}
 
@@ -327,28 +413,52 @@ export function AssemblyForm() {
           ) : setsNum > 0 ? (
             <View style={{ marginBottom: spacing(3) }}>
               <AppText variant="caption" tone="muted" style={{ marginBottom: 4 }}>
-                Consumption for {setsNum} sets{extraSets > 0 ? ` (${normalSets} order + ${extraSets} surplus)` : ''}
+                Components consumed for {setsNum} set{setsNum === 1 ? '' : 's'}
               </AppText>
               {consumption.map((c) => (
-                <View key={c.partName} style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                  <AppText tone="muted">
-                    {c.partName} ({c.kind === 'outsourced' ? 'outsourced' : 'moulded'}; {setsNum} × {c.perSet})
-                  </AppText>
+                <View key={c.partName} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
+                  <View style={{ flex: 1 }}>
+                    <AppText tone="muted">
+                      {c.partName} <AppText variant="caption">({c.kind === 'outsourced' ? 'outsourced' : 'moulded'}; {setsNum} × {c.perSet})</AppText>
+                    </AppText>
+                    {c.checkable && c.fromSurplus > 0 ? (
+                      <AppText variant="caption" style={{ color: colors.status.info.fg }}>
+                        {c.fromNormal} from store · {c.fromSurplus} from surplus
+                      </AppText>
+                    ) : null}
+                  </View>
                   <AppText weight="600" style={{ color: c.short ? colors.status.danger.fg : colors.text }}>
-                    {c.need}{c.checkable ? ` / ${c.have}` : ''}
+                    {c.need}{c.checkable ? ` / ${c.have + c.haveSurplus}` : ''}
                   </AppText>
                 </View>
               ))}
               {anyShort ? (
                 <AppText variant="caption" style={{ color: colors.status.danger.fg, marginTop: 4 }}>
-                  Not enough finished stock for the highlighted parts.
+                  Not enough stock (store + surplus) for the highlighted parts.
                 </AppText>
               ) : null}
             </View>
           ) : null}
 
+          {/* Optional record-keeping — hidden by default so EOD entry stays one field. */}
+          <Pressable
+            onPress={() => setShowDetails((s) => !s)}
+            style={{ backgroundColor: colors.surfaceAlt, borderRadius: 8, padding: spacing(3), marginBottom: spacing(3) }}
+          >
+            <AppText weight="600">{showDetails ? '▾' : '▸'} Details (optional)</AppText>
+            <AppText variant="caption" tone="muted">Assembly line, workers, rejected sets, remarks</AppText>
+          </Pressable>
+          {showDetails ? (
+            <View>
+              <FormField label="Assembly line" value={line} onChangeText={setLine} placeholder="e.g. Line 2" />
+              <FormField label="Number of workers" value={operators} onChangeText={setOperators} keyboardType="number-pad" placeholder="e.g. 8" />
+              <FormField label="Rejected sets" value={rejected} onChangeText={setRejected} keyboardType="number-pad" placeholder="e.g. 5" />
+              <FormField label="Remarks" value={remarks} onChangeText={setRemarks} multiline />
+            </View>
+          ) : null}
+
           <Button
-            label="Submit Assembly"
+            label="Submit Produced Sets"
             loading={submit.isPending}
             disabled={!canSubmit}
             onPress={() => {

@@ -4,7 +4,8 @@ import type { QCDepartment } from '@/api/types';
 // department). QC is no longer a standalone Company → Product → Order module: the active
 // order comes from the Entry tab via MouldingSessionContext (req #1, #2).
 export type QCStackParamList = {
-  MouldingQC: undefined;
+  // Root of a department's QC stack (Moulding QC or Assembly QC), rendered by DepartmentQCScreen.
+  DepartmentQC: undefined;
   // customerId/productId are passed so the create form never depends on the async
   // order-context query to build its required fields.
   CreateQCReport: { department: QCDepartment; orderId: string; customerId?: string; productId?: string };

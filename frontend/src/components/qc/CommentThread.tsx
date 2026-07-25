@@ -12,10 +12,13 @@ export function CommentThread({
   comments,
   onAdd,
   submitting,
+  readOnly,
 }: {
   comments: QCComment[];
   onAdd: (text: string) => void;
   submitting?: boolean;
+  // Read-only viewers (moulding/assembly engineers) see the thread but no composer.
+  readOnly?: boolean;
 }) {
   const { colors, radius, spacing } = useTheme();
   const [text, setText] = useState('');
@@ -59,6 +62,7 @@ export function CommentThread({
         </View>
       )}
 
+      {readOnly ? null : (
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing(2) }}>
         <TextInput
           style={{
@@ -78,6 +82,7 @@ export function CommentThread({
         />
         <Button label="Send" onPress={send} loading={submitting} disabled={!text.trim()} />
       </View>
+      )}
     </View>
   );
 }

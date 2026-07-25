@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import React, { useState } from 'react';
 import { RefreshControl, View } from 'react-native';
 
+import { assemblyApi } from '@/api/endpoints/assembly';
 import { mouldingApi } from '@/api/endpoints/moulding';
 import { purchaseOrdersApi } from '@/api/endpoints/purchaseOrders';
 import type { MouldingPOCard, Paginated } from '@/api/types';
@@ -18,9 +19,13 @@ export function EngineerDashboardScreen() {
   const user = useCurrentUser();
   const dept = user ? departmentForRole(user.role) : null;
   const isMoulding = dept?.key === 'moulding';
+  const isAssembly = dept?.key === 'assembly';
 
   if (isMoulding) {
     return <MouldingDashboard userName={user?.name ?? ''} />;
+  }
+  if (isAssembly) {
+    return <AssemblyDashboard userName={user?.name ?? ''} />;
   }
 
   return <GenericDashboard dept={dept} userName={user?.name ?? ''} />;
@@ -186,6 +191,169 @@ function MouldingDashboard({ userName }: { userName: string }) {
                 <View style={{ gap: spacing(3) }}>
                   {d.archived.map((po) => (
                     <POCard key={po.id} po={po} archived />
+                  ))}
+                </View>
+              </>
+            ) : null}
+          </View>
+        )}
+      </QueryBoundary>
+    </Screen>
+  );
+}
+
+// A PO card for the Assembly dashboard — mirrors the moulding POCard but expands to reveal
+// each Item Code's ASSEMBLY progress (assembled / required sets, ✓ Done) and its component
+// parts. PO detail is fetched lazily only when opened.
+function AssemblyPOCard({ po, archived }: { po: MouldingPOCard; archived?: boolean }) {
+  const { spacing, colors, radius } = useTheme();
+  const [open, setOpen] = useState(false);
+  const detail = useQuery({
+    queryKey: queryKeys.purchaseOrder(po.id),
+    queryFn: () => purchaseOrdersApi.get(po.id),
+    enabled: open,
+  });
+
+  return (
+    <PressableScale onPress={() => setOpen((o) => !o)}>
+      <Card>
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <View style={{ flex: 1 }}>
+            <AppText variant="h3">{po.poNumber ?? 'PO'}</AppText>
+            <AppText variant="caption" tone="muted">
+              {po.customerName ?? '—'} · {po.itemCount} item code{po.itemCount === 1 ? '' : 's'}
+            </AppText>
+          </View>
+          <View style={{ alignItems: 'flex-end' }}>
+            <AppText
+              variant="caption"
+              weight="700"
+              style={{ color: archived ? colors.textMuted : colors.status.progress.fg }}
+            >
+              {archived ? 'Assembly complete' : `${po.activeItems} in assembly`}
+            </AppText>
+            <AppText style={{ color: colors.textMuted, fontSize: 18 }}>{open ? '▾' : '▸'}</AppText>
+          </View>
+        </View>
+
+        {open ? (
+          <View style={{ marginTop: spacing(3), gap: spacing(2) }}>
+            {detail.isLoading ? (
+              <AppText tone="muted" variant="caption">Loading item codes…</AppText>
+            ) : (
+              (detail.data?.jobs ?? []).map((job) => {
+                const done = job.assemblyStatus === 'Completed';
+                const parts = job.moulds ?? [];
+                return (
+                  <View
+                    key={job.id}
+                    style={{ backgroundColor: colors.surfaceAlt, borderRadius: radius.md, padding: spacing(3) }}
+                  >
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <View style={{ flex: 1 }}>
+                        <AppText weight="700" style={{ fontSize: 15 }}>{job.itemCode ?? '—'}</AppText>
+                        <AppText variant="caption" tone="muted">
+                          {job.productName} · {job.orderQuantity} sets
+                        </AppText>
+                      </View>
+                      <AppText
+                        variant="caption"
+                        weight="700"
+                        style={{ color: done ? colors.status.success.fg : colors.status.progress.fg }}
+                      >
+                        {done ? '✓ Done' : 'In assembly'}
+                      </AppText>
+                    </View>
+
+                    {/* Component parts belonging to this Item Code (from its moulds). */}
+                    {parts.length > 0 ? (
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2), marginTop: spacing(2) }}>
+                        {parts.map((m) => (
+                          <View
+                            key={m.moldName}
+                            style={{
+                              backgroundColor: colors.surface,
+                              borderRadius: radius.sm,
+                              borderWidth: 1,
+                              borderColor: colors.border,
+                              paddingHorizontal: spacing(2),
+                              paddingVertical: spacing(1),
+                            }}
+                          >
+                            <AppText variant="caption" weight="700" tone="muted">
+                              {m.partName}
+                            </AppText>
+                          </View>
+                        ))}
+                      </View>
+                    ) : (
+                      <AppText variant="caption" tone="muted" style={{ marginTop: spacing(1) }}>
+                        No components set up yet
+                      </AppText>
+                    )}
+                  </View>
+                );
+              })
+            )}
+          </View>
+        ) : null}
+      </Card>
+    </PressableScale>
+  );
+}
+
+// ---- Assembly dashboard: Active / Archived Purchase Orders (mirror of Moulding) ----
+function AssemblyDashboard({ userName }: { userName: string }) {
+  const { spacing } = useTheme();
+  const query = useQuery({
+    queryKey: queryKeys.assemblyPoDashboard,
+    queryFn: () => assemblyApi.poDashboard(),
+  });
+
+  return (
+    <Screen
+      scroll
+      refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}
+    >
+      <AppText variant="h2" style={{ marginBottom: spacing(1) }}>
+        Assembly
+      </AppText>
+      <AppText tone="muted" style={{ marginBottom: spacing(4) }}>
+        Welcome back, {userName}
+      </AppText>
+
+      <View style={{ marginBottom: spacing(4) }}>
+        <QCIssuesCard department="assembly" />
+      </View>
+
+      <QueryBoundary
+        isLoading={query.isLoading}
+        isError={query.isError}
+        error={query.error}
+        data={query.data}
+        onRetry={query.refetch}
+      >
+        {(d) => (
+          <View>
+            <AppText variant="h3" style={{ marginBottom: spacing(2) }}>Active POs</AppText>
+            {d.active.length === 0 ? (
+              <AppText tone="muted" style={{ marginBottom: spacing(4) }}>
+                No purchase orders in assembly. POs appear here once moulding produces components.
+              </AppText>
+            ) : (
+              <View style={{ gap: spacing(3), marginBottom: spacing(5) }}>
+                {d.active.map((po) => (
+                  <AssemblyPOCard key={po.id} po={po} />
+                ))}
+              </View>
+            )}
+
+            {d.archived.length > 0 ? (
+              <>
+                <AppText variant="h3" style={{ marginBottom: spacing(2) }}>Archived POs</AppText>
+                <View style={{ gap: spacing(3) }}>
+                  {d.archived.map((po) => (
+                    <AssemblyPOCard key={po.id} po={po} archived />
                   ))}
                 </View>
               </>
