@@ -5,7 +5,6 @@ import { RefreshControl, View } from 'react-native';
 import { adminApi } from '@/api/endpoints/admin';
 import { queryKeys } from '@/api/queryKeys';
 import type {
-  AdminAssemblyRecord,
   AdminDispatchRecord,
   AdminMouldingRecord,
   AdminQCRecord,
@@ -13,9 +12,10 @@ import type {
 } from '@/api/types';
 import { AppText, Card, QueryBoundary, Screen, Select, type SelectOption } from '@/components';
 import { MouldingRecordsList } from '@/features/moulding/MouldingRecordsList';
+import { AssemblyRecordsList, type AssemblyListRecord } from '@/features/assembly/AssemblyRecordsList';
 import { usePOItemCode } from '@/screens/engineer/usePOItemCode';
 import { useTheme } from '@/theme/ThemeProvider';
-import { AssemblyCard, DispatchCard, QCCard } from './FactoryMonitorScreen';
+import { DispatchCard, QCCard } from './FactoryMonitorScreen';
 
 // Admin records — the SAME Customer → Purchase Order → Item Code cascade and record UI that
 // the department engineers use, with a department selector on top. Moulding renders the exact
@@ -56,17 +56,47 @@ function AdminMouldingRecords({ orderId, itemCodeFor }: { orderId: string; itemC
   );
 }
 
-// Assembly / QC / Dispatch — the admin record cards, scoped to the selected item code.
-function AdminFlatRecords({ orderId, dept }: { orderId: string; dept: Exclude<Dept, 'moulding' | 'store'> }) {
+// Assembly view — identical grouped Shift → Line list as the engineer's Assembly Records
+// page (read-only), so admin sees the SAME layout as moulding (item codes, not FFT order ids).
+function AdminAssemblyRecords({
+  orderId,
+  itemCodeFor,
+  partNameFor,
+}: {
+  orderId: string;
+  itemCodeFor: (id?: string | null) => string;
+  partNameFor: (id?: string | null) => string | null;
+}) {
+  const params = { orderId, limit: 200 };
+  const query = useQuery({
+    queryKey: queryKeys.admin.records.assembly(params),
+    queryFn: () => adminApi.assemblyRecords(params),
+  });
+  return (
+    <QueryBoundary
+      isLoading={query.isLoading}
+      isError={query.isError}
+      error={query.error}
+      data={query.data}
+      onRetry={query.refetch}
+    >
+      {(d) => (
+        <AssemblyRecordsList
+          records={d.data as AssemblyListRecord[]}
+          itemCodeFor={itemCodeFor}
+          partNameFor={partNameFor}
+        />
+      )}
+    </QueryBoundary>
+  );
+}
+
+// QC / Dispatch — the admin record cards, scoped to the selected item code.
+function AdminFlatRecords({ orderId, dept }: { orderId: string; dept: 'qc' | 'dispatch' }) {
   const params = { orderId, limit: 100 };
-  const query = useQuery<Paginated<AdminAssemblyRecord | AdminQCRecord | AdminDispatchRecord>>({
+  const query = useQuery<Paginated<AdminQCRecord | AdminDispatchRecord>>({
     queryKey: queryKeys.admin.records[dept](params),
-    queryFn: () =>
-      dept === 'assembly'
-        ? adminApi.assemblyRecords(params)
-        : dept === 'qc'
-          ? adminApi.qcRecords(params)
-          : adminApi.dispatchRecords(params),
+    queryFn: () => (dept === 'qc' ? adminApi.qcRecords(params) : adminApi.dispatchRecords(params)),
   });
   return (
     <QueryBoundary
@@ -81,7 +111,6 @@ function AdminFlatRecords({ orderId, dept }: { orderId: string; dept: Exclude<De
           <AppText tone="muted">No {dept} records for this item code.</AppText>
         ) : (
           <View>
-            {dept === 'assembly' && (d.data as AdminAssemblyRecord[]).map((r) => <AssemblyCard key={r.id} r={r} />)}
             {dept === 'qc' && (d.data as AdminQCRecord[]).map((r) => <QCCard key={r.id} r={r} />)}
             {dept === 'dispatch' && (d.data as AdminDispatchRecord[]).map((r) => <DispatchCard key={r.id} r={r} />)}
           </View>
@@ -94,11 +123,17 @@ function AdminFlatRecords({ orderId, dept }: { orderId: string; dept: Exclude<De
 export function AdminRecordsScreen() {
   const { spacing } = useTheme();
   const [dept, setDept] = useState<Dept>('moulding');
-  const cp = usePOItemCode();
+  // Keep completed/archived POs selectable — records must stay viewable after moulding and
+  // assembly finish (a PO archives on production completion).
+  const cp = usePOItemCode({ includeArchivedPOs: true });
   const { customerId, jobId } = cp;
 
   const itemCodeFor = (id?: string | null) =>
     cp.jobList.find((o) => o.id === id)?.itemCode ?? cp.itemCode ?? 'Item';
+  const partNameFor = (id?: string | null) => {
+    const job = cp.jobList.find((o) => o.id === id);
+    return job?.partName ?? job?.productName ?? null;
+  };
 
   const ready = !!jobId;
 
@@ -150,6 +185,8 @@ export function AdminRecordsScreen() {
             <AppText tone="muted">Select a customer, purchase order and item code to view records.</AppText>
           ) : dept === 'moulding' ? (
             <AdminMouldingRecords orderId={jobId!} itemCodeFor={itemCodeFor} />
+          ) : dept === 'assembly' ? (
+            <AdminAssemblyRecords orderId={jobId!} itemCodeFor={itemCodeFor} partNameFor={partNameFor} />
           ) : (
             <AdminFlatRecords orderId={jobId!} dept={dept} />
           )}

@@ -49,6 +49,8 @@ export const queryKeys = {
     progress: (id: string) => ['customer', 'order', id, 'progress'] as const,
     products: ['customer', 'products'] as const,
     productOrders: (productId: string) => ['customer', 'product', productId, 'orders'] as const,
+    purchaseOrders: ['customer', 'purchase-orders'] as const,
+    purchaseOrder: (id: string) => ['customer', 'purchase-order', id] as const,
     orderDashboard: (id: string) => ['customer', 'order', id, 'dashboard'] as const,
   },
 

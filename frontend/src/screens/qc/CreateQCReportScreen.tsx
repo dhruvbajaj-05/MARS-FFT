@@ -192,30 +192,33 @@ export function CreateQCReportScreen() {
         <Row label="Date" value={new Date().toLocaleDateString('en-IN')} last />
       </Card>
 
-      {/* Where — machine + mould from dropdowns (select, don't type) */}
-      <Card style={{ marginBottom: spacing(4) }}>
-        <AppText variant="h3" style={{ marginBottom: spacing(3) }}>
-          Where
-        </AppText>
-        <Select
-          label="Machine"
-          value={machine || null}
-          options={machineOptions}
-          onChange={(v) => setMachine(v)}
-          placeholder="Select a machine"
-          emptyHint="Ask admin to add machines"
-        />
-        <Select
-          label="Mould"
-          value={mould || null}
-          options={moldOptions}
-          onChange={selectMould}
-          placeholder="Select a mould"
-          emptyHint="No moulds set up for this item code yet"
-        />
-        {/* Part auto-fills from the selected mould but stays editable. */}
-        <FormField label="Part" value={part} onChangeText={setPart} placeholder="Auto-filled from mould" />
-      </Card>
+      {/* Where — machine + mould from dropdowns (select, don't type). Moulding only: an
+          assembly defect isn't tied to a machine/mould, so Assembly QC skips this entirely. */}
+      {department !== 'assembly' ? (
+        <Card style={{ marginBottom: spacing(4) }}>
+          <AppText variant="h3" style={{ marginBottom: spacing(3) }}>
+            Where
+          </AppText>
+          <Select
+            label="Machine"
+            value={machine || null}
+            options={machineOptions}
+            onChange={(v) => setMachine(v)}
+            placeholder="Select a machine"
+            emptyHint="Ask admin to add machines"
+          />
+          <Select
+            label="Mould"
+            value={mould || null}
+            options={moldOptions}
+            onChange={selectMould}
+            placeholder="Select a mould"
+            emptyHint="No moulds set up for this item code yet"
+          />
+          {/* Part auto-fills from the selected mould but stays editable. */}
+          <FormField label="Part" value={part} onChangeText={setPart} placeholder="Auto-filled from mould" />
+        </Card>
+      ) : null}
 
       {/* Photos */}
       <Card style={{ marginBottom: spacing(4) }}>

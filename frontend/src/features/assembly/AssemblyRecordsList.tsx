@@ -20,39 +20,49 @@ export interface AssemblyListRecord {
   assembledSets: number;
   extraSets?: number;
   rejectedQuantity: number;
-  consumption: { partName: string; perSet: number; quantity: number; kind?: 'moulded' | 'outsourced' }[];
-  remarks: string | null;
+  // Optional so the admin read-only record shape (which omits these) can render the SAME list.
+  consumption?: { partName: string; perSet: number; quantity: number; kind?: 'moulded' | 'outsourced' }[];
+  remarks?: string | null;
   createdAt: string;
   canEdit?: boolean;
 }
 
-type LineGroup = {
-  line: string;
+type ItemGroup = {
+  key: string;
+  heading: string;
   totalSets: number;
   totalRejected: number;
   records: AssemblyListRecord[];
 };
-type ShiftGroup = { shift: string; lines: LineGroup[] };
+type ShiftGroup = { shift: string; items: ItemGroup[] };
 
 // Total produced sets on a record = order sets + any over-assembly extra sets.
 const producedSets = (r: AssemblyListRecord) => (r.assembledSets ?? 0) + (r.extraSets ?? 0);
 
-// Group Shift → Assembly Line → entries (mirrors the moulding Shift → Cavity grouping).
-function groupAssemblyRecords(records: AssemblyListRecord[]): ShiftGroup[] {
-  const shifts: Record<string, Record<string, LineGroup>> = {};
+// Group Shift → Item Code (+ part name) → entries. Mirrors the moulding Shift → Cavity
+// grouping, but an assembly entry builds a whole SET (many parts) rather than one moulded
+// part, so the group heads on the item code being assembled; the assembly line moves to a
+// per-entry detail below.
+function groupAssemblyRecords(
+  records: AssemblyListRecord[],
+  headingFor: (orderId?: string | null) => string
+): ShiftGroup[] {
+  const shifts: Record<string, Record<string, ItemGroup>> = {};
   for (const r of records) {
     const s = r.shift ?? '?';
-    const line = r.assemblyLine || '—';
+    const key = r.orderId ?? 'none';
     if (!shifts[s]) shifts[s] = {};
-    if (!shifts[s][line]) shifts[s][line] = { line, totalSets: 0, totalRejected: 0, records: [] };
-    const g = shifts[s][line];
+    if (!shifts[s][key]) {
+      shifts[s][key] = { key, heading: headingFor(r.orderId), totalSets: 0, totalRejected: 0, records: [] };
+    }
+    const g = shifts[s][key];
     g.totalSets += producedSets(r);
     g.totalRejected += r.rejectedQuantity ?? 0;
     g.records.push(r);
   }
   return Object.entries(shifts)
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([shift, lines]) => ({ shift, lines: Object.values(lines).sort((a, b) => a.line.localeCompare(b.line)) }));
+    .map(([shift, items]) => ({ shift, items: Object.values(items).sort((a, b) => a.heading.localeCompare(b.heading)) }));
 }
 
 // Returns "Xh Ym" remaining in the 12h edit window, or null if expired.
@@ -130,16 +140,27 @@ function AssemblyEditPanel({
 export function AssemblyRecordsList({
   records,
   itemCodeFor,
+  partNameFor,
   editable = false,
   onChanged,
 }: {
   records: AssemblyListRecord[];
   itemCodeFor: (orderId?: string | null) => string;
+  // Resolves an entry's product/part name so the group heads on "Item Code — Part Name"
+  // (like moulding). Optional: without it the heading is just the item code.
+  partNameFor?: (orderId?: string | null) => string | null;
   editable?: boolean;
   onChanged?: () => void;
 }) {
   const { spacing, colors } = useTheme();
   const qc = useQueryClient();
+
+  // "TC-100 — Toy Car Set" style heading for each item-code group.
+  const headingFor = (orderId?: string | null) => {
+    const itemCode = itemCodeFor(orderId);
+    const partName = partNameFor?.(orderId);
+    return partName ? `${itemCode} — ${partName}` : itemCode;
+  };
 
   const [expandedShift, setExpandedShift] = useState<string | null>(null);
   const [expandedLine, setExpandedLine] = useState<string | null>(null);
@@ -168,13 +189,13 @@ export function AssemblyRecordsList({
     return <AppText tone="muted">No assembly records for this selection.</AppText>;
   }
 
-  const groups = groupAssemblyRecords(records);
+  const groups = groupAssemblyRecords(records, headingFor);
   return (
     <View style={{ gap: spacing(3) }}>
       {groups.map((sg) => {
         const shiftKey = sg.shift;
         const isShiftOpen = expandedShift === shiftKey;
-        const shiftTotal = sg.lines.reduce((s, l) => s + l.totalSets, 0);
+        const shiftTotal = sg.items.reduce((s, l) => s + l.totalSets, 0);
         return (
           <Card key={shiftKey}>
             <Pressable
@@ -185,14 +206,14 @@ export function AssemblyRecordsList({
               <View>
                 <AppText variant="h3">Shift {SHIFT_LABEL(sg.shift)}</AppText>
                 <AppText variant="caption" tone="muted">
-                  {sg.lines.length} line{sg.lines.length !== 1 ? 's' : ''} · {shiftTotal.toLocaleString()} sets
+                  {sg.items.length} item code{sg.items.length !== 1 ? 's' : ''} · {shiftTotal.toLocaleString()} sets
                 </AppText>
               </View>
               <AppText style={{ fontSize: 22, color: colors.textMuted }}>{isShiftOpen ? '▾' : '▸'}</AppText>
             </Pressable>
 
-            {isShiftOpen && sg.lines.map((lg) => {
-              const lineKey = `${shiftKey}|${lg.line}`;
+            {isShiftOpen && sg.items.map((ig) => {
+              const lineKey = `${shiftKey}|${ig.key}`;
               const isLineOpen = expandedLine === lineKey;
               return (
                 <View
@@ -205,15 +226,15 @@ export function AssemblyRecordsList({
                     hitSlop={{ top: 4, bottom: 4 }}
                   >
                     <View style={{ flex: 1 }}>
-                      <AppText weight="700" style={{ fontSize: 15 }}>{lg.line}</AppText>
+                      <AppText weight="700" style={{ fontSize: 15 }}>{ig.heading}</AppText>
                       <AppText variant="caption" weight="600" style={{ color: colors.status.success.fg, marginTop: 2 }}>
-                        {lg.totalSets.toLocaleString()} sets
-                        {lg.totalRejected > 0 ? ` · ${lg.totalRejected.toLocaleString()} rej` : ''}
+                        {ig.totalSets.toLocaleString()} sets
+                        {ig.totalRejected > 0 ? ` · ${ig.totalRejected.toLocaleString()} rej` : ''}
                       </AppText>
                     </View>
                     <View style={{ alignItems: 'center', paddingLeft: spacing(2) }}>
                       <AppText variant="caption" tone="muted">
-                        {lg.records.length} {lg.records.length === 1 ? 'entry' : 'entries'}
+                        {ig.records.length} {ig.records.length === 1 ? 'entry' : 'entries'}
                       </AppText>
                       <AppText variant="caption" style={{ color: colors.primary, marginTop: 1 }}>
                         {isLineOpen ? 'hide' : editable ? 'edit / delete' : 'view'}
@@ -222,7 +243,7 @@ export function AssemblyRecordsList({
                     </View>
                   </Pressable>
 
-                  {isLineOpen && lg.records.map((r) => {
+                  {isLineOpen && ig.records.map((r) => {
                     const isEditing = editingRecordId === r.id;
                     const timeLeft = editTimeRemaining(r.createdAt);
                     const canModify = editable && !!timeLeft && r.canEdit !== false;
@@ -245,12 +266,17 @@ export function AssemblyRecordsList({
                             ) : null}
                           </AppText>
                           <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
-                            {r.operatorCount ? `${r.operatorCount} workers · ` : ''}
-                            {new Date(r.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} · {itemCodeFor(r.orderId)}
+                            {[
+                              r.operatorCount ? `${r.operatorCount} workers` : null,
+                              new Date(r.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                              r.assemblyLine && r.assemblyLine !== '—' ? r.assemblyLine : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
                           </AppText>
-                          {r.consumption.length > 0 ? (
+                          {(r.consumption?.length ?? 0) > 0 ? (
                             <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
-                              Consumed: {r.consumption.map((c) => `${c.quantity} ${c.partName}`).join(' · ')}
+                              Consumed: {(r.consumption ?? []).map((c) => `${c.quantity} ${c.partName}`).join(' · ')}
                             </AppText>
                           ) : null}
                           {r.remarks ? (

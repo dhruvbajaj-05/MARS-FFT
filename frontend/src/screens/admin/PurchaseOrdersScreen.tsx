@@ -40,6 +40,7 @@ export function PurchaseOrdersScreen() {
 
   // ---- Create form ----
   const [customerId, setCustomerId] = useState<string | null>(null);
+  const [poNumber, setPoNumber] = useState('');
   const [lines, setLines] = useState<Line[]>([{ productId: null, quantity: '' }]);
   const [notes, setNotes] = useState('');
   const [ok, setOk] = useState<string | null>(null);
@@ -73,6 +74,7 @@ export function PurchaseOrdersScreen() {
     mutationFn: () =>
       purchaseOrdersApi.create({
         customerId: customerId!,
+        poNumber: poNumber.trim() || undefined,
         notes: notes.trim() || undefined,
         lines: lines
           .filter((l) => l.productId && Number(l.quantity) > 0)
@@ -80,6 +82,7 @@ export function PurchaseOrdersScreen() {
       }),
     onSuccess: (res) => {
       setOk(`${res.purchaseOrder.poNumber} created with ${res.jobs.length} item code${res.jobs.length === 1 ? '' : 's'}.`);
+      setPoNumber('');
       setLines([{ productId: null, quantity: '' }]);
       setNotes('');
       qc.invalidateQueries({ queryKey: ['purchase-orders'] });
@@ -102,7 +105,7 @@ export function PurchaseOrdersScreen() {
   const removeLine = (i: number) => setLines((ls) => (ls.length === 1 ? ls : ls.filter((_, idx) => idx !== i)));
 
   const validLines = lines.filter((l) => l.productId && Number(l.quantity) > 0);
-  const canCreate = !!customerId && validLines.length > 0;
+  const canCreate = !!customerId && !!poNumber.trim() && validLines.length > 0;
 
   const statusColor = (s: string) =>
     s === 'Completed' ? colors.status.success.fg : s === 'Archived' ? colors.textMuted : colors.status.info.fg;
@@ -130,6 +133,16 @@ export function PurchaseOrdersScreen() {
           }}
           emptyHint="Create a customer first"
         />
+
+        <FormField
+          label="PO name / number"
+          value={poNumber}
+          onChangeText={setPoNumber}
+          placeholder="e.g. PO/2026/ACME/07"
+        />
+        <AppText variant="caption" tone="muted" style={{ marginTop: -spacing(1), marginBottom: spacing(2) }}>
+          Shown everywhere this PO appears. Must be unique.
+        </AppText>
 
         <AppText variant="caption" tone="muted" style={{ marginTop: spacing(2), marginBottom: spacing(1) }}>
           Item codes in this PO

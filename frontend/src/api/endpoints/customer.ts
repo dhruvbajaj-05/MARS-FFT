@@ -6,6 +6,8 @@ import type {
   CustomerOrderDetails,
   CustomerOrderProgress,
   CustomerOrderRow,
+  CustomerPODetail,
+  CustomerPOsResponse,
   CustomerProductOrders,
   CustomerProductsResponse,
   Paginated,
@@ -25,6 +27,13 @@ export const customerApi = {
     apiClient.get<CustomerProductsResponse>('/customer/products').then((r) => r.data),
   productOrders: (productId: string) =>
     apiClient.get<CustomerProductOrders>(`/customer/products/${productId}/orders`).then((r) => r.data),
+
+  // PO-first portal (Home → Purchase Order → Item Code dashboard).
+  purchaseOrders: () =>
+    apiClient.get<CustomerPOsResponse>('/customer/purchase-orders').then((r) => r.data),
+  purchaseOrder: (id: string) =>
+    apiClient.get<CustomerPODetail>(`/customer/purchase-orders/${id}`).then((r) => r.data),
+
   orderDashboard: (id: string) =>
     apiClient.get<CustomerOrderDashboard>(`/customer/orders/${id}/dashboard`).then((r) => r.data),
 

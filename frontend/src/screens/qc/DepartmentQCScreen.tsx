@@ -103,6 +103,7 @@ function POCard({
                           orderId: job.id,
                           customerId: job.customerId ?? po.customerId,
                           productId: job.productId ?? undefined,
+                          purchaseOrderId: po.id,
                         })
                       }
                       style={{ flex: 1 }}

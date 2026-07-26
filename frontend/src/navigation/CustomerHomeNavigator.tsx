@@ -2,14 +2,15 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import React from 'react';
 
 import { CustomerHomeScreen } from '@/screens/customer/CustomerHomeScreen';
-import { CustomerProductScreen } from '@/screens/customer/CustomerProductScreen';
+import { CustomerPOScreen } from '@/screens/customer/CustomerPOScreen';
 import { CustomerOrderScreen } from '@/screens/customer/CustomerOrderScreen';
 import { useTheme } from '@/theme/ThemeProvider';
 
-// Drill-down stack for the customer portal: Products → Product → Order dashboard.
+// Drill-down stack for the customer portal (view-only): Purchase Orders → PO → Item Code
+// dashboard (moulding / assembly / QC / dispatch).
 export type CustomerStackParamList = {
   CustomerHome: undefined;
-  CustomerProduct: { productId: string; productName: string };
+  CustomerPO: { purchaseOrderId: string; poNumber: string };
   CustomerOrder: { orderId: string; orderCode: string };
 };
 
@@ -29,9 +30,9 @@ export function CustomerHomeNavigator() {
     >
       <Stack.Screen name="CustomerHome" component={CustomerHomeScreen} options={{ headerShown: false }} />
       <Stack.Screen
-        name="CustomerProduct"
-        component={CustomerProductScreen}
-        options={({ route }) => ({ title: route.params.productName, headerBackTitle: 'Home' })}
+        name="CustomerPO"
+        component={CustomerPOScreen}
+        options={({ route }) => ({ title: route.params.poNumber, headerBackTitle: 'Home' })}
       />
       <Stack.Screen
         name="CustomerOrder"

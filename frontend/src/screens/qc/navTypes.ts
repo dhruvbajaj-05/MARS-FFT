@@ -8,7 +8,7 @@ export type QCStackParamList = {
   DepartmentQC: undefined;
   // customerId/productId are passed so the create form never depends on the async
   // order-context query to build its required fields.
-  CreateQCReport: { department: QCDepartment; orderId: string; customerId?: string; productId?: string };
+  CreateQCReport: { department: QCDepartment; orderId: string; customerId?: string; productId?: string; purchaseOrderId?: string };
   QCReportsList: { department: QCDepartment; orderId?: string; title?: string; search?: string };
   QCReportDetail: { reportId: string };
   QCImageGallery: { department: QCDepartment; orderId: string };

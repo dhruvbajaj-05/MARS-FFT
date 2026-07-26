@@ -1,65 +1,34 @@
 import { useNavigation } from '@react-navigation/native';
-import { Image } from 'expo-image';
 import { useQuery } from '@tanstack/react-query';
 import React, { useState } from 'react';
-import { RefreshControl, StyleSheet, TextInput, View } from 'react-native';
+import { RefreshControl, View } from 'react-native';
 
-import { qcReportsApi, type QCListParams } from '@/api/endpoints/qcReports';
+import { qcReportsApi } from '@/api/endpoints/qcReports';
 import { queryKeys } from '@/api/queryKeys';
-import type { QCDepartment, QCReport, QCStatusValue } from '@/api/types';
-import { AppText, PressableScale, QueryBoundary, Screen, Select, StatusPill, type SelectOption } from '@/components';
-import { SEVERITY_META, STATUS_META, STATUS_ORDER, formatDateTime } from '@/components/qc';
-import { useCustomerProduct } from '@/screens/engineer/useCustomerProduct';
+import type { QCDepartment } from '@/api/types';
+import { AppText, Card, PressableScale, Screen } from '@/components';
 import { useTheme } from '@/theme/ThemeProvider';
-import { resolveMediaUrl } from '@/utils/mediaUrl';
 
-type DateWindow = 'all' | '7' | '30';
-const DEPARTMENTS: { value: QCDepartment | 'all'; label: string }[] = [
-  { value: 'all', label: 'All depts' },
-  { value: 'moulding', label: 'Moulding' },
-  { value: 'assembly', label: 'Assembly' },
-];
+type Mode = 'active' | 'archived';
 
-function dateFromFor(window: DateWindow): string | undefined {
-  if (window === 'all') return undefined;
-  const d = new Date();
-  d.setDate(d.getDate() - Number(window));
-  return d.toISOString();
-}
+const DEPT_LABEL: Record<QCDepartment, string> = { moulding: 'Moulding', assembly: 'Assembly' };
 
-// Admin QC browser (req #6): view EVERY uploaded QC defect report without entering the
-// Moulding module, filterable by Company / Product / Order / Engineer / Machine / Date /
-// Status. Engineer + Machine are covered by the free-text search (both are indexed on it).
+// Admin QC browser (req #6), PO-first. Two toggles mirror the engineer QC tabs so archives
+// stay per-department: "Done QC for this PO" in Moulding archives ONLY the Moulding side (and
+// likewise Assembly) — the admin sees each department's Active + Archive independently.
 export function AdminQCScreen() {
-  const { colors, spacing, radius } = useTheme();
+  const { colors, spacing } = useTheme();
   const navigation = useNavigation<any>();
-  const cp = useCustomerProduct();
 
-  const [search, setSearch] = useState('');
-  const [department, setDepartment] = useState<QCDepartment | 'all'>('all');
-  const [status, setStatus] = useState<QCStatusValue | null>(null);
-  const [dateWindow, setDateWindow] = useState<DateWindow>('all');
+  const [department, setDepartment] = useState<QCDepartment>('moulding');
+  const [mode, setMode] = useState<Mode>('active');
 
-  const params: QCListParams = {
-    department: department === 'all' ? undefined : department,
-    customerId: cp.customerId ?? undefined,
-    productId: cp.productId ?? undefined,
-    orderId: cp.orderId ?? undefined,
-    status: status ?? undefined,
-    search: search.trim() || undefined,
-    dateFrom: dateFromFor(dateWindow),
-    limit: 100,
-  };
   const query = useQuery({
-    queryKey: queryKeys.qc.reports({ admin: true, ...params }),
-    queryFn: () => qcReportsApi.list(params),
+    queryKey: mode === 'active' ? queryKeys.qc.activePOs(department) : queryKeys.qc.archivedPOs(department),
+    queryFn: () => (mode === 'active' ? qcReportsApi.activePOs(department) : qcReportsApi.archivedPOs(department)),
   });
-
-  // Item Code options (product = item code, 1:1) so the browser filters by item code, not name.
-  const itemCodeOptions: SelectOption[] = (cp.products.data?.data ?? []).map((p) => ({
-    label: p.itemCode ? `${p.itemCode} · ${p.name}` : p.name,
-    value: p.id,
-  }));
+  const pos = query.data ?? [];
+  const isArchived = mode === 'archived';
 
   return (
     <Screen
@@ -70,187 +39,101 @@ export function AdminQCScreen() {
       <AppText variant="h1" style={{ marginBottom: spacing(1) }}>
         Quality Control
       </AppText>
-      <AppText tone="muted" style={{ marginBottom: spacing(4) }}>
-        Every defect report across the factory.
+      <AppText tone="muted" style={{ marginBottom: spacing(3) }}>
+        Browse defect reports by Purchase Order. Moulding and Assembly archive separately.
       </AppText>
 
-      {/* Search (matches engineer, machine, mould, defect, description) */}
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          backgroundColor: colors.surface,
-          borderColor: colors.border,
-          borderWidth: StyleSheet.hairlineWidth,
-          borderRadius: radius.pill,
-          paddingHorizontal: spacing(4),
-          marginBottom: spacing(3),
-        }}
-      >
-        <AppText style={{ fontSize: 16 }}>🔎</AppText>
-        <TextInput
-          style={{ flex: 1, color: colors.text, paddingVertical: spacing(3), paddingHorizontal: spacing(2) }}
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Engineer, machine, mould, defect…"
-          placeholderTextColor={colors.textMuted}
-        />
-      </View>
+      {/* Moulding QC / Assembly QC */}
+      <Toggle
+        options={(['moulding', 'assembly'] as QCDepartment[]).map((d) => ({ key: d, label: `${DEPT_LABEL[d]} QC` }))}
+        value={department}
+        onChange={(v) => setDepartment(v as QCDepartment)}
+      />
+      {/* Active / Archive */}
+      <Toggle
+        options={[
+          { key: 'active', label: 'Active QC' },
+          { key: 'archived', label: 'QC Archive' },
+        ]}
+        value={mode}
+        onChange={(v) => setMode(v as Mode)}
+      />
 
-      {/* Company → Item Code → Job filters */}
-      <View style={{ marginBottom: spacing(2) }}>
-        <Select
-          label="Company"
-          value={cp.customerId}
-          options={[{ label: 'All companies', value: '' }, ...cp.customerOptions]}
-          onChange={(v) => (v ? cp.selectCustomer(v) : cp.selectCustomer(''))}
-        />
-        {cp.customerId ? (
-          <Select
-            label="Item Code"
-            value={cp.productId}
-            options={[{ label: 'All item codes', value: '' }, ...itemCodeOptions]}
-            onChange={(v) => (v ? cp.selectProduct(v) : cp.selectProduct(''))}
-          />
-        ) : null}
-        {cp.productId ? (
-          <Select
-            label="Job (Order ID)"
-            value={cp.orderId}
-            options={[{ label: 'All jobs', value: '' }, ...cp.orderOptions]}
-            onChange={(v) => cp.setOrderId(v || null)}
-          />
-        ) : null}
-      </View>
+      <View style={{ height: spacing(2) }} />
 
-      {/* Department + Date + Status chips */}
-      <ChipRow>
-        {DEPARTMENTS.map((d) => (
-          <Chip key={d.value} label={d.label} active={department === d.value} onPress={() => setDepartment(d.value)} />
-        ))}
-      </ChipRow>
-      <ChipRow>
-        <Chip label="All time" active={dateWindow === 'all'} onPress={() => setDateWindow('all')} />
-        <Chip label="Last 7 days" active={dateWindow === '7'} onPress={() => setDateWindow('7')} />
-        <Chip label="Last 30 days" active={dateWindow === '30'} onPress={() => setDateWindow('30')} />
-      </ChipRow>
-      <ChipRow>
-        <Chip label="All status" active={status === null} onPress={() => setStatus(null)} />
-        {STATUS_ORDER.map((s) => (
-          <Chip key={s} label={STATUS_META[s].label} active={status === s} onPress={() => setStatus(s)} />
-        ))}
-      </ChipRow>
-
-      <View style={{ height: spacing(3) }} />
-
-      <QueryBoundary
-        isLoading={query.isLoading}
-        isError={query.isError}
-        error={query.error}
-        data={query.data}
-        onRetry={query.refetch}
-        isEmpty={(d) => d.data.length === 0}
-        emptyTitle="No reports found"
-        emptyMessage="Adjust the filters above."
-      >
-        {(d) => (
-          <View style={{ gap: spacing(3) }}>
-            <AppText variant="caption" tone="muted">
-              {d.pagination.total} report{d.pagination.total === 1 ? '' : 's'}
-            </AppText>
-            {d.data.map((r) => (
-              <AdminReportCard
-                key={r.id}
-                report={r}
-                onPress={() => navigation.navigate('QCReportDetail', { reportId: r.id })}
-              />
-            ))}
-          </View>
-        )}
-      </QueryBoundary>
+      {query.isLoading ? (
+        <AppText tone="muted">Loading…</AppText>
+      ) : pos.length === 0 ? (
+        <Card>
+          <AppText style={{ fontSize: 32, marginBottom: spacing(2) }}>{isArchived ? '📁' : '🔍'}</AppText>
+          <AppText weight="600" style={{ marginBottom: spacing(1) }}>
+            {isArchived ? `No archived ${DEPT_LABEL[department]} POs` : `No POs in ${DEPT_LABEL[department]} QC`}
+          </AppText>
+          <AppText tone="muted">
+            {isArchived
+              ? `POs appear here after "Done with ${DEPT_LABEL[department]} QC for this PO". Reports stay viewable.`
+              : `Purchase orders with ${DEPT_LABEL[department].toLowerCase()} activity appear here.`}
+          </AppText>
+        </Card>
+      ) : (
+        <View style={{ gap: spacing(3) }}>
+          {pos.map((po) => (
+            <PressableScale
+              key={po.id}
+              onPress={() =>
+                navigation.navigate('AdminQCPO', {
+                  purchaseOrderId: po.id,
+                  poNumber: po.poNumber,
+                  customerName: po.customerName,
+                  department,
+                })
+              }
+            >
+              <Card>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <View style={{ flex: 1 }}>
+                    <AppText variant="h3">{po.poNumber ?? 'PO'}</AppText>
+                    <AppText variant="caption" tone="muted">
+                      {po.customerName ?? '—'} · {po.reportCount} report{po.reportCount === 1 ? '' : 's'}
+                      {po.openCount ? `  ·  ${po.openCount} open` : ''}
+                    </AppText>
+                  </View>
+                  <AppText style={{ color: colors.textMuted, fontSize: 18 }}>›</AppText>
+                </View>
+              </Card>
+            </PressableScale>
+          ))}
+        </View>
+      )}
     </Screen>
   );
 }
 
-function ChipRow({ children }: { children: React.ReactNode }) {
-  const { spacing } = useTheme();
+// A pill segmented control (matches the engineer QC tabs).
+function Toggle({
+  options,
+  value,
+  onChange,
+}: {
+  options: { key: string; label: string }[];
+  value: string;
+  onChange: (key: string) => void;
+}) {
+  const { colors, spacing, radius } = useTheme();
   return (
-    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2), marginBottom: spacing(2) }}>
-      {children}
-    </View>
-  );
-}
-
-function Chip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
-  const { colors, radius, spacing } = useTheme();
-  return (
-    <PressableScale onPress={onPress}>
-      <View
-        style={{
-          backgroundColor: active ? colors.primary : colors.surfaceAlt,
-          borderRadius: radius.pill,
-          paddingHorizontal: spacing(3),
-          paddingVertical: spacing(2),
-        }}
-      >
-        <AppText variant="caption" weight="700" style={{ color: active ? colors.primaryText : colors.textMuted }}>
-          {label}
-        </AppText>
-      </View>
-    </PressableScale>
-  );
-}
-
-function AdminReportCard({ report, onPress }: { report: QCReport; onPress: () => void }) {
-  const { colors, radius, spacing } = useTheme();
-  const sev = SEVERITY_META[report.severity];
-  const st = STATUS_META[report.status];
-  const thumb = report.photos[0]?.url ? resolveMediaUrl(report.photos[0].url) : undefined;
-
-  return (
-    <PressableScale onPress={onPress}>
-      <View
-        style={{
-          flexDirection: 'row',
-          backgroundColor: colors.surface,
-          borderRadius: radius.lg,
-          borderWidth: 1,
-          borderColor: colors.border,
-          overflow: 'hidden',
-        }}
-      >
-        <View style={{ width: 92, height: 92, backgroundColor: colors.surfaceAlt }}>
-          {thumb ? (
-            <Image source={{ uri: thumb }} style={{ width: '100%', height: '100%' }} contentFit="cover" />
-          ) : (
-            <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-              <AppText style={{ fontSize: 26 }}>📝</AppText>
+    <View style={{ flexDirection: 'row', backgroundColor: colors.surfaceAlt, borderRadius: radius.pill, padding: 4, marginBottom: spacing(3) }}>
+      {options.map((o) => {
+        const on = value === o.key;
+        return (
+          <PressableScale key={o.key} onPress={() => onChange(o.key)} style={{ flex: 1 }}>
+            <View style={{ backgroundColor: on ? colors.primary : 'transparent', borderRadius: radius.pill, paddingVertical: spacing(2), alignItems: 'center' }}>
+              <AppText weight="700" style={{ color: on ? colors.primaryText : colors.textMuted }}>
+                {o.label}
+              </AppText>
             </View>
-          )}
-        </View>
-        <View style={{ flex: 1, padding: spacing(3) }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <StatusPill label={sev.label} tone={sev.tone} />
-            <AppText variant="caption" weight="700" style={{ color: colors.status[st.tone].fg }}>
-              {st.label}
-            </AppText>
-          </View>
-          <AppText weight="600" numberOfLines={1} style={{ marginTop: spacing(1) }}>
-            {report.defects.length ? report.defects.join(', ') : 'Defect report'}
-          </AppText>
-          <AppText variant="caption" tone="muted" numberOfLines={1}>
-            {[report.customerName, report.itemCode ?? report.productName, report.orderCode].filter(Boolean).join(' · ') || '—'}
-          </AppText>
-          <AppText variant="caption" tone="muted" numberOfLines={1}>
-            {report.department === 'assembly' ? 'Assembly' : 'Moulding'} ·{' '}
-            {[report.machine, report.mould].filter(Boolean).join(' · ') || 'no machine'}
-          </AppText>
-          <AppText variant="caption" tone="muted" numberOfLines={1}>
-            {report.submittedByName ?? 'Engineer'} · {formatDateTime(report.createdAt)}
-            {report.photos.length ? `  · 📸 ${report.photos.length}` : ''}
-          </AppText>
-        </View>
-      </View>
-    </PressableScale>
+          </PressableScale>
+        );
+      })}
+    </View>
   );
 }

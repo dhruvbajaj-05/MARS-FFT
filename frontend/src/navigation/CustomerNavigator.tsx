@@ -8,9 +8,9 @@ import { useTabScreenOptions } from './tabOptions';
 
 const Tab = createBottomTabNavigator();
 
-// Customer portal shell — a product-first drill-down (Products → Product → Order
-// dashboard) plus Settings. Orders live inside their product, so there is no separate
-// flat Orders tab.
+// Customer portal shell — a PO-first drill-down (Purchase Orders → PO → Item Code
+// dashboard) plus Settings. Item codes live inside their PO, so there is no separate
+// flat Orders tab. Strictly view-only.
 export function CustomerNavigator() {
   const options = useTabScreenOptions();
   return (

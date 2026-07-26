@@ -1,5 +1,5 @@
 import { useRoute, type RouteProp } from '@react-navigation/native';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import React, { useState } from 'react';
 import {
@@ -10,7 +10,6 @@ import {
   Pressable,
   RefreshControl,
   ScrollView,
-  TextInput,
   UIManager,
   View,
 } from 'react-native';
@@ -20,7 +19,6 @@ import { queryKeys } from '@/api/queryKeys';
 import type { CustomerDefectReport, CustomerMoldRow, CustomerOrderDashboard, Media } from '@/api/types';
 import {
   AppText,
-  Button,
   ErrorState,
   GaugeBar,
   MetricRow,
@@ -36,6 +34,7 @@ import {
   shadow,
   statusTone,
 } from '@/components';
+import { SEVERITY_META } from '@/components/qc';
 import type { CustomerStackParamList } from '@/navigation/CustomerHomeNavigator';
 import { useTheme } from '@/theme/ThemeProvider';
 import { resolveMediaUrl } from '@/utils/mediaUrl';
@@ -202,34 +201,19 @@ function PhotoStrip({ photos }: { photos: Media[] }) {
 }
 
 // ---- Engineer defect reports (image-first QC reports, req #5) ----------------
-function DefectReportsSection({ orderId, reports }: { orderId: string; reports: CustomerDefectReport[] }) {
+function DefectReportsSection({ reports }: { reports: CustomerDefectReport[] }) {
   if (!reports || reports.length === 0) return null;
   return (
     <SectionCard icon="📸" title={`Defect Reports (${reports.length})`}>
       {reports.map((r) => (
-        <DefectReportCard key={r.id} orderId={orderId} report={r} />
+        <DefectReportCard key={r.id} report={r} />
       ))}
     </SectionCard>
   );
 }
 
-function DefectReportCard({ orderId, report: r }: { orderId: string; report: CustomerDefectReport }) {
+function DefectReportCard({ report: r }: { report: CustomerDefectReport }) {
   const { colors, radius, spacing } = useTheme();
-  const qc = useQueryClient();
-  const [text, setText] = useState('');
-
-  const commentMut = useMutation({
-    mutationFn: (body: string) => customerApi.addQcComment(orderId, r.id, body),
-    onSuccess: () => {
-      setText('');
-      qc.invalidateQueries({ queryKey: queryKeys.customer.orderDashboard(orderId) });
-    },
-  });
-
-  const send = () => {
-    const t = text.trim();
-    if (t) commentMut.mutate(t);
-  };
 
   return (
     <View
@@ -243,7 +227,10 @@ function DefectReportCard({ orderId, report: r }: { orderId: string; report: Cus
       }}
     >
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-        <StatusPill label={r.status === 'closed' ? 'Closed' : 'Open'} tone={r.status === 'closed' ? 'success' : 'danger'} />
+        <View style={{ flexDirection: 'row', gap: spacing(2), alignItems: 'center' }}>
+          <StatusPill label={r.status === 'closed' ? 'Closed' : 'Open'} tone={r.status === 'closed' ? 'success' : 'danger'} />
+          <StatusPill label={SEVERITY_META[r.severity].label} tone={SEVERITY_META[r.severity].tone} />
+        </View>
         <AppText variant="caption" tone="muted">{formatDate(r.createdAt)}</AppText>
       </View>
       <AppText weight="700" style={{ marginTop: spacing(2) }}>
@@ -256,49 +243,32 @@ function DefectReportCard({ orderId, report: r }: { orderId: string; report: Cus
       ) : null}
       <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
         {r.department === 'assembly' ? 'Assembly' : 'Moulding'}
-        {[r.machine, r.mould].filter(Boolean).length
-          ? ` · ${[r.machine, r.mould].filter(Boolean).join(' · ')}`
+        {[r.machine, r.mould, r.part].filter(Boolean).length
+          ? ` · ${[r.machine, r.mould, r.part].filter(Boolean).join(' · ')}`
           : ''}
+        {r.shift ? ` · Shift ${r.shift}` : ''}
       </AppText>
       <PhotoStrip photos={r.photos} />
 
-      {/* Comments — read the thread and reply (customers can comment, read-only otherwise) */}
-      <View style={{ marginTop: spacing(3), borderTopWidth: 0.5, borderTopColor: colors.border, paddingTop: spacing(3) }}>
-        <AppText variant="caption" weight="700" tone="muted" style={{ marginBottom: spacing(2) }}>
-          Comments ({r.comments.length})
-        </AppText>
-        {r.comments.map((c, i) => (
-          <View key={c.id ?? i} style={{ marginBottom: spacing(2) }}>
-            <AppText variant="caption" weight="700">
-              {c.authorName || 'User'}
-              {c.authorRole ? (
-                <AppText variant="caption" tone="muted">  · {c.authorRole.replace(/_/g, ' ')}</AppText>
-              ) : null}
-            </AppText>
-            <AppText variant="caption">{c.text}</AppText>
-          </View>
-        ))}
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing(2), marginTop: spacing(1) }}>
-          <TextInput
-            style={{
-              flex: 1,
-              backgroundColor: colors.surface,
-              borderColor: colors.border,
-              borderWidth: 0.5,
-              borderRadius: radius.md,
-              color: colors.text,
-              paddingHorizontal: spacing(3),
-              paddingVertical: spacing(2),
-            }}
-            value={text}
-            onChangeText={setText}
-            placeholder="Write a comment…"
-            placeholderTextColor={colors.textMuted}
-            multiline
-          />
-          <Button label="Send" onPress={send} loading={commentMut.isPending} disabled={!text.trim()} />
+      {/* Comments — read-only thread (the customer portal is view-only). */}
+      {r.comments.length > 0 ? (
+        <View style={{ marginTop: spacing(3), borderTopWidth: 0.5, borderTopColor: colors.border, paddingTop: spacing(3) }}>
+          <AppText variant="caption" weight="700" tone="muted" style={{ marginBottom: spacing(2) }}>
+            Comments ({r.comments.length})
+          </AppText>
+          {r.comments.map((c, i) => (
+            <View key={c.id ?? i} style={{ marginBottom: spacing(2) }}>
+              <AppText variant="caption" weight="700">
+                {c.authorName || 'User'}
+                {c.authorRole ? (
+                  <AppText variant="caption" tone="muted">  · {c.authorRole.replace(/_/g, ' ')}</AppText>
+                ) : null}
+              </AppText>
+              <AppText variant="caption">{c.text}</AppText>
+            </View>
+          ))}
         </View>
-      </View>
+      ) : null}
     </View>
   );
 }
@@ -498,7 +468,7 @@ function OrderDashboard({ d }: { d: CustomerOrderDashboard }) {
       </SectionCard>
 
       {/* ENGINEER DEFECT REPORTS (req #5) */}
-      <DefectReportsSection orderId={d.order.id} reports={d.defectReports} />
+      <DefectReportsSection reports={d.defectReports} />
 
       {/* TIMELINE */}
       <SectionCard icon="🗺️" title="Production Timeline">

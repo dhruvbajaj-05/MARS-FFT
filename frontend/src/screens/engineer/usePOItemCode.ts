@@ -22,15 +22,17 @@ interface UsePOItemCodeOptions {
   // begins. Assembly screens set this so archived (production-complete) POs stay selectable;
   // Moulding leaves it off so you never mould an archived PO.
   includeArchivedPOs?: boolean;
+  // Optional starting selection (e.g. the QC create screen opened from a PO → Item Code card).
+  initial?: { customerId?: string | null; purchaseOrderId?: string | null; jobId?: string | null };
 }
 
 // Shared Company → Purchase Order → Item Code cascade used by every engineer entry form.
 // Selecting an Item Code yields the underlying production job (an Order) plus its product
 // identity, so forms get customerId / productId / orderId / itemCode without re-selecting.
 export function usePOItemCode(opts: UsePOItemCodeOptions = {}) {
-  const [customerId, setCustomerId] = useState<string | null>(null);
-  const [purchaseOrderId, setPurchaseOrderId] = useState<string | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
+  const [customerId, setCustomerId] = useState<string | null>(opts.initial?.customerId ?? null);
+  const [purchaseOrderId, setPurchaseOrderId] = useState<string | null>(opts.initial?.purchaseOrderId ?? null);
+  const [jobId, setJobId] = useState<string | null>(opts.initial?.jobId ?? null);
 
   const customers = useQuery({
     queryKey: queryKeys.customers({ page: 1, limit: 100 }),

@@ -25,7 +25,7 @@ export const purchaseOrdersApi = {
   get: (id: string) =>
     apiClient.get<PurchaseOrderDetail>(`/purchase-orders/${id}`).then((r) => r.data),
 
-  create: (input: { customerId: string; lines: POLineInput[]; notes?: string }) =>
+  create: (input: { customerId: string; lines: POLineInput[]; notes?: string; poNumber?: string }) =>
     apiClient
       .post<{ purchaseOrder: PurchaseOrder; jobs: Order[] }>('/purchase-orders', input)
       .then((r) => r.data),

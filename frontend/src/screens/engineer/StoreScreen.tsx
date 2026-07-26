@@ -334,6 +334,39 @@ function ComponentStore() {
     return [...byMould.values()];
   }, [itemRows]);
 
+  // Product-level surplus for this PO's products — pooled over-production that PERSISTS even
+  // after every item code's assembly is complete (surplus must stay visible after the PO ends).
+  const surplus = useMemo(() => {
+    const poProductIds = new Set((poDetail.data?.jobs ?? []).map((j) => j.productId));
+    const agg = new Map<string, { label: string; qty: number }>();
+    for (const c of compQ.data?.customers ?? [])
+      for (const p of c.products ?? [])
+        if (p.productId && poProductIds.has(p.productId))
+          for (const s of p.surplus ?? [])
+            if (s.surplusQuantity > 0) {
+              const key = s.moldName || s.partName;
+              const g = agg.get(key) ?? { label: key, qty: 0 };
+              g.qty += s.surplusQuantity;
+              agg.set(key, g);
+            }
+    return [...agg.values()];
+  }, [compQ.data, poDetail.data]);
+
+  const surplusCard = surplus.length > 0 ? (
+    <Card style={{ marginTop: spacing(3) }}>
+      <AppText variant="h3" style={{ marginBottom: spacing(1) }}>Surplus</AppText>
+      <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
+        Over-production pooled across this PO&apos;s item codes. Stays available even after the PO completes.
+      </AppText>
+      {surplus.map((s) => (
+        <View key={s.label} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
+          <AppText weight="600">{s.label}</AppText>
+          <AppText weight="700" style={{ color: colors.status.info.fg }}>+{s.qty.toLocaleString()}</AppText>
+        </View>
+      ))}
+    </Card>
+  ) : null;
+
   const loading = poDetail.isLoading || compQ.isLoading;
 
   return (
@@ -403,45 +436,53 @@ function ComponentStore() {
       ) : loading ? (
         <AppText tone="muted">Loading…</AppText>
       ) : tab === 'item' ? (
-        itemRows.length === 0 ? (
-          <AppText tone="muted">
-            No components to assemble in this PO. Item codes disappear here once their components are fully consumed.
-          </AppText>
-        ) : (
-          <View style={{ gap: spacing(3) }}>
-            {itemRows.map(({ job, parts }) => (
-              <Card key={job.id}>
-                <AppText weight="700" style={{ fontSize: 16 }}>{job.itemCode ?? '—'}</AppText>
-                <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>{job.productName}</AppText>
-                {parts.map((p) => (
-                  <ComponentPartRow key={p.partName} part={p} />
-                ))}
-              </Card>
-            ))}
-          </View>
-        )
-      ) : cumulative.length === 0 ? (
-        <AppText tone="muted">No components to assemble in this PO.</AppText>
-      ) : (
-        <View style={{ gap: spacing(3) }}>
-          {cumulative.map((m) => (
-            <Card key={m.moldName}>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                <AppText weight="700" style={{ fontSize: 16 }}>{m.moldName}</AppText>
-                <AppText weight="700" style={{ color: colors.status.success.fg }}>{m.total.toLocaleString()} pcs</AppText>
-              </View>
-              <AppText variant="caption" tone="muted" style={{ marginTop: 2, marginBottom: spacing(1) }}>
-                Combined across item codes using this mould
-              </AppText>
-              {m.breakdown.map((b, i) => (
-                <View key={`${b.itemCode}-${i}`} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
-                  <AppText variant="caption">{b.itemCode ?? '—'} · {b.productName}</AppText>
-                  <AppText variant="caption" weight="600">{b.onHand.toLocaleString()}</AppText>
-                </View>
+        <>
+          {itemRows.length === 0 ? (
+            <AppText tone="muted">
+              No components left to assemble in this PO. Item codes disappear here once their components are fully consumed.
+            </AppText>
+          ) : (
+            <View style={{ gap: spacing(3) }}>
+              {itemRows.map(({ job, parts }) => (
+                <Card key={job.id}>
+                  <AppText weight="700" style={{ fontSize: 16 }}>{job.itemCode ?? '—'}</AppText>
+                  <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>{job.productName}</AppText>
+                  {parts.map((p) => (
+                    <ComponentPartRow key={p.partName} part={p} />
+                  ))}
+                </Card>
               ))}
-            </Card>
-          ))}
-        </View>
+            </View>
+          )}
+          {surplusCard}
+        </>
+      ) : (
+        <>
+          {cumulative.length === 0 ? (
+            <AppText tone="muted">No components left to assemble in this PO.</AppText>
+          ) : (
+            <View style={{ gap: spacing(3) }}>
+              {cumulative.map((m) => (
+                <Card key={m.moldName}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <AppText weight="700" style={{ fontSize: 16 }}>{m.moldName}</AppText>
+                    <AppText weight="700" style={{ color: colors.status.success.fg }}>{m.total.toLocaleString()} pcs</AppText>
+                  </View>
+                  <AppText variant="caption" tone="muted" style={{ marginTop: 2, marginBottom: spacing(1) }}>
+                    Combined across item codes using this mould
+                  </AppText>
+                  {m.breakdown.map((b, i) => (
+                    <View key={`${b.itemCode}-${i}`} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
+                      <AppText variant="caption">{b.itemCode ?? '—'} · {b.productName}</AppText>
+                      <AppText variant="caption" weight="600">{b.onHand.toLocaleString()}</AppText>
+                    </View>
+                  ))}
+                </Card>
+              ))}
+            </View>
+          )}
+          {surplusCard}
+        </>
       )}
     </Screen>
   );
@@ -531,7 +572,8 @@ function MouldRow({ moldName, produced, surplus, required, remaining, sub }: { m
 
 function ProductionStore() {
   const { spacing, colors, radius } = useTheme();
-  const cp = usePOItemCode();
+  // Keep completed/archived POs selectable so surplus stays visible after the PO completes.
+  const cp = usePOItemCode({ includeArchivedPOs: true });
   const [tab, setTab] = useState<'item' | 'cumulative' | 'outsourced'>('item');
 
   const itemQ = useQuery({
@@ -544,6 +586,43 @@ function ProductionStore() {
     queryFn: () => mouldingApi.productionStoreCumulative(cp.purchaseOrderId!),
     enabled: !!cp.purchaseOrderId && tab === 'cumulative',
   });
+
+  // Product-level surplus for this PO's products — the SAME persistent Surplus card as the
+  // Assembly Component Store (moulding + assembly hand in hand). Stays visible after completion.
+  const compQ = useQuery({
+    queryKey: queryKeys.store.componentsByOrder({ customerId: cp.customerId ?? undefined }),
+    queryFn: () => storeApi.componentsByOrder({ customerId: cp.customerId! }),
+    enabled: !!cp.customerId && !!cp.purchaseOrderId && tab !== 'outsourced',
+  });
+  const surplus = useMemo(() => {
+    const poProductIds = new Set(cp.jobList.map((j) => j.productId));
+    const agg = new Map<string, { label: string; qty: number }>();
+    for (const c of compQ.data?.customers ?? [])
+      for (const p of c.products ?? [])
+        if (p.productId && poProductIds.has(p.productId))
+          for (const s of p.surplus ?? [])
+            if (s.surplusQuantity > 0) {
+              const key = s.moldName || s.partName;
+              const g = agg.get(key) ?? { label: key, qty: 0 };
+              g.qty += s.surplusQuantity;
+              agg.set(key, g);
+            }
+    return [...agg.values()];
+  }, [compQ.data, cp.jobList]);
+  const surplusCard = surplus.length > 0 ? (
+    <Card style={{ marginTop: spacing(3) }}>
+      <AppText variant="h3" style={{ marginBottom: spacing(1) }}>Surplus</AppText>
+      <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
+        Over-production pooled across this PO&apos;s item codes. Stays available even after the PO completes.
+      </AppText>
+      {surplus.map((s) => (
+        <View key={s.label} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
+          <AppText weight="600">{s.label}</AppText>
+          <AppText weight="700" style={{ color: colors.status.info.fg }}>+{s.qty.toLocaleString()}</AppText>
+        </View>
+      ))}
+    </Card>
+  ) : null;
 
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={cp.refreshing} onRefresh={cp.refetch} />}>
@@ -581,6 +660,7 @@ function ProductionStore() {
       {!cp.purchaseOrderId ? (
         <AppText tone="muted">Select a customer and purchase order to view production.</AppText>
       ) : tab === 'item' ? (
+        <>
         <QueryBoundary isLoading={itemQ.isLoading} isError={itemQ.isError} error={itemQ.error} data={itemQ.data} onRetry={itemQ.refetch}>
           {(d) => {
             const withProd = d.items.filter((i) => i.moulds.length > 0);
@@ -601,7 +681,10 @@ function ProductionStore() {
             );
           }}
         </QueryBoundary>
+        {surplusCard}
+        </>
       ) : tab === 'cumulative' ? (
+        <>
         <QueryBoundary isLoading={cumQ.isLoading} isError={cumQ.isError} error={cumQ.error} data={cumQ.data} onRetry={cumQ.refetch}>
           {(d) =>
             d.moulds.length === 0 ? (
@@ -631,6 +714,8 @@ function ProductionStore() {
             )
           }
         </QueryBoundary>
+        {surplusCard}
+        </>
       ) : (
         <View>
           <Card style={{ marginBottom: spacing(3) }}>

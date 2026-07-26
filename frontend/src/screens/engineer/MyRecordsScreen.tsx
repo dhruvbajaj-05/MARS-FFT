@@ -20,7 +20,8 @@ import { ApiError, friendlyMessage } from '@/services/apiError';
 // admin records page can present an IDENTICAL view (read-only) via a department selector.
 function MouldingRecords() {
   const { spacing } = useTheme();
-  const cp = usePOItemCode();
+  // Keep completed/archived POs selectable so records stay viewable after production finishes.
+  const cp = usePOItemCode({ includeArchivedPOs: true });
   const { customerId, productId, jobId } = cp;
 
   const params = {
@@ -128,6 +129,10 @@ function AssemblyRecords() {
 
   const itemCodeFor = (id?: string | null) =>
     cp.jobList.find((o) => o.id === id)?.itemCode ?? cp.itemCode ?? 'Item';
+  const partNameFor = (id?: string | null) => {
+    const job = cp.jobList.find((o) => o.id === id);
+    return job?.partName ?? job?.productName ?? null;
+  };
 
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}>
@@ -169,7 +174,7 @@ function AssemblyRecords() {
           data={query.data}
           onRetry={query.refetch}
         >
-          {(d) => <AssemblyRecordsList records={d.data} itemCodeFor={itemCodeFor} editable />}
+          {(d) => <AssemblyRecordsList records={d.data} itemCodeFor={itemCodeFor} partNameFor={partNameFor} editable />}
         </QueryBoundary>
       )}
     </Screen>

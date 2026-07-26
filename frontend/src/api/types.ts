@@ -447,6 +447,53 @@ export interface CustomerProductOrders {
   orders: CustomerProductOrderRow[];
 }
 
+// ---- Customer portal: PO-first (Home → Purchase Order → Item Code dashboard) ----
+export type CustomerStageReached = { moulding: boolean; assembly: boolean; qc: boolean; dispatch: boolean };
+
+export interface CustomerPO {
+  id: string;
+  poNumber: string | null;
+  status: string;
+  itemCount: number;
+  totalQuantity: number;
+  dispatchedQuantity: number;
+  progressPct: number;
+  stageReached: CustomerStageReached;
+  lastUpdatedAt: string | null;
+  createdAt: string;
+}
+export interface CustomerPOsResponse {
+  customer: string | null;
+  purchaseOrders: CustomerPO[];
+}
+export interface CustomerPOItemRow {
+  id: string;
+  orderCode: string;
+  itemCode: string | null;
+  productName: string | null;
+  partName: string | null;
+  orderQuantity: number;
+  dispatchedQuantity: number;
+  progressPct: number;
+  status: string;
+  stageReached: CustomerStageReached;
+  createdAt: string;
+}
+export interface CustomerPODetail {
+  purchaseOrder: {
+    id: string;
+    poNumber: string | null;
+    status: string;
+    itemCount: number;
+    totalQuantity: number;
+    dispatchedQuantity: number;
+    progressPct: number;
+    notes: string | null;
+    createdAt: string;
+  };
+  orders: CustomerPOItemRow[];
+}
+
 export interface CustomerMoldRow {
   moldName: string;
   partName: string | null;

@@ -6,10 +6,9 @@ import { RefreshControl, View } from 'react-native';
 
 import { customerApi } from '@/api/endpoints/customer';
 import { queryKeys } from '@/api/queryKeys';
-import type { CustomerProduct } from '@/api/types';
+import type { CustomerPO } from '@/api/types';
 import {
   AppText,
-  BrandTile,
   ErrorState,
   GaugeBar,
   PremiumEmpty,
@@ -23,12 +22,16 @@ import {
   statusTone,
 } from '@/components';
 import type { CustomerStackParamList } from '@/navigation/CustomerHomeNavigator';
+import { StagePipeline } from '@/screens/customer/StagePipeline';
 import { useTheme } from '@/theme/ThemeProvider';
 import { relativeTime } from '@/utils/format';
 
 type Nav = NativeStackNavigationProp<CustomerStackParamList, 'CustomerHome'>;
 
-function ProductCard({ product, onPress }: { product: CustomerProduct; onPress: () => void }) {
+// A Purchase Order card — the top level of the customer portal. Shows the PO's overall
+// production progress, item-code count, quantity fulfilment and how far the pipeline has
+// reached. Tap to drill into the PO's item codes.
+function POCard({ po, onPress }: { po: CustomerPO; onPress: () => void }) {
   const { colors, radius, spacing } = useTheme();
   return (
     <PressableScale onPress={onPress} style={{ marginBottom: spacing(3) }}>
@@ -44,30 +47,31 @@ function ProductCard({ product, onPress }: { product: CustomerProduct; onPress: 
           shadow('sm'),
         ]}
       >
-        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: spacing(3) }}>
-          <BrandTile name={product.itemCode ?? product.name} size={52} />
-          <View style={{ flex: 1, marginLeft: spacing(3) }}>
-            <AppText variant="h3" numberOfLines={1}>{product.itemCode ?? product.name}</AppText>
-            <AppText variant="caption" tone="muted" numberOfLines={1}>
-              {product.name}{product.partName ? ` · ${product.partName}` : ''}
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: spacing(3) }}>
+          <View style={{ flex: 1, marginRight: spacing(2) }}>
+            <AppText variant="caption" tone="muted" weight="600" style={{ textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Purchase Order
             </AppText>
+            <AppText variant="h3" numberOfLines={2} style={{ marginTop: 2 }}>{po.poNumber ?? 'PO'}</AppText>
           </View>
-          <StatusPill label={product.status} tone={statusTone(product.status)} />
+          <StatusPill label={po.status} tone={statusTone(po.status)} />
         </View>
 
-        <GaugeBar pct={product.progressPct} tone={statusTone(product.status)} showLabel />
+        <GaugeBar pct={po.progressPct} tone={statusTone(po.status)} showLabel />
 
         <View style={{ marginTop: spacing(3) }}>
           <StatGrid>
-            <StatTile label="Active Orders" value={product.activeOrders} tone="progress" emphasize />
-            <StatTile label="Total Orders" value={product.totalOrders} />
-            <StatTile label="Progress" value={`${product.progressPct}%`} tone={statusTone(product.status)} />
+            <StatTile label="Item Codes" value={po.itemCount} tone="progress" emphasize />
+            <StatTile label="Order Qty" value={po.totalQuantity} />
+            <StatTile label="Dispatched" value={po.dispatchedQuantity} tone="success" />
           </StatGrid>
         </View>
 
+        <StagePipeline reached={po.stageReached} />
+
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: spacing(3) }}>
-          <AppText variant="caption" tone="muted">{relativeTime(product.lastUpdatedAt)}</AppText>
-          <AppText variant="caption" weight="700" style={{ color: colors.primary }}>View orders ›</AppText>
+          <AppText variant="caption" tone="muted">{relativeTime(po.lastUpdatedAt)}</AppText>
+          <AppText variant="caption" weight="700" style={{ color: colors.primary }}>View item codes ›</AppText>
         </View>
       </View>
     </PressableScale>
@@ -77,7 +81,7 @@ function ProductCard({ product, onPress }: { product: CustomerProduct; onPress: 
 export function CustomerHomeScreen() {
   const { spacing } = useTheme();
   const navigation = useNavigation<Nav>();
-  const query = useQuery({ queryKey: queryKeys.customer.products, queryFn: customerApi.products });
+  const query = useQuery({ queryKey: queryKeys.customer.purchaseOrders, queryFn: customerApi.purchaseOrders });
 
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}>
@@ -86,9 +90,9 @@ export function CustomerHomeScreen() {
         <AppText variant="caption" tone="muted" weight="600" style={{ letterSpacing: 0.5, textTransform: 'uppercase' }}>
           {query.data?.customer ?? 'Manufacturing'}
         </AppText>
-        <AppText variant="h1" style={{ marginTop: spacing(1) }}>Your Products</AppText>
+        <AppText variant="h1" style={{ marginTop: spacing(1) }}>Purchase Orders</AppText>
         <AppText tone="muted" style={{ marginTop: spacing(1) }}>
-          Live production status across every order.
+          Live production status across every order, moulding to dispatch.
         </AppText>
       </View>
 
@@ -99,20 +103,20 @@ export function CustomerHomeScreen() {
           <SkeletonCard />
         </View>
       ) : query.isError ? (
-        <ErrorState message="We couldn't load your products." onRetry={query.refetch} />
-      ) : !query.data || query.data.products.length === 0 ? (
+        <ErrorState message="We couldn't load your purchase orders." onRetry={query.refetch} />
+      ) : !query.data || query.data.purchaseOrders.length === 0 ? (
         <PremiumEmpty
           icon="📦"
-          title="No products yet"
-          message="Once production begins, your products will appear here with live progress."
+          title="No purchase orders yet"
+          message="Once your orders are placed, they'll appear here with live production progress."
         />
       ) : (
         <View>
-          {query.data.products.map((p) => (
-            <ProductCard
-              key={p.id}
-              product={p}
-              onPress={() => navigation.navigate('CustomerProduct', { productId: p.id, productName: p.name })}
+          {query.data.purchaseOrders.map((po) => (
+            <POCard
+              key={po.id}
+              po={po}
+              onPress={() => navigation.navigate('CustomerPO', { purchaseOrderId: po.id, poNumber: po.poNumber ?? 'PO' })}
             />
           ))}
         </View>

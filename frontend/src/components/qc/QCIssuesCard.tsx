@@ -27,6 +27,10 @@ export function QCIssuesCard({
   const query = useQuery({
     queryKey: queryKeys.qc.reports({ ...params, badge: true }),
     queryFn: () => qcReportsApi.list(params),
+    // The open-defect count must reflect reality every time a start page appears — a case
+    // closed/reopened elsewhere shouldn't leave a stale number sitting behind the 60s default.
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
   const open = query.data?.pagination.total ?? 0;
 

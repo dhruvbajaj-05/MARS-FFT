@@ -7,9 +7,15 @@ import { Alert, Pressable, RefreshControl, ScrollView, View } from 'react-native
 import { qcReportsApi } from '@/api/endpoints/qcReports';
 import { queryKeys } from '@/api/queryKeys';
 import type { QCReport, QCStatusValue } from '@/api/types';
-import { AppText, QueryBoundary, Screen } from '@/components';
+import { AppText, QueryBoundary, Screen, StatusPill } from '@/components';
 import { SectionCard } from '@/components/premium';
-import { CommentThread, FullscreenImageViewer, StatusPicker, formatDateTime } from '@/components/qc';
+import {
+  CommentThread,
+  FullscreenImageViewer,
+  SEVERITY_META,
+  StatusPicker,
+  formatDateTime,
+} from '@/components/qc';
 import { resolveMediaUrl } from '@/utils/mediaUrl';
 import { useTheme } from '@/theme/ThemeProvider';
 import type { QCStackParamList } from './navTypes';
@@ -32,10 +38,17 @@ export function QCReportDetailScreen() {
     queryFn: () => qcReportsApi.get(reportId),
   });
 
+  // A status change moves a case in/out of the "open" count. Refresh every QC surface that
+  // shows that count: the report itself, the report lists + start-page badge, the order
+  // context, and the per-PO / per-order open counts in both departments' QC tabs.
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: queryKeys.qc.report(reportId) });
     qc.invalidateQueries({ queryKey: ['qc', 'reports'] });
     qc.invalidateQueries({ queryKey: ['qc', 'order-context'] });
+    qc.invalidateQueries({ queryKey: ['qc', 'active-pos'] });
+    qc.invalidateQueries({ queryKey: ['qc', 'archived-pos'] });
+    qc.invalidateQueries({ queryKey: ['qc', 'active-orders'] });
+    qc.invalidateQueries({ queryKey: ['qc', 'archived-orders'] });
   };
 
   const statusMut = useMutation({
@@ -126,6 +139,27 @@ export function QCReportDetailScreen() {
                 {r.submittedByName ?? 'Engineer'} · {formatDateTime(r.createdAt)}
               </AppText>
 
+              {/* Report details — everything the reporter selected, shown plainly so anyone
+                  (QC / Assembly / Moulding / Admin) sees the exact data. Machine/Mould only
+                  apply to Moulding QC; Assembly reports simply omit them. */}
+              <SectionCard icon="🔍" title="Details">
+                <DetailRow label="Department" value={r.department === 'assembly' ? 'Assembly QC' : 'Moulding QC'} />
+                <DetailRow label="Severity">
+                  <StatusPill label={SEVERITY_META[r.severity].label} tone={SEVERITY_META[r.severity].tone} />
+                </DetailRow>
+                <DetailRow label="Defects" value={r.defects.length ? r.defects.join(', ') : '—'} />
+                {r.department !== 'assembly' ? (
+                  <>
+                    <DetailRow label="Machine" value={r.machine || '—'} />
+                    <DetailRow label="Mould" value={r.mould || '—'} />
+                    <DetailRow label="Part" value={r.part || '—'} />
+                  </>
+                ) : null}
+                {r.shift ? <DetailRow label="Shift" value={`Shift ${r.shift}`} /> : null}
+                {r.tags.length ? <DetailRow label="Tags" value={r.tags.join(', ')} /> : null}
+                {r.description ? <DetailRow label="Notes" value={r.description} last /> : null}
+              </SectionCard>
+
               {/* Status: Open / Closed — QC engineer + admin can change; others read-only. */}
               <SectionCard icon="🚦" title="QC Status">
                 <StatusPicker
@@ -156,5 +190,40 @@ export function QCReportDetailScreen() {
         }}
       </QueryBoundary>
     </Screen>
+  );
+}
+
+// One label/value row inside the Details card. Pass `children` for rich values (e.g. a pill).
+function DetailRow({
+  label,
+  value,
+  children,
+  last,
+}: {
+  label: string;
+  value?: string;
+  children?: React.ReactNode;
+  last?: boolean;
+}) {
+  const { colors, spacing } = useTheme();
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: spacing(3),
+        paddingVertical: spacing(2),
+        borderBottomWidth: last ? 0 : 1,
+        borderBottomColor: colors.border,
+      }}
+    >
+      <AppText tone="muted" style={{ flexShrink: 0 }}>{label}</AppText>
+      {children ?? (
+        <AppText weight="600" style={{ flex: 1, textAlign: 'right' }}>
+          {value}
+        </AppText>
+      )}
+    </View>
   );
 }
