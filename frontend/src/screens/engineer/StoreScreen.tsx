@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Pressable, RefreshControl, StyleSheet, View } from 'react-native';
 
 import { mouldingApi } from '@/api/endpoints/moulding';
+import { purchaseOrdersApi } from '@/api/endpoints/purchaseOrders';
 import { outsourcedApi, storeApi } from '@/api/endpoints/store';
 import { queryKeys } from '@/api/queryKeys';
-import type { ComponentOrderNode, ComponentPart, OutsourcedItem, OutsourcedReceipt } from '@/api/types';
+import type { ComponentPart, OutsourcedItem, OutsourcedReceipt } from '@/api/types';
 import { AppText, Banner, Button, Card, FormField, QueryBoundary, Screen, Select } from '@/components';
 import { useCurrentUser } from '@/hooks/useAuth';
 import { ROLES } from '@/types/roles';
@@ -20,92 +21,25 @@ import { usePOItemCode } from './usePOItemCode';
 //   QC / Dispatch       → Finished Goods Store (Customer → Product → Quantity)
 // RBAC on the backend matches: component viewers = moulding/assembly, finished = qc/dispatch.
 
-type BucketKind = 'pending' | 'finished' | 'surplus';
-
-// Render the right-hand quantity for a part row.
-//   surplus  → +<surplus>                 (overage above the required target)
-//   finished → <finished> / <required>     (capped at required — never shows the overage)
-//   pending  → <onHand> / <required>       (progress toward the target)
-function quantityLabel(part: ComponentPart, kind: BucketKind): string {
-  if (kind === 'surplus') return `+${part.surplusQuantity}`;
-  const value = kind === 'finished' ? part.finishedQuantity : part.quantityOnHand;
-  return `${value}${part.requiredQuantity > 0 ? ` / ${part.requiredQuantity}` : ''}`;
-}
-
-// One bucket: a header + a small table of mold rows (Mold · Part · Cavity · qty).
-function PartBucket({ title, kind, parts }: { title: string; kind: BucketKind; parts: ComponentPart[] }) {
-  const { spacing, colors } = useTheme();
-  if (parts.length === 0) return null;
-  const tone =
-    kind === 'finished' ? colors.status.success.fg : kind === 'surplus' ? colors.status.info.fg : colors.text;
+// One component part row: Mold · Part · Cavity → live on-hand (reduces as assembly consumes),
+// shown against its required target when set. Used by the Assembly Component Store.
+function ComponentPartRow({ part }: { part: ComponentPart }) {
+  const { colors, spacing } = useTheme();
   return (
-    <View style={{ marginBottom: spacing(2) }}>
-      <AppText variant="caption" tone="muted" style={{ marginBottom: 2 }}>
-        {title}
-      </AppText>
-      {parts.map((part) => (
-        <View
-          key={part.partName}
-          style={{ flexDirection: 'row', justifyContent: 'space-between', paddingLeft: spacing(2), paddingVertical: 2 }}
-        >
-          <View style={{ flex: 1 }}>
-            <AppText weight="600">{part.moldName || part.partName}</AppText>
-            <AppText variant="caption" tone="muted">
-              {part.partName} · {part.cavity} cavity
-            </AppText>
-          </View>
-          <AppText weight="600" style={{ color: tone }}>
-            {quantityLabel(part, kind)}
+    <View style={{ paddingVertical: spacing(2), borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+        <View style={{ flex: 1 }}>
+          <AppText weight="700">{part.moldName || part.partName}</AppText>
+          <AppText variant="caption" tone="muted">
+            {part.partName} · {part.cavity} cavity
           </AppText>
         </View>
-      ))}
-    </View>
-  );
-}
-
-// The Pending / Finished view for the ONE selected OrderID. Both are scoped to this
-// order; Surplus is product-level and rendered separately (outside the OrderID structure).
-function OrderBuckets({ order }: { order: ComponentOrderNode }) {
-  const { spacing, colors, radius } = useTheme();
-  const empty = order.pending.length === 0 && order.finished.length === 0;
-  return (
-    <View
-      style={{
-        borderColor: colors.border,
-        borderWidth: StyleSheet.hairlineWidth,
-        borderRadius: radius.md,
-        padding: spacing(3),
-      }}
-    >
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing(2) }}>
-        <AppText variant="caption" tone="muted">
-          Total {order.totalQuantity}
+        <AppText weight="700" style={{ color: colors.status.success.fg }}>
+          {part.quantityOnHand.toLocaleString()}
+          {part.requiredQuantity > 0 ? ` / ${part.requiredQuantity.toLocaleString()}` : ''}
         </AppText>
-        <AppText weight="700">{order.orderCode ?? 'Order'}</AppText>
       </View>
-      <PartBucket title="Pending" kind="pending" parts={order.pending} />
-      <PartBucket title="Finished" kind="finished" parts={order.finished} />
-      {empty ? <AppText tone="muted" variant="caption">No parts yet for this item code.</AppText> : null}
     </View>
-  );
-}
-
-// Surplus is a SEPARATE, product-level store (over-production accumulated across every
-// order for this Customer → Product → Part). It lives outside the OrderID structure and
-// is never consumed by assembly.
-function SurplusCard({ surplus }: { surplus: ComponentPart[] }) {
-  const { spacing } = useTheme();
-  if (surplus.length === 0) return null;
-  return (
-    <Card style={{ marginTop: spacing(3) }}>
-      <AppText variant="h3" style={{ marginBottom: spacing(1) }}>
-        Surplus
-      </AppText>
-      <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
-        Over-production for this product, pooled across all orders.
-      </AppText>
-      <PartBucket title="Available surplus" kind="surplus" parts={surplus} />
-    </Card>
   );
 }
 
@@ -340,97 +274,174 @@ function OutsourcedSection({
   );
 }
 
-// ---- Component Store: Customer → Product → OrderID, then this order's buckets ----
+// ---- Component Store (Assembly): PO → Item Code / PO Cumulative, mirrors the Moulding
+// Production Store. Quantities are the LIVE component on-hand that reduces as assembly
+// consumes; once an item code's components are fully consumed (assembly done) it drops out of
+// the view automatically (the backend removes 0-total orders). View only — no logic change.
 function ComponentStore() {
-  const { spacing } = useTheme();
-  const user = useCurrentUser();
-  const canEditOutsourced = user?.role === ROLES.MOULDING_ENGINEER;
-  // Assembly's Component Store: production-complete POs archive but are still being assembled,
-  // so keep them selectable (same reason as the Assembly entry form).
+  const { spacing, colors, radius } = useTheme();
   const cp = usePOItemCode({ includeArchivedPOs: true });
-  const { customerId, productId, jobId } = cp;
+  const [tab, setTab] = useState<'item' | 'cumulative' | 'outsourced'>('item');
 
-  const ready = !!customerId && !!productId && !!jobId;
-  const params = {
-    customerId: customerId ?? undefined,
-    productId: productId ?? undefined,
-    orderId: jobId ?? undefined,
-  };
-  const query = useQuery({
-    queryKey: queryKeys.store.componentsByOrder(params),
-    queryFn: () => storeApi.componentsByOrder(params),
-    enabled: ready,
+  // PO item-code identity (orderId → itemCode / product) — the by-order tree lacks item codes.
+  const poDetail = useQuery({
+    queryKey: queryKeys.purchaseOrder(cp.purchaseOrderId ?? 'none'),
+    queryFn: () => purchaseOrdersApi.get(cp.purchaseOrderId!),
+    enabled: !!cp.purchaseOrderId,
   });
 
-  // With all three filters applied the tree collapses to a single customer → product →
-  // item code path. Surplus lives on the product node (the item code's overage).
-  const product = query.data?.customers[0]?.products[0];
-  const order = product?.orders.find((o) => o.orderId === jobId) ?? product?.orders[0];
+  // Live component balances for the whole customer (reduce as assembly consumes).
+  const compQ = useQuery({
+    queryKey: queryKeys.store.componentsByOrder({ customerId: cp.customerId ?? undefined }),
+    queryFn: () => storeApi.componentsByOrder({ customerId: cp.customerId! }),
+    enabled: !!cp.customerId && tab !== 'outsourced',
+  });
+
+  // orderId → its component parts (the tree already omits fully-consumed / done orders).
+  const partsByOrder = useMemo(() => {
+    const m = new Map<string, ComponentPart[]>();
+    for (const c of compQ.data?.customers ?? [])
+      for (const p of c.products ?? [])
+        for (const o of p.orders ?? [])
+          if (o.orderId) m.set(o.orderId, (o.parts ?? []).filter((pt) => pt.quantityOnHand > 0));
+    return m;
+  }, [compQ.data]);
+
+  // This PO's item codes joined to their live parts. Item codes with nothing left to
+  // assemble (all consumed / done) simply have no node and drop out.
+  const itemRows = useMemo(() => {
+    const jobs = poDetail.data?.jobs ?? [];
+    return jobs
+      .map((j) => ({ job: j, parts: partsByOrder.get(j.id) ?? [] }))
+      .filter((x) => x.parts.length > 0);
+  }, [poDetail.data, partsByOrder]);
+
+  // Cumulative: the same physical mould summed across this PO's item codes.
+  const cumulative = useMemo(() => {
+    const byMould = new Map<
+      string,
+      { moldName: string; total: number; breakdown: { itemCode: string | null; productName: string | null; onHand: number }[] }
+    >();
+    for (const { job, parts } of itemRows) {
+      for (const part of parts) {
+        const key = part.moldName || part.partName;
+        if (!byMould.has(key)) byMould.set(key, { moldName: key, total: 0, breakdown: [] });
+        const g = byMould.get(key)!;
+        g.total += part.quantityOnHand;
+        g.breakdown.push({ itemCode: job.itemCode, productName: job.productName, onHand: part.quantityOnHand });
+      }
+    }
+    return [...byMould.values()];
+  }, [itemRows]);
+
+  const loading = poDetail.isLoading || compQ.isLoading;
 
   return (
-    <Screen scroll refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}>
+    <Screen
+      scroll
+      refreshControl={
+        <RefreshControl
+          refreshing={cp.refreshing || compQ.isRefetching}
+          onRefresh={() => { cp.refetch(); compQ.refetch(); }}
+        />
+      }
+    >
       <AppText variant="h2" style={{ marginBottom: spacing(1) }}>
         Component Store
       </AppText>
       <AppText tone="muted" style={{ marginBottom: spacing(4) }}>
-        Select a customer, purchase order and item code to see that item code&apos;s Pending, Finished and Surplus parts.
+        Components available to assemble, by item code. Quantities go down as you assemble; an item
+        code disappears here once its components are fully consumed.
       </AppText>
 
       <Card style={{ marginBottom: spacing(4) }}>
-        <Select
-          label="Customer"
-          value={customerId}
-          options={cp.customerOptions}
-          onChange={cp.selectCustomer}
-          placeholder="Select a customer…"
-        />
+        <Select label="Customer" value={cp.customerId} options={cp.customerOptions} onChange={cp.selectCustomer} placeholder="Select a customer…" />
         <Select
           label="Purchase Order"
           value={cp.purchaseOrderId}
           options={cp.purchaseOrderOptions}
           onChange={(v) => cp.selectPurchaseOrder(v)}
-          placeholder={customerId ? 'Select a purchase order…' : 'Select a customer first'}
-          emptyHint={customerId ? 'No purchase orders for this customer' : 'Select a customer first'}
-        />
-        <Select
-          label="Item Code"
-          value={jobId}
-          options={cp.jobOptions}
-          onChange={(v) => cp.setJobId(v)}
-          placeholder={cp.purchaseOrderId ? 'Select an item code…' : 'Select a purchase order first'}
-          emptyHint="No item codes in this PO"
+          placeholder={cp.customerId ? 'Select a purchase order…' : 'Select a customer first'}
+          emptyHint="No purchase orders for this customer"
         />
       </Card>
 
-      {!ready ? (
-        <AppText tone="muted">Select a customer, purchase order and item code to view the component store.</AppText>
-      ) : (
-        <QueryBoundary
-          isLoading={query.isLoading}
-          isError={query.isError}
-          error={query.error}
-          data={query.data}
-          onRetry={query.refetch}
-        >
-          {() => (
-            <>
-              {!order ? (
-                <AppText tone="muted">
-                  No active components for this item code. Submit moulding production first, or it may be complete.
-                </AppText>
-              ) : (
-                <OrderBuckets order={order} />
-              )}
-              <SurplusCard surplus={product?.surplus ?? []} />
-              <OutsourcedSection
-                customerId={customerId!}
-                productId={productId!}
-                orderId={jobId!}
-                canEdit={canEditOutsourced}
-              />
-            </>
+      {/* Item Code / PO Cumulative / Outsourced toggle (mirrors the Moulding store) */}
+      <View style={{ flexDirection: 'row', backgroundColor: colors.surfaceAlt, borderRadius: radius.pill, padding: 4, marginBottom: spacing(4) }}>
+        {([['item', 'Item Code'], ['cumulative', 'PO Cumulative'], ['outsourced', 'Outsourced']] as const).map(([k, label]) => {
+          const on = tab === k;
+          return (
+            <Pressable key={k} onPress={() => setTab(k)} style={{ flex: 1 }}>
+              <View style={{ backgroundColor: on ? colors.primary : 'transparent', borderRadius: radius.pill, paddingVertical: spacing(2), alignItems: 'center' }}>
+                <AppText weight="700" style={{ color: on ? colors.primaryText : colors.textMuted }}>{label}</AppText>
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      {!cp.purchaseOrderId ? (
+        <AppText tone="muted">Select a customer and purchase order to view the component store.</AppText>
+      ) : tab === 'outsourced' ? (
+        <View>
+          <Card style={{ marginBottom: spacing(3) }}>
+            <Select
+              label="Item Code"
+              value={cp.jobId}
+              options={cp.jobOptions}
+              onChange={(v) => cp.setJobId(v)}
+              placeholder="Select an item code…"
+              emptyHint="No item codes in this PO"
+            />
+          </Card>
+          {cp.jobId && cp.customerId && cp.productId ? (
+            <OutsourcedSection customerId={cp.customerId} productId={cp.productId} orderId={cp.jobId} canEdit={false} />
+          ) : (
+            <AppText tone="muted">Select an item code to view its outsourced components.</AppText>
           )}
-        </QueryBoundary>
+        </View>
+      ) : loading ? (
+        <AppText tone="muted">Loading…</AppText>
+      ) : tab === 'item' ? (
+        itemRows.length === 0 ? (
+          <AppText tone="muted">
+            No components to assemble in this PO. Item codes disappear here once their components are fully consumed.
+          </AppText>
+        ) : (
+          <View style={{ gap: spacing(3) }}>
+            {itemRows.map(({ job, parts }) => (
+              <Card key={job.id}>
+                <AppText weight="700" style={{ fontSize: 16 }}>{job.itemCode ?? '—'}</AppText>
+                <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>{job.productName}</AppText>
+                {parts.map((p) => (
+                  <ComponentPartRow key={p.partName} part={p} />
+                ))}
+              </Card>
+            ))}
+          </View>
+        )
+      ) : cumulative.length === 0 ? (
+        <AppText tone="muted">No components to assemble in this PO.</AppText>
+      ) : (
+        <View style={{ gap: spacing(3) }}>
+          {cumulative.map((m) => (
+            <Card key={m.moldName}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <AppText weight="700" style={{ fontSize: 16 }}>{m.moldName}</AppText>
+                <AppText weight="700" style={{ color: colors.status.success.fg }}>{m.total.toLocaleString()} pcs</AppText>
+              </View>
+              <AppText variant="caption" tone="muted" style={{ marginTop: 2, marginBottom: spacing(1) }}>
+                Combined across item codes using this mould
+              </AppText>
+              {m.breakdown.map((b, i) => (
+                <View key={`${b.itemCode}-${i}`} style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 }}>
+                  <AppText variant="caption">{b.itemCode ?? '—'} · {b.productName}</AppText>
+                  <AppText variant="caption" weight="600">{b.onHand.toLocaleString()}</AppText>
+                </View>
+              ))}
+            </Card>
+          ))}
+        </View>
       )}
     </Screen>
   );
