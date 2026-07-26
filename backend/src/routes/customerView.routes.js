@@ -31,6 +31,15 @@ router.get(
   customerViewController.productOrders
 );
 
+// PO-first portal: Home grid of Purchase Orders, then a PO's Item Codes.
+router.get('/purchase-orders', ...protect(ROLES.CUSTOMER), customerViewController.purchaseOrders);
+router.get(
+  '/purchase-orders/:id',
+  ...protect(ROLES.CUSTOMER),
+  validateObjectId('id'),
+  customerViewController.purchaseOrderDetail
+);
+
 // This customer's orders (paginated) with an end-to-end status summary.
 router.get('/orders', ...protect(ROLES.CUSTOMER), customerViewController.listOrders);
 

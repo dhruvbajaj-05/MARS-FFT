@@ -66,6 +66,24 @@ async function productOrders(req, res, next) {
   }
 }
 
+// GET /api/v1/customer/purchase-orders  (customer) — Home grid: POs + headline summary.
+async function purchaseOrders(req, res, next) {
+  try {
+    res.status(200).json(await customerViewService.getPurchaseOrders(req.user));
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /api/v1/customer/purchase-orders/:id  (customer) — a PO's Item Codes.
+async function purchaseOrderDetail(req, res, next) {
+  try {
+    res.status(200).json(await customerViewService.getPurchaseOrderDetail(req.user, req.params.id));
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /api/v1/customer/orders/:id/dashboard  (customer) — full manufacturing dashboard.
 async function orderDashboard(req, res, next) {
   try {
@@ -121,6 +139,8 @@ module.exports = {
   finishedGoods,
   products,
   productOrders,
+  purchaseOrders,
+  purchaseOrderDetail,
   orderDashboard,
   addQcComment,
 };

@@ -153,7 +153,7 @@ function sumLookup(model, field, as) {
       let: { oid: '$_id' },
       pipeline: [
         { $match: { $expr: { $eq: ['$orderId', '$$oid'] } } },
-        { $group: { _id: null, total: { $sum: `$${field}` }, count: { $sum: 1 } } },
+        { $group: { _id: null, total: { $sum: `$${field}` }, count: { $sum: 1 }, lastAt: { $max: '$createdAt' } } },
       ],
       as,
     },
@@ -695,6 +695,206 @@ async function getProductOrders(user, productId) {
   };
 }
 
+// ===========================================================================
+// PO-FIRST customer portal (Home → Purchase Order → Item Code dashboard)
+// ===========================================================================
+//
+// The customer works exactly the way the factory does: Company → Purchase Order →
+// Item Code. These two read-only endpoints roll the per-department production sums up
+// to the PO (Home grid) and list a PO's item codes; the leaf is the existing
+// getOrderDashboard, so every downstream detail (per-mould / QC / dispatch) is reused.
+
+// The per-order production sums + stage flags used by both PO endpoints. Kept in one
+// place so the PO list and the PO detail compute progress identically.
+const ORDER_PRODUCTION_FIELDS = {
+  mouldingCount: { $ifNull: [{ $arrayElemAt: ['$moulding.count', 0] }, 0] },
+  assemblyCount: { $ifNull: [{ $arrayElemAt: ['$assembly.count', 0] }, 0] },
+  qcCount: { $ifNull: [{ $arrayElemAt: ['$qc.count', 0] }, 0] },
+  dispatchCount: { $ifNull: [{ $arrayElemAt: ['$dispatch.count', 0] }, 0] },
+  mouldingGood: { $ifNull: [{ $arrayElemAt: ['$moulding.total', 0] }, 0] },
+  assemblyGood: { $ifNull: [{ $arrayElemAt: ['$assembly.total', 0] }, 0] },
+  qcAccepted: { $ifNull: [{ $arrayElemAt: ['$qc.total', 0] }, 0] },
+  dispatchedQuantity: { $ifNull: [{ $arrayElemAt: ['$dispatch.total', 0] }, 0] },
+};
+
+// Overall production progress for one order/PO from its rolled-up production sums.
+function progressFromSums(s, denomQty) {
+  return overallProgress([
+    { started: s.mouldingCount > 0, pct: pct(s.mouldingGood, denomQty) },
+    { started: s.assemblyCount > 0, pct: pct(s.assemblyGood, denomQty) },
+    { started: s.qcCount > 0, pct: pct(s.qcAccepted, s.assemblyGood || denomQty) },
+    { started: s.dispatchCount > 0, pct: pct(s.dispatchedQuantity, denomQty) },
+  ]);
+}
+
+function stageReachedFrom(s) {
+  return {
+    moulding: s.mouldingCount > 0,
+    assembly: s.assemblyCount > 0,
+    qc: s.qcCount > 0,
+    dispatch: s.dispatchCount > 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// GET /customer/purchase-orders — the Home grid: every PO with a headline summary
+// ---------------------------------------------------------------------------
+async function getPurchaseOrders(user) {
+  const customerId = customerScope(user);
+  const [customer, pos] = await Promise.all([
+    Customer.findById(customerId).select('name').lean(),
+    PurchaseOrder.find({ customerId }).sort({ createdAt: -1 }).lean(),
+  ]);
+  const customerName = customer ? customer.name : null;
+  if (pos.length === 0) return { customer: customerName, purchaseOrders: [] };
+
+  // Roll every item-code order's production up to its PO.
+  const agg = await Order.aggregate([
+    { $match: { customerId, purchaseOrderId: { $ne: null } } },
+    sumLookup(MouldingRecord, 'goodParts', 'moulding'),
+    sumLookup(AssemblyRecord, 'assembledQuantity', 'assembly'),
+    sumLookup(QCRecord, 'acceptedQuantity', 'qc'),
+    sumLookup(PackingDispatchRecord, 'packedQuantity', 'dispatch'),
+    {
+      $addFields: {
+        ...ORDER_PRODUCTION_FIELDS,
+        lastActivityAt: {
+          $max: [
+            { $arrayElemAt: ['$moulding.lastAt', 0] },
+            { $arrayElemAt: ['$assembly.lastAt', 0] },
+            { $arrayElemAt: ['$qc.lastAt', 0] },
+            { $arrayElemAt: ['$dispatch.lastAt', 0] },
+            '$createdAt',
+          ],
+        },
+      },
+    },
+    {
+      $group: {
+        _id: '$purchaseOrderId',
+        itemCount: { $sum: 1 },
+        orderedQty: { $sum: '$orderQuantity' },
+        mouldingGood: { $sum: '$mouldingGood' },
+        assemblyGood: { $sum: '$assemblyGood' },
+        qcAccepted: { $sum: '$qcAccepted' },
+        dispatchedQuantity: { $sum: '$dispatchedQuantity' },
+        mouldingCount: { $sum: '$mouldingCount' },
+        assemblyCount: { $sum: '$assemblyCount' },
+        qcCount: { $sum: '$qcCount' },
+        dispatchCount: { $sum: '$dispatchCount' },
+        lastActivityAt: { $max: '$lastActivityAt' },
+      },
+    },
+  ]);
+  const byPo = new Map(agg.map((r) => [String(r._id), r]));
+
+  const purchaseOrders = pos.map((po) => {
+    const g = byPo.get(String(po._id)) || {
+      itemCount: 0, orderedQty: 0, mouldingGood: 0, assemblyGood: 0, qcAccepted: 0,
+      dispatchedQuantity: 0, mouldingCount: 0, assemblyCount: 0, qcCount: 0, dispatchCount: 0, lastActivityAt: null,
+    };
+    return {
+      id: String(po._id),
+      poNumber: po.poNumber || null,
+      status: deriveOverallStatus({
+        orderQuantity: g.orderedQty,
+        dispatchedQuantity: g.dispatchedQuantity,
+        dispatchCount: g.dispatchCount,
+        qcCount: g.qcCount,
+        assemblyCount: g.assemblyCount,
+        mouldingCount: g.mouldingCount,
+      }),
+      itemCount: g.itemCount || 0,
+      totalQuantity: g.orderedQty || 0,
+      dispatchedQuantity: g.dispatchedQuantity || 0,
+      progressPct: progressFromSums(g, g.orderedQty),
+      stageReached: stageReachedFrom(g),
+      lastUpdatedAt: g.lastActivityAt || po.createdAt,
+      createdAt: po.createdAt,
+    };
+  });
+
+  return { customer: customerName, purchaseOrders };
+}
+
+// ---------------------------------------------------------------------------
+// GET /customer/purchase-orders/:id — every Item Code inside one PO
+// ---------------------------------------------------------------------------
+async function getPurchaseOrderDetail(user, poId) {
+  const customerId = customerScope(user);
+  const po = await PurchaseOrder.findOne({ _id: poId, customerId }).lean();
+  if (!po) throw notFound('Purchase order not found', 'purchase_order_not_found');
+
+  const orders = await Order.aggregate([
+    { $match: { customerId, purchaseOrderId: new mongoose.Types.ObjectId(poId) } },
+    { $sort: { createdAt: 1 } },
+    {
+      $lookup: { from: Product.collection.name, localField: 'productId', foreignField: '_id', as: 'product' },
+    },
+    { $unwind: { path: '$product', preserveNullAndEmptyArrays: true } },
+    sumLookup(MouldingRecord, 'goodParts', 'moulding'),
+    sumLookup(AssemblyRecord, 'assembledQuantity', 'assembly'),
+    sumLookup(QCRecord, 'acceptedQuantity', 'qc'),
+    sumLookup(PackingDispatchRecord, 'packedQuantity', 'dispatch'),
+    {
+      $addFields: {
+        ...ORDER_PRODUCTION_FIELDS,
+        itemCode: '$product.itemCode',
+        productName: '$product.name',
+        partName: '$product.partName',
+      },
+    },
+  ]);
+
+  const roll = {
+    orderedQty: 0, mouldingGood: 0, assemblyGood: 0, qcAccepted: 0, dispatchedQuantity: 0,
+    mouldingCount: 0, assemblyCount: 0, qcCount: 0, dispatchCount: 0,
+  };
+  const data = orders.map((o) => {
+    const qty = o.orderQuantity || 0;
+    roll.orderedQty += qty;
+    roll.mouldingGood += o.mouldingGood; roll.assemblyGood += o.assemblyGood;
+    roll.qcAccepted += o.qcAccepted; roll.dispatchedQuantity += o.dispatchedQuantity;
+    roll.mouldingCount += o.mouldingCount; roll.assemblyCount += o.assemblyCount;
+    roll.qcCount += o.qcCount; roll.dispatchCount += o.dispatchCount;
+    return {
+      id: String(o._id),
+      orderCode: o.orderCode || formatOrderNumber(o._id),
+      itemCode: o.itemCode || null,
+      productName: o.productName || null,
+      partName: o.partName || null,
+      orderQuantity: qty,
+      dispatchedQuantity: o.dispatchedQuantity,
+      progressPct: progressFromSums(o, qty),
+      status: deriveOverallStatus(o),
+      stageReached: stageReachedFrom(o),
+      createdAt: o.createdAt,
+    };
+  });
+
+  return {
+    purchaseOrder: {
+      id: String(po._id),
+      poNumber: po.poNumber || null,
+      status: deriveOverallStatus({
+        orderQuantity: roll.orderedQty,
+        dispatchedQuantity: roll.dispatchedQuantity,
+        dispatchCount: roll.dispatchCount,
+        qcCount: roll.qcCount,
+        assemblyCount: roll.assemblyCount,
+        mouldingCount: roll.mouldingCount,
+      }),
+      itemCount: data.length,
+      totalQuantity: roll.orderedQty,
+      dispatchedQuantity: roll.dispatchedQuantity,
+      progressPct: progressFromSums(roll, roll.orderedQty),
+      notes: po.notes || null,
+      createdAt: po.createdAt,
+    },
+    orders: data,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // GET /customer/orders/:id/dashboard — the complete manufacturing dashboard
 // ---------------------------------------------------------------------------
@@ -990,6 +1190,8 @@ module.exports = {
   getFinishedGoods,
   getProducts,
   getProductOrders,
+  getPurchaseOrders,
+  getPurchaseOrderDetail,
   getOrderDashboard,
   addQcComment,
 };
