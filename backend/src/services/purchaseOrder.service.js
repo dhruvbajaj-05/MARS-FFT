@@ -99,15 +99,28 @@ async function validateLines(customerId, lines) {
 // ONCE per distinct product in parallel — instead of the old 2×N sequential reconciles that
 // made PO creation feel slow (and let admins double-submit). Reconcile is best-effort: a new
 // job has no production yet, it only draws down any existing product surplus.
-async function createPurchaseOrder({ customerId, lines, notes, createdBy }) {
+async function createPurchaseOrder({ customerId, lines, notes, poNumber, createdBy }) {
   const customerExists = await Customer.exists({ _id: customerId });
   if (!customerExists) {
     throw badRequest('customerId does not reference an existing customer', 'invalid_customer');
   }
   const byId = await validateLines(customerId, lines); // validates products/quantities up front
 
+  // Admin can name the PO (names differ per customer/order); fall back to the auto sequence
+  // (PO-#####) when left blank. A custom name must be unique — the same value is the label
+  // shown in every PO dropdown across the app.
+  const custom = poNumber != null ? String(poNumber).trim() : '';
+  let finalPoNumber;
+  if (custom) {
+    const clash = await PurchaseOrder.exists({ poNumber: custom });
+    if (clash) throw conflict(`Purchase order "${custom}" already exists`, 'po_number_taken');
+    finalPoNumber = custom;
+  } else {
+    finalPoNumber = await nextPoNumber();
+  }
+
   const po = await PurchaseOrder.create({
-    poNumber: await nextPoNumber(),
+    poNumber: finalPoNumber,
     customerId,
     notes: notes ? String(notes).trim() : undefined,
     createdBy,

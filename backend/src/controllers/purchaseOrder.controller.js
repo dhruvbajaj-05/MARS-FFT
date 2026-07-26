@@ -3,13 +3,14 @@
 const purchaseOrderService = require('../services/purchaseOrder.service');
 
 // POST /api/v1/purchase-orders  (admin)
-// body: { customerId, lines: [{ productId, orderQuantity }], notes? }
+// body: { customerId, lines: [{ productId, orderQuantity }], notes?, poNumber? }
 async function create(req, res, next) {
   try {
     const result = await purchaseOrderService.createPurchaseOrder({
       customerId: req.body.customerId,
       lines: req.body.lines,
       notes: req.body.notes,
+      poNumber: req.body.poNumber,
       createdBy: req.user.id,
     });
     res.status(201).json(result);
