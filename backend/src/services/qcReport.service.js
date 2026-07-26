@@ -208,19 +208,12 @@ async function createReport({ payload, files, user }) {
   const department = assertDepartment(payload.department);
   const order = await validateChain(payload);
 
-  // Archived PO (all Item Codes' production complete) is read-only — no more QC uploads.
-  if (order.purchaseOrderId) {
-    const po = await PurchaseOrder.findById(order.purchaseOrderId).select('status');
-    if (po && po.status === 'Archived') {
-      throw badRequest(
-        'This purchase order is complete and archived — QC uploads are read-only.',
-        'po_archived'
-      );
-    }
-  }
+  // QC is intentionally decoupled from production/PO archival: a PO auto-archives when its
+  // production completes, but QC work continues afterward. QC uploads are locked ONLY when the
+  // QC Engineer presses "Done QC for this PO" (below) — not by production completion.
 
-  // Once "QC Done" has been pressed for this order + department, QC is locked
-  // permanently — no further reports or images may be uploaded.
+  // Once "Done QC" has been pressed for this order + department, QC is locked permanently —
+  // no further reports or images may be uploaded.
   if ((order.qcClosedDepartments || []).includes(department)) {
     throw badRequest('QC is completed for this order — uploads are locked', 'qc_locked');
   }
