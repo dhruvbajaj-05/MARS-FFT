@@ -11,8 +11,12 @@ const { ROLES } = require('../utils/roles');
 
 const router = express.Router();
 
-// List — admin + moulding engineer (dropdown source).
-router.get('/', ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER), machineController.list);
+// List — dropdown source for production + QC report creation (read-only for all engineers).
+router.get(
+  '/',
+  ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER, ROLES.ASSEMBLY_ENGINEER, ROLES.QC_ENGINEER),
+  machineController.list
+);
 
 // Create / edit / delete — admin only.
 router.post('/', ...protect(ROLES.ADMIN), requireBody(['name', 'category']), machineController.create);

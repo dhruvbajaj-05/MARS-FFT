@@ -44,9 +44,10 @@ router.get(
 );
 
 // Remembered rejection reasons (multi-select list).
+// Read-only for QC + assembly too (defect vocabulary is reused when creating QC reports).
 router.get(
   '/rejection-reasons',
-  ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER),
+  ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER, ROLES.ASSEMBLY_ENGINEER, ROLES.QC_ENGINEER),
   mouldingController.rejectionReasons
 );
 // Persist a custom defect immediately (before form submission).
@@ -78,9 +79,10 @@ router.post(
 );
 
 // Per-order Mould Setup. Declared before /:id.
+// Read-only for QC + assembly too (mould dropdown when creating QC reports / assortments).
 router.get(
   '/order-molds',
-  ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER),
+  ...protect(ROLES.ADMIN, ROLES.MOULDING_ENGINEER, ROLES.ASSEMBLY_ENGINEER, ROLES.QC_ENGINEER),
   mouldingController.listOrderMolds
 );
 router.post(
