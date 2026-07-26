@@ -5,7 +5,6 @@ const PurchaseOrder = require('../models/PurchaseOrder');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
-const Counter = require('../models/Counter');
 const orderService = require('./order.service');
 const reconcileService = require('./reconcile.service');
 const { notFound, badRequest, conflict } = require('../utils/httpError');
@@ -14,19 +13,6 @@ const { parsePagination, buildList } = require('../utils/pagination');
 // The Purchase Order container. A PO groups several independent Item Code production jobs
 // (each a normal Order). Creating a PO reuses order.service.createOrder per line, so the
 // proven orderCode minting + reconcile wiring runs unchanged for every job.
-
-const PO_SEQ = 'poNumber';
-const PO_PREFIX = 'PO-';
-const PO_PAD = 5;
-
-function formatPoNumber(seq) {
-  return `${PO_PREFIX}${String(seq).padStart(PO_PAD, '0')}`;
-}
-
-async function nextPoNumber() {
-  const seq = await Counter.nextSeq(PO_SEQ);
-  return formatPoNumber(seq);
-}
 
 // Derive the PO lifecycle from its jobs: Completed once every job is Completed (or Archived),
 // otherwise Open. Never auto-clears a manual Archive.
@@ -106,18 +92,14 @@ async function createPurchaseOrder({ customerId, lines, notes, poNumber, created
   }
   const byId = await validateLines(customerId, lines); // validates products/quantities up front
 
-  // Admin can name the PO (names differ per customer/order); fall back to the auto sequence
-  // (PO-#####) when left blank. A custom name must be unique — the same value is the label
-  // shown in every PO dropdown across the app.
-  const custom = poNumber != null ? String(poNumber).trim() : '';
-  let finalPoNumber;
-  if (custom) {
-    const clash = await PurchaseOrder.exists({ poNumber: custom });
-    if (clash) throw conflict(`Purchase order "${custom}" already exists`, 'po_number_taken');
-    finalPoNumber = custom;
-  } else {
-    finalPoNumber = await nextPoNumber();
+  // The admin names every PO (names differ per customer/order) — there is no auto counter.
+  // The typed name is the unique label shown in every PO dropdown across the whole app.
+  const finalPoNumber = poNumber != null ? String(poNumber).trim() : '';
+  if (!finalPoNumber) {
+    throw badRequest('A purchase order name is required', 'po_number_required');
   }
+  const clash = await PurchaseOrder.exists({ poNumber: finalPoNumber });
+  if (clash) throw conflict(`Purchase order "${finalPoNumber}" already exists`, 'po_number_taken');
 
   const po = await PurchaseOrder.create({
     poNumber: finalPoNumber,
@@ -348,6 +330,4 @@ module.exports = {
   updatePurchaseOrder,
   deletePurchaseOrder,
   toPublicPO,
-  nextPoNumber,
-  formatPoNumber,
 };

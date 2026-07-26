@@ -109,6 +109,7 @@ async function run() {
   // engine runs exactly as in production.
   const po1 = await purchaseOrderService.createPurchaseOrder({
     customerId: acme._id.toString(),
+    poNumber: 'ACME/2026/Q3-TOYS',
     lines: [
       { productId: garbage._id.toString(), orderQuantity: 13000 },
       { productId: fire._id.toString(), orderQuantity: 4500 },
@@ -119,6 +120,7 @@ async function run() {
   });
   const po2 = await purchaseOrderService.createPurchaseOrder({
     customerId: buildright._id.toString(),
+    poNumber: 'BUILDRIGHT/2026/PO-114',
     lines: [
       { productId: gearbox._id.toString(), orderQuantity: 6000 },
       { productId: wheel._id.toString(), orderQuantity: 20000 },
