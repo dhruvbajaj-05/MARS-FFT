@@ -454,6 +454,8 @@ export interface CustomerPO {
   id: string;
   poNumber: string | null;
   status: string;
+  poStatus: string;
+  archived: boolean;
   itemCount: number;
   totalQuantity: number;
   dispatchedQuantity: number;
@@ -484,6 +486,8 @@ export interface CustomerPODetail {
     id: string;
     poNumber: string | null;
     status: string;
+    poStatus: string;
+    archived: boolean;
     itemCount: number;
     totalQuantity: number;
     dispatchedQuantity: number;

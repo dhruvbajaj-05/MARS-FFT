@@ -804,6 +804,10 @@ async function getPurchaseOrders(user) {
         assemblyCount: g.assemblyCount,
         mouldingCount: g.mouldingCount,
       }),
+      // Real PO lifecycle (Open/Completed/Archived) so the customer can see AND separate
+      // active vs archived POs — `status` above is only the live production stage.
+      poStatus: po.status,
+      archived: po.status === 'Archived',
       itemCount: g.itemCount || 0,
       totalQuantity: g.orderedQty || 0,
       dispatchedQuantity: g.dispatchedQuantity || 0,
@@ -884,6 +888,8 @@ async function getPurchaseOrderDetail(user, poId) {
         assemblyCount: roll.assemblyCount,
         mouldingCount: roll.mouldingCount,
       }),
+      poStatus: po.status,
+      archived: po.status === 'Archived',
       itemCount: data.length,
       totalQuantity: roll.orderedQty,
       dispatchedQuantity: roll.dispatchedQuantity,

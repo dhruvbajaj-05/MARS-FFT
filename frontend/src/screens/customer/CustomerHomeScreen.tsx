@@ -54,7 +54,12 @@ function POCard({ po, onPress }: { po: CustomerPO; onPress: () => void }) {
             </AppText>
             <AppText variant="h3" numberOfLines={2} style={{ marginTop: 2 }}>{po.poNumber ?? 'PO'}</AppText>
           </View>
-          <StatusPill label={po.status} tone={statusTone(po.status)} />
+          {/* Archived POs show their lifecycle badge; active ones show the live production stage. */}
+          {po.archived ? (
+            <StatusPill label="Archived" tone="neutral" />
+          ) : (
+            <StatusPill label={po.status} tone={statusTone(po.status)} />
+          )}
         </View>
 
         <GaugeBar pct={po.progressPct} tone={statusTone(po.status)} showLabel />
@@ -78,10 +83,70 @@ function POCard({ po, onPress }: { po: CustomerPO; onPress: () => void }) {
   );
 }
 
+// A two-way Active/Archived segmented control. Each segment carries its own count so the
+// customer can see at a glance how many POs live in each bucket.
+function POFilterTabs({
+  tab,
+  onChange,
+  activeCount,
+  archivedCount,
+}: {
+  tab: 'active' | 'archived';
+  onChange: (t: 'active' | 'archived') => void;
+  activeCount: number;
+  archivedCount: number;
+}) {
+  const { colors, radius, spacing } = useTheme();
+  const tabs: { key: 'active' | 'archived'; label: string; count: number }[] = [
+    { key: 'active', label: 'Active', count: activeCount },
+    { key: 'archived', label: 'Archived', count: archivedCount },
+  ];
+  return (
+    <View
+      style={{
+        flexDirection: 'row',
+        backgroundColor: colors.surfaceAlt ?? colors.border,
+        borderRadius: radius.pill,
+        padding: spacing(0.5),
+        marginBottom: spacing(4),
+      }}
+    >
+      {tabs.map((t) => {
+        const selected = tab === t.key;
+        return (
+          <PressableScale key={t.key} onPress={() => onChange(t.key)} style={{ flex: 1 }}>
+            <View
+              style={[
+                {
+                  paddingVertical: spacing(2),
+                  borderRadius: radius.pill,
+                  alignItems: 'center',
+                  backgroundColor: selected ? colors.surface : 'transparent',
+                },
+                selected ? shadow('sm') : null,
+              ]}
+            >
+              <AppText weight={selected ? '700' : '600'} tone={selected ? 'default' : 'muted'}>
+                {t.label} · {t.count}
+              </AppText>
+            </View>
+          </PressableScale>
+        );
+      })}
+    </View>
+  );
+}
+
 export function CustomerHomeScreen() {
   const { spacing } = useTheme();
   const navigation = useNavigation<Nav>();
   const query = useQuery({ queryKey: queryKeys.customer.purchaseOrders, queryFn: customerApi.purchaseOrders });
+  const [tab, setTab] = React.useState<'active' | 'archived'>('active');
+
+  const allPos = query.data?.purchaseOrders ?? [];
+  const activePos = allPos.filter((po) => !po.archived);
+  const archivedPos = allPos.filter((po) => po.archived);
+  const visiblePos = tab === 'archived' ? archivedPos : activePos;
 
   return (
     <Screen scroll refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}>
@@ -104,7 +169,7 @@ export function CustomerHomeScreen() {
         </View>
       ) : query.isError ? (
         <ErrorState message="We couldn't load your purchase orders." onRetry={query.refetch} />
-      ) : !query.data || query.data.purchaseOrders.length === 0 ? (
+      ) : allPos.length === 0 ? (
         <PremiumEmpty
           icon="📦"
           title="No purchase orders yet"
@@ -112,13 +177,31 @@ export function CustomerHomeScreen() {
         />
       ) : (
         <View>
-          {query.data.purchaseOrders.map((po) => (
-            <POCard
-              key={po.id}
-              po={po}
-              onPress={() => navigation.navigate('CustomerPO', { purchaseOrderId: po.id, poNumber: po.poNumber ?? 'PO' })}
+          <POFilterTabs
+            tab={tab}
+            onChange={setTab}
+            activeCount={activePos.length}
+            archivedCount={archivedPos.length}
+          />
+          {visiblePos.length === 0 ? (
+            <PremiumEmpty
+              icon={tab === 'archived' ? '🗄️' : '📦'}
+              title={tab === 'archived' ? 'No archived purchase orders' : 'No active purchase orders'}
+              message={
+                tab === 'archived'
+                  ? 'Completed purchase orders will move here once production wraps up.'
+                  : 'All your purchase orders are complete — check the Archived tab.'
+              }
             />
-          ))}
+          ) : (
+            visiblePos.map((po) => (
+              <POCard
+                key={po.id}
+                po={po}
+                onPress={() => navigation.navigate('CustomerPO', { purchaseOrderId: po.id, poNumber: po.poNumber ?? 'PO' })}
+              />
+            ))
+          )}
         </View>
       )}
     </Screen>
