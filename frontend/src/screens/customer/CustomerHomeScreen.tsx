@@ -106,9 +106,10 @@ function POFilterTabs({
     <View
       style={{
         flexDirection: 'row',
+        gap: spacing(1.5),
         backgroundColor: colors.surfaceAlt ?? colors.border,
         borderRadius: radius.pill,
-        padding: spacing(0.5),
+        padding: spacing(1),
         marginBottom: spacing(4),
       }}
     >
@@ -119,7 +120,7 @@ function POFilterTabs({
             <View
               style={[
                 {
-                  paddingVertical: spacing(2),
+                  paddingVertical: spacing(2.5),
                   borderRadius: radius.pill,
                   alignItems: 'center',
                   backgroundColor: selected ? colors.surface : 'transparent',

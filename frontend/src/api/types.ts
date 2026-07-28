@@ -514,6 +514,18 @@ export interface CustomerMoldRow {
   progressPct: number;
   lastUpdatedAt: string | null;
 }
+// One assembly line's rolled-up production for an item code (detailed assembly record,
+// parallel to CustomerMoldRow in Moulding).
+export interface CustomerAssemblyLine {
+  lineName: string;
+  goodAssemblies: number;
+  rejected: number;
+  rejectionRate: number;
+  operators: number;
+  shift: 'A' | 'B' | 'C' | string | null;
+  runs: number;
+  lastUpdatedAt: string | null;
+}
 export interface CustomerTimelineStep {
   label: string;
   at: string | null;
@@ -556,16 +568,14 @@ export interface CustomerOrderDashboard {
     operators: number;
     status: string;
     lastUpdatedAt: string | null;
+    lines: CustomerAssemblyLine[];
   };
   qc: {
     progressPct: number;
-    passed: number;
-    failed: number;
-    inspected: number;
-    pendingInspection: number;
-    passRate: number;
-    defects: { type: string; quantity: number }[];
-    photos: Media[];
+    mouldingQcDone: boolean;
+    assemblyQcDone: boolean;
+    reportCount: number;
+    openReports: number;
     status: string;
     lastUpdatedAt: string | null;
   };

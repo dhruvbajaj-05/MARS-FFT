@@ -828,14 +828,13 @@ async function getPurchaseOrders(user) {
       // Real PO lifecycle (Open/Completed/Archived) so the customer can see AND separate
       // active vs archived POs — `status` above is only the live production stage.
       poStatus: po.status,
-      // A PO the customer considers "done" — either the admin marked it Completed/Archived,
-      // OR its production is actually finished (fully dispatched). We can't rely on the cached
-      // lifecycle status alone: it only self-heals when an admin opens the PO detail, so a PO
-      // whose items are all shipped can still read 'Open'. Deriving from real production keeps
-      // finished POs in the Archived/done bucket regardless. `false` denominator (no items) →
-      // deriveOverallStatus returns 'Pending', so empty POs correctly stay Active.
-      archived:
-        po.status === 'Archived' || po.status === 'Completed' || derivedStatus === 'Completed',
+      // A PO is "done" (Archived bucket) ONLY when every item code is finished AND fully
+      // dispatched — i.e. the whole order is produced and shipped. We deliberately IGNORE the
+      // admin's cached po.status here: production auto-archives a PO the moment moulding
+      // finishes (long before dispatch), which used to drop still-shipping POs into the
+      // customer's Archived tab. Deriving purely from real dispatch (derivedStatus ===
+      // 'Completed' ⇒ dispatchedQuantity >= orderedQty) keeps a PO Active until it truly ships.
+      archived: derivedStatus === 'Completed',
       itemCount: g.itemCount || 0,
       totalQuantity: g.orderedQty || 0,
       dispatchedQuantity: g.dispatchedQuantity || 0,
@@ -920,10 +919,11 @@ async function getPurchaseOrderDetail(user, poId) {
       poNumber: po.poNumber || null,
       status: derivedStatus,
       poStatus: po.status,
-      // Done = admin-marked Completed/Archived OR production actually finished (fully dispatched);
-      // see getPurchaseOrders for why the cached lifecycle status alone isn't enough.
-      archived:
-        po.status === 'Archived' || po.status === 'Completed' || derivedStatus === 'Completed',
+      // Done = the whole PO is produced AND fully dispatched (derivedStatus 'Completed'). We
+      // ignore the admin's cached po.status on purpose — production auto-archives a PO when
+      // moulding finishes, well before dispatch, so trusting it would archive still-shipping
+      // POs. See getPurchaseOrders for the full rationale.
+      archived: derivedStatus === 'Completed',
       itemCount: data.length,
       totalQuantity: roll.orderedQty,
       dispatchedQuantity: roll.dispatchedQuantity,
@@ -947,7 +947,7 @@ async function getOrderDashboard(user, orderId) {
     ? await PurchaseOrder.findById(order.purchaseOrderId).select('poNumber').lean()
     : null;
 
-  const [product, customer, orderMolds, mouldAgg, asmAgg, qcAgg, dispatchRecs, qcPhotoDocs, timelineDates] =
+  const [product, customer, orderMolds, mouldAgg, asmAgg, asmLineAgg, qcAgg, dispatchRecs, timelineDates] =
     await Promise.all([
       Product.findById(order.productId).select('name itemCode partName').lean(),
       Customer.findById(order.customerId).select('name').lean(),
@@ -983,6 +983,24 @@ async function getOrderDashboard(user, orderId) {
           },
         },
       ]),
+      // Per assembly-line breakdown so the customer sees detailed assembly records
+      // (mirrors the per-mould breakdown in Moulding). Latest run first so $first
+      // captures the most recent shift/operator count for the line.
+      AssemblyRecord.aggregate([
+        { $match: { orderId: oid } },
+        { $sort: { createdAt: -1 } },
+        {
+          $group: {
+            _id: '$assemblyLine',
+            goodAssemblies: { $sum: '$assembledQuantity' },
+            rejected: { $sum: '$rejectedQuantity' },
+            operators: { $first: '$operatorCount' },
+            runs: { $sum: 1 },
+            shift: { $first: '$shift' },
+            lastAt: { $first: '$createdAt' },
+          },
+        },
+      ]),
       QCRecord.aggregate([
         { $match: { orderId: oid } },
         {
@@ -997,7 +1015,6 @@ async function getOrderDashboard(user, orderId) {
         },
       ]),
       PackingDispatchRecord.find({ orderId: oid, customerId }).sort({ dispatchDate: 1 }).lean(),
-      QCRecord.find({ orderId: oid, customerId }).populate('photos').lean(),
       // Earliest activity per stage for the timeline.
       Promise.all([
         OrderMold.findOne({ orderId: oid }).sort({ createdAt: 1 }).select('createdAt').lean(),
@@ -1074,6 +1091,20 @@ async function getOrderDashboard(user, orderId) {
 
   // ---- Assembly ------------------------------------------------------------
   const a = asmAgg[0] || { assembledGood: 0, rejected: 0, operators: 0, runs: 0, lastAt: null };
+  // Per-line records (detailed, like Moulding's per-mould cards).
+  const assemblyLines = (asmLineAgg || [])
+    .filter((l) => l._id)
+    .map((l) => ({
+      lineName: l._id,
+      goodAssemblies: l.goodAssemblies || 0,
+      rejected: l.rejected || 0,
+      rejectionRate: ratePct(l.rejected || 0, (l.goodAssemblies || 0) + (l.rejected || 0)),
+      operators: l.operators || 0,
+      shift: l.shift || null,
+      runs: l.runs || 0,
+      lastUpdatedAt: l.lastAt || null,
+    }))
+    .sort((x, y) => x.lineName.localeCompare(y.lineName));
   const assembly = {
     progressPct: pct(a.assembledGood, orderQty),
     requiredQuantity: orderQty,
@@ -1084,32 +1115,36 @@ async function getOrderDashboard(user, orderId) {
     operators: a.operators || 0,
     status: stageStatus(a.runs > 0, pct(a.assembledGood, orderQty)),
     lastUpdatedAt: a.lastAt || null,
+    lines: assemblyLines,
   };
 
   // ---- Quality control -----------------------------------------------------
+  // The customer's QC progress tracks the NEW centralized QC module (defect reporting),
+  // NOT the legacy finished-goods QCRecord. It advances only when the QC Engineer signs
+  // off "Done QC for this PO" per department: Moulding QC done ⇒ 50%, Assembly QC done ⇒
+  // the other 50% (100% total). `defectReports` (below) are all the image-first reports
+  // filed against this item code, shown inside the QC tab.
   const q = qcAgg[0] || { accepted: 0, rejected: 0, inspected: 0, runs: 0, lastAt: null };
-  const defectMap = new Map();
-  const qcPhotos = [];
-  for (const rec of qcPhotoDocs) {
-    for (const def of rec.defects || []) {
-      defectMap.set(def.defectType, (defectMap.get(def.defectType) || 0) + def.quantity);
-    }
-    for (const ph of rec.photos || []) {
-      const m = toMedia(ph);
-      if (m) qcPhotos.push(m);
-    }
-  }
+  const closedDepts = order.qcClosedDepartments || [];
+  const mouldingQcDone = closedDepts.includes('moulding');
+  const assemblyQcDone = closedDepts.includes('assembly');
+  const qcProgressPct = (mouldingQcDone ? 50 : 0) + (assemblyQcDone ? 50 : 0);
+  const openReports = defectReports.filter(
+    (r) => r.status === 'open' || r.status === 'investigating'
+  ).length;
   const qc = {
-    progressPct: pct(q.inspected, a.assembledGood || orderQty),
-    passed: q.accepted,
-    failed: q.rejected,
-    inspected: q.inspected,
-    pendingInspection: Math.max(0, (a.assembledGood || 0) - q.inspected),
-    passRate: ratePct(q.accepted, q.accepted + q.rejected),
-    defects: [...defectMap.entries()].map(([type, quantity]) => ({ type, quantity })).sort((x, y) => y.quantity - x.quantity),
-    photos: qcPhotos,
-    status: stageStatus(q.runs > 0, pct(q.inspected, a.assembledGood || orderQty)),
-    lastUpdatedAt: q.lastAt || null,
+    progressPct: qcProgressPct,
+    mouldingQcDone,
+    assemblyQcDone,
+    reportCount: defectReports.length,
+    openReports,
+    status:
+      qcProgressPct >= 100
+        ? 'Completed'
+        : qcProgressPct > 0 || defectReports.length > 0
+        ? 'In progress'
+        : 'Not started',
+    lastUpdatedAt: defectReports[0] ? defectReports[0].createdAt : q.lastAt || null,
   };
 
   // ---- Dispatch ------------------------------------------------------------
