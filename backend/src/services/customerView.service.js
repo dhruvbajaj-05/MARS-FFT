@@ -161,11 +161,25 @@ function sumLookup(model, field, as) {
 }
 
 // Customer-facing overall stage, derived from how far production has progressed.
+//
+// A stage that has reached 100% has handed its goods to the NEXT stage, so the customer sees
+// the work advance even before that next stage has logged its first record — e.g. once Assembly
+// is fully done the order reads "In QC" (awaiting inspection), not stuck on "In Assembly".
+// Completion is measured in good pieces against the order quantity; callers that want this
+// forward-looking behaviour pass `assemblyGood` / `qcAccepted` (record-count-only callers still
+// get the classic "furthest stage with records" answer).
 function deriveOverallStatus(o) {
   const qty = o.orderQuantity || 0;
+  const assemblyGood = o.assemblyGood || 0;
+  const qcAccepted = o.qcAccepted || 0;
+
   if (qty > 0 && o.dispatchedQuantity >= qty) return 'Completed';
   if (o.dispatchCount > 0) return 'Dispatching';
+  // QC fully accepted → ready to dispatch, so it sits at the Dispatch stage.
+  if (qty > 0 && qcAccepted >= qty) return 'Dispatching';
   if (o.qcCount > 0) return 'In QC';
+  // Assembly fully built → waiting for QC.
+  if (qty > 0 && assemblyGood >= qty) return 'In QC';
   if (o.assemblyCount > 0) return 'In Assembly';
   if (o.mouldingCount > 0) return 'In Moulding';
   return 'Pending';
@@ -200,7 +214,9 @@ async function listOrders(user, query = {}) {
         $addFields: {
           mouldingCount: { $ifNull: [{ $arrayElemAt: ['$moulding.count', 0] }, 0] },
           assemblyCount: { $ifNull: [{ $arrayElemAt: ['$assembly.count', 0] }, 0] },
+          assemblyGood: { $ifNull: [{ $arrayElemAt: ['$assembly.total', 0] }, 0] },
           qcCount: { $ifNull: [{ $arrayElemAt: ['$qc.count', 0] }, 0] },
+          qcAccepted: { $ifNull: [{ $arrayElemAt: ['$qc.total', 0] }, 0] },
           dispatchCount: { $ifNull: [{ $arrayElemAt: ['$dispatch.count', 0] }, 0] },
           dispatchedQuantity: { $ifNull: [{ $arrayElemAt: ['$dispatch.total', 0] }, 0] },
         },
@@ -213,7 +229,9 @@ async function listOrders(user, query = {}) {
           partName: '$product.partName',
           mouldingCount: 1,
           assemblyCount: 1,
+          assemblyGood: 1,
           qcCount: 1,
+          qcAccepted: 1,
           dispatchCount: 1,
           dispatchedQuantity: 1,
         },
@@ -798,7 +816,9 @@ async function getPurchaseOrders(user) {
       dispatchedQuantity: g.dispatchedQuantity,
       dispatchCount: g.dispatchCount,
       qcCount: g.qcCount,
+      qcAccepted: g.qcAccepted,
       assemblyCount: g.assemblyCount,
+      assemblyGood: g.assemblyGood,
       mouldingCount: g.mouldingCount,
     });
     return {
@@ -889,7 +909,9 @@ async function getPurchaseOrderDetail(user, poId) {
     dispatchedQuantity: roll.dispatchedQuantity,
     dispatchCount: roll.dispatchCount,
     qcCount: roll.qcCount,
+    qcAccepted: roll.qcAccepted,
     assemblyCount: roll.assemblyCount,
+    assemblyGood: roll.assemblyGood,
     mouldingCount: roll.mouldingCount,
   });
   return {
@@ -1152,7 +1174,9 @@ async function getOrderDashboard(user, orderId) {
         dispatchedQuantity: dispatched,
         dispatchCount: shipments.length,
         qcCount: q.runs,
+        qcAccepted: q.accepted,
         assemblyCount: a.runs,
+        assemblyGood: a.assembledGood,
         mouldingCount: molds.filter((m) => m.produced > 0).length,
       }),
       createdAt: order.createdAt,
