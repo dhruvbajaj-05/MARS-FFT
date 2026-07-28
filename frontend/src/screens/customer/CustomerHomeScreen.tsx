@@ -54,9 +54,10 @@ function POCard({ po, onPress }: { po: CustomerPO; onPress: () => void }) {
             </AppText>
             <AppText variant="h3" numberOfLines={2} style={{ marginTop: 2 }}>{po.poNumber ?? 'PO'}</AppText>
           </View>
-          {/* Archived POs show their lifecycle badge; active ones show the live production stage. */}
+          {/* Finished POs show their real lifecycle badge (Completed / Archived); active ones
+              show the live production stage. */}
           {po.archived ? (
-            <StatusPill label="Archived" tone="neutral" />
+            <StatusPill label={po.poStatus === 'Completed' ? 'Completed' : 'Archived'} tone="neutral" />
           ) : (
             <StatusPill label={po.status} tone={statusTone(po.status)} />
           )}

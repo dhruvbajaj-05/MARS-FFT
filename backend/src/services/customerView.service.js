@@ -807,7 +807,10 @@ async function getPurchaseOrders(user) {
       // Real PO lifecycle (Open/Completed/Archived) so the customer can see AND separate
       // active vs archived POs — `status` above is only the live production stage.
       poStatus: po.status,
-      archived: po.status === 'Archived',
+      // A PO the customer considers "done" — lifecycle Completed OR Archived. Both belong in
+      // the customer's Archived/Completed bucket so a finished PO is always viewable there
+      // (a Completed PO must not stay hidden among the active ones).
+      archived: po.status === 'Archived' || po.status === 'Completed',
       itemCount: g.itemCount || 0,
       totalQuantity: g.orderedQty || 0,
       dispatchedQuantity: g.dispatchedQuantity || 0,
@@ -889,7 +892,7 @@ async function getPurchaseOrderDetail(user, poId) {
         mouldingCount: roll.mouldingCount,
       }),
       poStatus: po.status,
-      archived: po.status === 'Archived',
+      archived: po.status === 'Archived' || po.status === 'Completed',
       itemCount: data.length,
       totalQuantity: roll.orderedQty,
       dispatchedQuantity: roll.dispatchedQuantity,
