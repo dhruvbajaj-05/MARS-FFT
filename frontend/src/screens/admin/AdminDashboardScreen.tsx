@@ -41,11 +41,18 @@ export function AdminDashboardScreen() {
   const dashboard = useQuery({ queryKey: queryKeys.admin.dashboard, queryFn: adminApi.dashboard });
   const depts = useQuery({ queryKey: queryKeys.admin.departments, queryFn: adminApi.departments });
   const delayed = useQuery({ queryKey: queryKeys.admin.delayed({}), queryFn: () => adminApi.delayedOrders({}) });
-  const qcNotifs = useQuery({
-    queryKey: queryKeys.qc.notifications({ unread: true }),
-    queryFn: () => qcReportsApi.notifications({ unread: true, limit: 1 }),
+  // Badge = number of OPEN QC cases (not unread notifications). A notification is raised once
+  // when a report is filed and never cleared by closing the case, so the old unread count stuck
+  // at "3 new" even after every case was closed. Counting open reports means the badge tracks
+  // reality: it rises when a case is opened/reopened and falls the moment one is closed.
+  const qcOpenParams = { status: 'open' as const, limit: 1 };
+  const qcOpen = useQuery({
+    queryKey: queryKeys.qc.reports({ ...qcOpenParams, badge: true }),
+    queryFn: () => qcReportsApi.list(qcOpenParams),
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
-  const qcUnread = qcNotifs.data?.unreadCount ?? 0;
+  const qcUnread = qcOpen.data?.pagination.total ?? 0;
 
   const isRefreshing =
     dashboard.isRefetching || depts.isRefetching || delayed.isRefetching;
@@ -97,7 +104,7 @@ export function AdminDashboardScreen() {
           <AppText style={{ fontSize: 26 }}>🔍</AppText>
           <View style={{ flex: 1 }}>
             <AppText variant="h3" style={{ color: qcUnread > 0 ? colors.status.danger.fg : colors.text }}>
-              Quality Control{qcUnread > 0 ? ` · ${qcUnread} new` : ''}
+              Quality Control{qcUnread > 0 ? ` · ${qcUnread} open` : ''}
             </AppText>
             <AppText variant="caption" tone="muted">
               View every QC defect report across all companies
