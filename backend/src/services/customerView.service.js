@@ -793,24 +793,29 @@ async function getPurchaseOrders(user) {
       itemCount: 0, orderedQty: 0, mouldingGood: 0, assemblyGood: 0, qcAccepted: 0,
       dispatchedQuantity: 0, mouldingCount: 0, assemblyCount: 0, qcCount: 0, dispatchCount: 0, lastActivityAt: null,
     };
+    const derivedStatus = deriveOverallStatus({
+      orderQuantity: g.orderedQty,
+      dispatchedQuantity: g.dispatchedQuantity,
+      dispatchCount: g.dispatchCount,
+      qcCount: g.qcCount,
+      assemblyCount: g.assemblyCount,
+      mouldingCount: g.mouldingCount,
+    });
     return {
       id: String(po._id),
       poNumber: po.poNumber || null,
-      status: deriveOverallStatus({
-        orderQuantity: g.orderedQty,
-        dispatchedQuantity: g.dispatchedQuantity,
-        dispatchCount: g.dispatchCount,
-        qcCount: g.qcCount,
-        assemblyCount: g.assemblyCount,
-        mouldingCount: g.mouldingCount,
-      }),
+      status: derivedStatus,
       // Real PO lifecycle (Open/Completed/Archived) so the customer can see AND separate
       // active vs archived POs — `status` above is only the live production stage.
       poStatus: po.status,
-      // A PO the customer considers "done" — lifecycle Completed OR Archived. Both belong in
-      // the customer's Archived/Completed bucket so a finished PO is always viewable there
-      // (a Completed PO must not stay hidden among the active ones).
-      archived: po.status === 'Archived' || po.status === 'Completed',
+      // A PO the customer considers "done" — either the admin marked it Completed/Archived,
+      // OR its production is actually finished (fully dispatched). We can't rely on the cached
+      // lifecycle status alone: it only self-heals when an admin opens the PO detail, so a PO
+      // whose items are all shipped can still read 'Open'. Deriving from real production keeps
+      // finished POs in the Archived/done bucket regardless. `false` denominator (no items) →
+      // deriveOverallStatus returns 'Pending', so empty POs correctly stay Active.
+      archived:
+        po.status === 'Archived' || po.status === 'Completed' || derivedStatus === 'Completed',
       itemCount: g.itemCount || 0,
       totalQuantity: g.orderedQty || 0,
       dispatchedQuantity: g.dispatchedQuantity || 0,
@@ -879,20 +884,24 @@ async function getPurchaseOrderDetail(user, poId) {
     };
   });
 
+  const derivedStatus = deriveOverallStatus({
+    orderQuantity: roll.orderedQty,
+    dispatchedQuantity: roll.dispatchedQuantity,
+    dispatchCount: roll.dispatchCount,
+    qcCount: roll.qcCount,
+    assemblyCount: roll.assemblyCount,
+    mouldingCount: roll.mouldingCount,
+  });
   return {
     purchaseOrder: {
       id: String(po._id),
       poNumber: po.poNumber || null,
-      status: deriveOverallStatus({
-        orderQuantity: roll.orderedQty,
-        dispatchedQuantity: roll.dispatchedQuantity,
-        dispatchCount: roll.dispatchCount,
-        qcCount: roll.qcCount,
-        assemblyCount: roll.assemblyCount,
-        mouldingCount: roll.mouldingCount,
-      }),
+      status: derivedStatus,
       poStatus: po.status,
-      archived: po.status === 'Archived' || po.status === 'Completed',
+      // Done = admin-marked Completed/Archived OR production actually finished (fully dispatched);
+      // see getPurchaseOrders for why the cached lifecycle status alone isn't enough.
+      archived:
+        po.status === 'Archived' || po.status === 'Completed' || derivedStatus === 'Completed',
       itemCount: data.length,
       totalQuantity: roll.orderedQty,
       dispatchedQuantity: roll.dispatchedQuantity,
