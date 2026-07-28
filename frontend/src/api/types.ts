@@ -1149,6 +1149,18 @@ export interface QCActiveOrdersResponse {
   orders: QCActiveOrder[];
 }
 
+// Per-item-code (order) QC report counts for a department, across active + archived QC.
+// Used to flag item codes that have reports (and how many are open) at a glance.
+export interface QCOrderReportCount {
+  orderId: string;
+  reportCount: number;
+  openCount: number;
+  lastReportAt: string | null;
+}
+export interface QCOrderReportCountsResponse {
+  counts: QCOrderReportCount[];
+}
+
 // A Purchase Order inside a department's QC tab (PO-level active/archive, req #12).
 export interface QCActivePO {
   id: string;

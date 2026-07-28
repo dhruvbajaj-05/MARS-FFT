@@ -586,6 +586,33 @@ function listArchivedOrders({ department }) {
   return listDeptOrders({ department, archived: true });
 }
 
+// Per-item-code (order) QC report counts for a department, across BOTH active and archived
+// QC. Powers the visible "reports are in these item codes" badges shown next to each item
+// code in the QC screens — so a viewer sees where reports live without opening each one.
+// Keyed by orderId (the item-code job); openCount matches the PO-level `$eq open` count.
+async function orderReportCounts({ department }) {
+  assertDepartment(department);
+  const agg = await QCReport.aggregate([
+    { $match: { department } },
+    {
+      $group: {
+        _id: '$orderId',
+        reportCount: { $sum: 1 },
+        openCount: { $sum: { $cond: [{ $eq: ['$status', 'open'] }, 1, 0] } },
+        lastReportAt: { $max: '$createdAt' },
+      },
+    },
+  ]);
+  return {
+    counts: agg.map((r) => ({
+      orderId: String(r._id),
+      reportCount: r.reportCount,
+      openCount: r.openCount,
+      lastReportAt: r.lastReportAt || null,
+    })),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // PO-level QC lists (req #12/#13) — the Moulding QC screen works at PO level.
 // A PO is ACTIVE for a department while ANY of its involved item-code jobs is not yet
@@ -838,6 +865,7 @@ module.exports = {
   orderContext,
   listActiveOrders,
   listArchivedOrders,
+  orderReportCounts,
   listActivePOs,
   listArchivedPOs,
   closePO,

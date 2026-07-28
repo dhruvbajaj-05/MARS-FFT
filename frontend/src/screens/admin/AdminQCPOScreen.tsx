@@ -4,9 +4,11 @@ import React, { useState } from 'react';
 import { RefreshControl, View } from 'react-native';
 
 import { purchaseOrdersApi } from '@/api/endpoints/purchaseOrders';
+import { qcReportsApi } from '@/api/endpoints/qcReports';
 import { queryKeys } from '@/api/queryKeys';
 import type { QCDepartment } from '@/api/types';
 import { AppText, Button, Card, PressableScale, Screen } from '@/components';
+import { ItemCodeReportBadge } from '@/components/qc';
 import { useTheme } from '@/theme/ThemeProvider';
 
 const DEPT_LABEL: Record<QCDepartment, string> = { moulding: 'Moulding', assembly: 'Assembly' };
@@ -37,11 +39,33 @@ export function AdminQCPOScreen() {
   });
   const jobs = detail.data?.jobs ?? [];
 
+  // Per-item-code report counts for the selected department, so each item code shows whether
+  // (and how many) reports it has — the admin sees where reports are without opening each one.
+  const countsQuery = useQuery({
+    queryKey: queryKeys.qc.orderReportCounts(department),
+    queryFn: () => qcReportsApi.orderReportCounts(department),
+  });
+  const countsByOrder = React.useMemo(() => {
+    const m = new Map<string, { reportCount: number; openCount: number }>();
+    for (const c of countsQuery.data ?? []) {
+      m.set(c.orderId, { reportCount: c.reportCount, openCount: c.openCount });
+    }
+    return m;
+  }, [countsQuery.data]);
+
   return (
     <Screen
       scroll
       contentStyle={{ paddingBottom: 140 }}
-      refreshControl={<RefreshControl refreshing={detail.isRefetching} onRefresh={detail.refetch} />}
+      refreshControl={
+        <RefreshControl
+          refreshing={detail.isRefetching || countsQuery.isRefetching}
+          onRefresh={() => {
+            detail.refetch();
+            countsQuery.refetch();
+          }}
+        />
+      }
     >
       <AppText variant="h1" style={{ marginBottom: spacing(1) }}>
         {poNumber ?? 'Purchase Order'}
@@ -78,8 +102,16 @@ export function AdminQCPOScreen() {
         <View style={{ gap: spacing(2) }}>
           {jobs.map((job) => (
             <View key={job.id} style={{ backgroundColor: colors.surfaceAlt, borderRadius: radius.md, padding: spacing(3) }}>
-              <AppText weight="700" style={{ fontSize: 15 }}>{job.itemCode ?? '—'}</AppText>
-              <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>{job.productName}</AppText>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: spacing(2), marginBottom: spacing(2) }}>
+                <View style={{ flex: 1 }}>
+                  <AppText weight="700" style={{ fontSize: 15 }}>{job.itemCode ?? '—'}</AppText>
+                  <AppText variant="caption" tone="muted">{job.productName}</AppText>
+                </View>
+                <ItemCodeReportBadge
+                  reportCount={countsByOrder.get(job.id)?.reportCount ?? 0}
+                  openCount={countsByOrder.get(job.id)?.openCount ?? 0}
+                />
+              </View>
               <Button
                 label={`View ${DEPT_LABEL[department]} QC Reports`}
                 variant="secondary"

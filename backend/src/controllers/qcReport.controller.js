@@ -58,6 +58,16 @@ async function archivedOrders(req, res, next) {
   }
 }
 
+// GET /api/v1/qc-reports/order-report-counts?department=  — per-item-code report counts
+// (both active + archived) so item codes with reports can be flagged at a glance.
+async function orderReportCounts(req, res, next) {
+  try {
+    res.status(200).json(await qcReportService.orderReportCounts({ department: req.query.department }));
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /api/v1/qc-reports/active-pos?department=  — POs in a department's active QC
 async function activePOs(req, res, next) {
   try {
@@ -186,6 +196,7 @@ module.exports = {
   orderContext,
   activeOrders,
   archivedOrders,
+  orderReportCounts,
   activePOs,
   archivedPOs,
   closePO,

@@ -48,6 +48,9 @@ router.get('/summary', ...protect(...QC_VIEWERS), controller.summary);
 router.get('/active-orders', ...protect(...QC_VIEWERS), controller.activeOrders);
 router.get('/archived-orders', ...protect(...QC_VIEWERS), controller.archivedOrders);
 
+// Per-item-code report counts (active + archived) — powers the "reports are here" badges.
+router.get('/order-report-counts', ...protect(...QC_VIEWERS), controller.orderReportCounts);
+
 // PO-level QC lists (read) + "Done QC" archive (QC Engineer only — req #9).
 router.get('/active-pos', ...protect(...QC_VIEWERS), controller.activePOs);
 router.get('/archived-pos', ...protect(...QC_VIEWERS), controller.archivedPOs);

@@ -63,6 +63,7 @@ export const queryKeys = {
       ['qc', 'order-context', orderId, department] as const,
     activeOrders: (department: string) => ['qc', 'active-orders', department] as const,
     archivedOrders: (department: string) => ['qc', 'archived-orders', department] as const,
+    orderReportCounts: (department: string) => ['qc', 'order-report-counts', department] as const,
     activePOs: (department: string) => ['qc', 'active-pos', department] as const,
     archivedPOs: (department: string) => ['qc', 'archived-pos', department] as const,
     summary: (orderId: string, department: string) => ['qc', 'summary', orderId, department] as const,

@@ -6,6 +6,7 @@ import type {
   QCDepartment,
   QCNotification,
   QCOrderContext,
+  QCOrderReportCountsResponse,
   QCReport,
   QCStatusValue,
   QCSummary,
@@ -55,6 +56,13 @@ export const qcReportsApi = {
     apiClient
       .get<QCActiveOrdersResponse>('/qc-reports/active-orders', { params: { department } })
       .then((r) => r.data.orders),
+
+  // Per-item-code report counts (active + archived) — used to badge item codes that have
+  // reports so viewers see WHERE reports are without opening each item code.
+  orderReportCounts: (department: QCDepartment) =>
+    apiClient
+      .get<QCOrderReportCountsResponse>('/qc-reports/order-report-counts', { params: { department } })
+      .then((r) => r.data.counts),
 
   // Item codes moved to ARCHIVED QC (after "Done Uploading QC Photos" / "QC Done").
   archivedOrders: (department: QCDepartment) =>

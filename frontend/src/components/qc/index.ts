@@ -6,6 +6,7 @@ export { SeveritySelector } from './SeveritySelector';
 export { StatusPicker } from './StatusPicker';
 export { CommentThread } from './CommentThread';
 export { QCIssuesCard } from './QCIssuesCard';
+export { ItemCodeReportBadge } from './ItemCodeReportBadge';
 export {
   SEVERITY_META,
   STATUS_META,

@@ -9,6 +9,7 @@ import { qcReportsApi } from '@/api/endpoints/qcReports';
 import { queryKeys } from '@/api/queryKeys';
 import type { QCActivePO, QCDepartment } from '@/api/types';
 import { AppText, Button, Card, PressableScale, Screen } from '@/components';
+import { ItemCodeReportBadge } from '@/components/qc';
 import { useMouldingSession } from '@/features/moulding/MouldingSessionContext';
 import { useTheme } from '@/theme/ThemeProvider';
 import type { QCStackParamList } from './navTypes';
@@ -27,12 +28,14 @@ function POCard({
   mode,
   department,
   caps,
+  countsByOrder,
   initiallyOpen,
 }: {
   po: QCActivePO;
   mode: Mode;
   department: QCDepartment;
   caps: QCCapabilities;
+  countsByOrder: Map<string, { reportCount: number; openCount: number }>;
   initiallyOpen?: boolean;
 }) {
   const { colors, spacing, radius } = useTheme();
@@ -91,9 +94,17 @@ function POCard({
           ) : (
             (detail.data?.jobs ?? []).map((job) => (
               <View key={job.id} style={{ backgroundColor: colors.surfaceAlt, borderRadius: radius.md, padding: spacing(3) }}>
-                <AppText weight="700" style={{ fontSize: 15 }}>{job.itemCode ?? '—'}</AppText>
-                <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>{job.productName}</AppText>
-                <View style={{ flexDirection: 'row', gap: spacing(2) }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: spacing(2) }}>
+                  <View style={{ flex: 1 }}>
+                    <AppText weight="700" style={{ fontSize: 15 }}>{job.itemCode ?? '—'}</AppText>
+                    <AppText variant="caption" tone="muted">{job.productName}</AppText>
+                  </View>
+                  <ItemCodeReportBadge
+                    reportCount={countsByOrder.get(job.id)?.reportCount ?? 0}
+                    openCount={countsByOrder.get(job.id)?.openCount ?? 0}
+                  />
+                </View>
+                <View style={{ flexDirection: 'row', gap: spacing(2), marginTop: spacing(2) }}>
                   {mode === 'active' && caps.canCreate ? (
                     <Button
                       label="＋ Create QC Report"
@@ -161,11 +172,33 @@ export function DepartmentQCScreen({ department }: { department: QCDepartment })
   const pos = query.data ?? [];
   const isArchived = mode === 'archived';
 
+  // Per-item-code report counts (active + archived) so each item code can flag whether it has
+  // reports — no need to open every item code to find where reports were filed.
+  const countsQuery = useQuery({
+    queryKey: queryKeys.qc.orderReportCounts(department),
+    queryFn: () => qcReportsApi.orderReportCounts(department),
+  });
+  const countsByOrder = React.useMemo(() => {
+    const m = new Map<string, { reportCount: number; openCount: number }>();
+    for (const c of countsQuery.data ?? []) {
+      m.set(c.orderId, { reportCount: c.reportCount, openCount: c.openCount });
+    }
+    return m;
+  }, [countsQuery.data]);
+
   return (
     <Screen
       scroll
       contentStyle={{ paddingBottom: 140 }}
-      refreshControl={<RefreshControl refreshing={query.isRefetching} onRefresh={query.refetch} />}
+      refreshControl={
+        <RefreshControl
+          refreshing={query.isRefetching || countsQuery.isRefetching}
+          onRefresh={() => {
+            query.refetch();
+            countsQuery.refetch();
+          }}
+        />
+      }
     >
       <AppText variant="h1" style={{ marginBottom: spacing(1) }}>
         {label} QC
@@ -215,6 +248,7 @@ export function DepartmentQCScreen({ department }: { department: QCDepartment })
               mode={mode}
               department={department}
               caps={caps}
+              countsByOrder={countsByOrder}
               initiallyOpen={!isArchived && active?.purchaseOrderId === po.id}
             />
           ))}
