@@ -160,27 +160,42 @@ function sumLookup(model, field, as) {
   };
 }
 
+// Centralized QC sign-off: the customer's QC stage is 100% done ONLY when the QC engineer
+// has closed BOTH the Moulding and Assembly QC departments (see getOrderDashboard). This is
+// the single source of truth for "QC complete" — the legacy QCRecord accepted quantity does
+// NOT drive customer QC progress.
+function isQcSignedOff(closedDepartments) {
+  const c = closedDepartments || [];
+  return c.includes('moulding') && c.includes('assembly');
+}
+
 // Customer-facing overall stage, derived from how far production has progressed.
 //
 // A stage that has reached 100% has handed its goods to the NEXT stage, so the customer sees
-// the work advance even before that next stage has logged its first record — e.g. once Assembly
-// is fully done the order reads "In QC" (awaiting inspection), not stuck on "In Assembly".
-// Completion is measured in good pieces against the order quantity; callers that want this
-// forward-looking behaviour pass `assemblyGood` / `qcAccepted` (record-count-only callers still
-// get the classic "furthest stage with records" answer).
+// the work advance even before that next stage has logged its first record — e.g. once Moulding
+// is fully done the order reads "In Assembly", once Assembly is done it reads "In QC", and once
+// QC is signed off it reads "Dispatching". It never stays stuck on a stage that has already
+// hit 100%. Completion is measured in good pieces against the order quantity (moulding/assembly)
+// and by the centralized QC sign-off (`qcDone` / `qcClosedDepartments`). Record-count-only
+// callers still get the classic "furthest stage with records" answer.
 function deriveOverallStatus(o) {
   const qty = o.orderQuantity || 0;
+  const mouldingGood = o.mouldingGood || 0;
   const assemblyGood = o.assemblyGood || 0;
-  const qcAccepted = o.qcAccepted || 0;
+  // Prefer an explicit rolled-up flag (PO-level callers); otherwise derive from this order's
+  // own closed-departments list.
+  const qcDone = o.qcDone != null ? o.qcDone : isQcSignedOff(o.qcClosedDepartments);
 
   if (qty > 0 && o.dispatchedQuantity >= qty) return 'Completed';
   if (o.dispatchCount > 0) return 'Dispatching';
-  // QC fully accepted → ready to dispatch, so it sits at the Dispatch stage.
-  if (qty > 0 && qcAccepted >= qty) return 'Dispatching';
+  // QC signed off (both departments closed) → handed to Dispatch.
+  if (qcDone) return 'Dispatching';
   if (o.qcCount > 0) return 'In QC';
   // Assembly fully built → waiting for QC.
   if (qty > 0 && assemblyGood >= qty) return 'In QC';
   if (o.assemblyCount > 0) return 'In Assembly';
+  // Moulding fully produced → handed to Assembly.
+  if (qty > 0 && mouldingGood >= qty) return 'In Assembly';
   if (o.mouldingCount > 0) return 'In Moulding';
   return 'Pending';
 }
@@ -776,6 +791,19 @@ async function getPurchaseOrders(user) {
     {
       $addFields: {
         ...ORDER_PRODUCTION_FIELDS,
+        // 1 when this item code's QC is fully signed off (both Moulding + Assembly QC closed).
+        qcDone: {
+          $cond: [
+            {
+              $and: [
+                { $in: ['moulding', { $ifNull: ['$qcClosedDepartments', []] }] },
+                { $in: ['assembly', { $ifNull: ['$qcClosedDepartments', []] }] },
+              ],
+            },
+            1,
+            0,
+          ],
+        },
         lastActivityAt: {
           $max: [
             { $arrayElemAt: ['$moulding.lastAt', 0] },
@@ -799,6 +827,7 @@ async function getPurchaseOrders(user) {
         mouldingCount: { $sum: '$mouldingCount' },
         assemblyCount: { $sum: '$assemblyCount' },
         qcCount: { $sum: '$qcCount' },
+        qcDoneCount: { $sum: '$qcDone' },
         dispatchCount: { $sum: '$dispatchCount' },
         lastActivityAt: { $max: '$lastActivityAt' },
       },
@@ -809,7 +838,7 @@ async function getPurchaseOrders(user) {
   const purchaseOrders = pos.map((po) => {
     const g = byPo.get(String(po._id)) || {
       itemCount: 0, orderedQty: 0, mouldingGood: 0, assemblyGood: 0, qcAccepted: 0,
-      dispatchedQuantity: 0, mouldingCount: 0, assemblyCount: 0, qcCount: 0, dispatchCount: 0, lastActivityAt: null,
+      dispatchedQuantity: 0, mouldingCount: 0, assemblyCount: 0, qcCount: 0, qcDoneCount: 0, dispatchCount: 0, lastActivityAt: null,
     };
     const derivedStatus = deriveOverallStatus({
       orderQuantity: g.orderedQty,
@@ -817,8 +846,11 @@ async function getPurchaseOrders(user) {
       dispatchCount: g.dispatchCount,
       qcCount: g.qcCount,
       qcAccepted: g.qcAccepted,
+      // PO QC is complete only when EVERY item code has been signed off.
+      qcDone: g.itemCount > 0 && g.qcDoneCount >= g.itemCount,
       assemblyCount: g.assemblyCount,
       assemblyGood: g.assemblyGood,
+      mouldingGood: g.mouldingGood,
       mouldingCount: g.mouldingCount,
     });
     return {
@@ -879,7 +911,7 @@ async function getPurchaseOrderDetail(user, poId) {
 
   const roll = {
     orderedQty: 0, mouldingGood: 0, assemblyGood: 0, qcAccepted: 0, dispatchedQuantity: 0,
-    mouldingCount: 0, assemblyCount: 0, qcCount: 0, dispatchCount: 0,
+    mouldingCount: 0, assemblyCount: 0, qcCount: 0, qcDoneCount: 0, dispatchCount: 0,
   };
   const data = orders.map((o) => {
     const qty = o.orderQuantity || 0;
@@ -888,6 +920,7 @@ async function getPurchaseOrderDetail(user, poId) {
     roll.qcAccepted += o.qcAccepted; roll.dispatchedQuantity += o.dispatchedQuantity;
     roll.mouldingCount += o.mouldingCount; roll.assemblyCount += o.assemblyCount;
     roll.qcCount += o.qcCount; roll.dispatchCount += o.dispatchCount;
+    if (isQcSignedOff(o.qcClosedDepartments)) roll.qcDoneCount += 1;
     return {
       id: String(o._id),
       orderCode: o.orderCode || formatOrderNumber(o._id),
@@ -909,8 +942,11 @@ async function getPurchaseOrderDetail(user, poId) {
     dispatchCount: roll.dispatchCount,
     qcCount: roll.qcCount,
     qcAccepted: roll.qcAccepted,
+    // PO QC is complete only when EVERY item code has been signed off.
+    qcDone: data.length > 0 && roll.qcDoneCount >= data.length,
     assemblyCount: roll.assemblyCount,
     assemblyGood: roll.assemblyGood,
+    mouldingGood: roll.mouldingGood,
     mouldingCount: roll.mouldingCount,
   });
   return {
@@ -1210,8 +1246,11 @@ async function getOrderDashboard(user, orderId) {
         dispatchCount: shipments.length,
         qcCount: q.runs,
         qcAccepted: q.accepted,
+        // QC is signed off when both departments are closed (qcProgressPct hits 100).
+        qcDone: qcProgressPct >= 100,
         assemblyCount: a.runs,
         assemblyGood: a.assembledGood,
+        mouldingGood: mTotals.good,
         mouldingCount: molds.filter((m) => m.produced > 0).length,
       }),
       createdAt: order.createdAt,
