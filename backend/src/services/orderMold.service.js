@@ -197,6 +197,28 @@ async function listForOrder(orderId) {
     }
   }
 
+  // Company-wide moulds (req): every mould this COMPANY has ever set up, pooled across all of
+  // its products and item codes, so on any order the engineer can pick an existing mould from
+  // a single dropdown instead of re-entering it. Identity + part + cavity are reused; Required
+  // Shots is intentionally omitted (it is a per-item-code target, never inherited). Excludes
+  // moulds already set up on THIS order.
+  const companyMoldsResp = await moldService.listMoldsForCustomer(order.customerId.toString());
+  const companySuggestions = [];
+  {
+    const seen = new Set(definedNames);
+    for (const s of companyMoldsResp.molds || []) {
+      const key = String(s.moldName).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      companySuggestions.push({
+        moldName: s.moldName,
+        partName: s.defaultPartName || s.partName,
+        cavity: s.cavity,
+      });
+    }
+    companySuggestions.sort((a, b) => a.moldName.localeCompare(b.moldName));
+  }
+
   return {
     orderId: String(orderId),
     customerId: order.customerId.toString(),
@@ -204,6 +226,7 @@ async function listForOrder(orderId) {
     molds: defined,
     suggestions,
     poSuggestions,
+    companySuggestions,
   };
 }
 
@@ -214,9 +237,55 @@ async function findOrderMold(orderId, moldName) {
   return OrderMold.findOne({ orderId, moldName: String(moldName || '').trim() });
 }
 
+// Delete a mold set up for ONE order (Mould Setup) — used when the engineer set up the
+// WRONG mould on an item code (req: delete, not just edit). Guarded the same way as edits:
+//   • the mould must belong to the order,
+//   • the PO must not be archived (archived = read-only),
+//   • it is blocked once production has been pushed under this mould, so history/progress
+//     is never orphaned (delete-blocked-when-records-exist pattern).
+async function deleteOrderMold(moldId) {
+  if (!mongoose.Types.ObjectId.isValid(moldId)) {
+    throw badRequest('A valid mold id is required', 'invalid_id');
+  }
+  const mold = await OrderMold.findById(moldId);
+  if (!mold) throw notFound('Mold not found', 'mold_not_found');
+
+  const order = await Order.findById(mold.orderId);
+  if (order && order.purchaseOrderId) {
+    const po = await PurchaseOrder.findById(order.purchaseOrderId).select('status');
+    if (po && po.status === 'Archived') {
+      throw conflict(
+        'This purchase order is complete and archived — mould setup is read-only.',
+        'po_archived'
+      );
+    }
+  }
+
+  // Block deletion once production exists under this mould — deleting would orphan the
+  // pushed records and their derived store balances.
+  const producedCount = await MouldingRecord.countDocuments({
+    orderId: mold.orderId,
+    moldName: mold.moldName,
+  });
+  if (producedCount > 0) {
+    throw conflict(
+      `Cannot delete "${mold.moldName}" — ${producedCount} production entr${producedCount === 1 ? 'y has' : 'ies have'} been pushed under it. Delete those entries first.`,
+      'mould_has_records'
+    );
+  }
+
+  await mold.deleteOne();
+
+  // The removed mould's target no longer counts toward the Pending/Finished/Surplus split.
+  await reconcileService.reconcileProduct(mold.customerId.toString(), mold.productId.toString());
+
+  return { deleted: true, id: moldId };
+}
+
 module.exports = {
   upsertOrderMold,
   listForOrder,
   findOrderMold,
+  deleteOrderMold,
   toPublicOrderMold,
 };

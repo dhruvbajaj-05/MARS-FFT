@@ -113,6 +113,22 @@ async function listMoldsForProduct(productId) {
   };
 }
 
+// List every learned mold for a COMPANY (customer), across all of its products and item
+// codes, most-used first. Drives the company-wide "pick an existing mould" dropdown so the
+// same physical mould set up on one item code can be reused on any other order for the
+// company. Returns an empty list when the company has no learned molds yet.
+async function listMoldsForCustomer(customerId) {
+  if (!customerId || !mongoose.Types.ObjectId.isValid(customerId)) {
+    throw badRequest('A valid customerId is required', 'invalid_customer');
+  }
+
+  const molds = await MoldDefinition.find({ customerId }).sort({ usageCount: -1, lastUsedAt: -1 });
+  return {
+    customerId: String(customerId),
+    molds: molds.map(toPublicMold),
+  };
+}
+
 // Look up a single learned mold by (product, moldName) — used by moulding production to
 // resolve cavity/requiredShots server-side (never trust client-supplied cavity).
 async function findMold(productId, moldName) {
@@ -124,6 +140,7 @@ module.exports = {
   upsertMold,
   learnMold,
   listMoldsForProduct,
+  listMoldsForCustomer,
   findMold,
   toPublicMold,
 };

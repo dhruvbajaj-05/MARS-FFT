@@ -91,6 +91,13 @@ router.post(
   requireBody(['orderId', 'moldName', 'partName', 'cavity']),
   mouldingController.createOrderMold
 );
+// Delete a wrongly set-up mould (blocked once production exists under it).
+router.delete(
+  '/order-molds/:id',
+  ...protect(ROLES.MOULDING_ENGINEER),
+  validateObjectId('id'),
+  mouldingController.deleteOrderMold
+);
 
 // Production Store — two live views for a PO (moulding engineer + admin). Before /:id so
 // "production-store" is not captured as a record id.

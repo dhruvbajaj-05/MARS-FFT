@@ -162,6 +162,16 @@ async function createOrderMold(req, res, next) {
   }
 }
 
+// DELETE /api/v1/moulding/order-molds/:id — remove a wrongly set-up mould.
+async function deleteOrderMold(req, res, next) {
+  try {
+    const result = await mouldingService.deleteOrderMold(req.params.id);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /api/v1/moulding/rejection-reasons
 async function rejectionReasons(req, res, next) {
   try {
@@ -206,6 +216,7 @@ module.exports = {
   createMold,
   listOrderMolds,
   createOrderMold,
+  deleteOrderMold,
   productionStoreItemCode,
   productionStoreCumulative,
   poDashboard,

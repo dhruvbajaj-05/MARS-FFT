@@ -120,6 +120,10 @@ export const mouldingApi = {
   upsertOrderMold: (input: OrderMoldInput) =>
     apiClient.post<{ mold: OrderMold }>('/moulding/order-molds', input).then((r) => r.data.mold),
 
+  // Delete a wrongly set-up mould from an order (blocked once production exists under it).
+  deleteOrderMold: (moldId: string) =>
+    apiClient.delete<{ deleted: boolean }>(`/moulding/order-molds/${moldId}`).then((r) => r.data),
+
   // All moulding records for the dept (shared visibility — no user filter).
   listMine: (params: ListParams = {}) =>
     apiClient.get<Paginated<MouldingRecord>>('/moulding/mine', { params }).then((r) => r.data),

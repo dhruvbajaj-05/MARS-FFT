@@ -748,6 +748,13 @@ export interface POMoldSuggestion {
   partName: string;
   cavity: number;
 }
+// A mould set up anywhere for the SAME company — offered for reuse on any order via a single
+// company-wide dropdown (identity + part + cavity; required-shots is set per item code).
+export interface CompanyMoldSuggestion {
+  moldName: string;
+  partName: string;
+  cavity: number;
+}
 export interface OrderMoldsResponse {
   orderId: string;
   customerId: string;
@@ -755,6 +762,7 @@ export interface OrderMoldsResponse {
   molds: OrderMold[];
   suggestions: OrderMoldSuggestion[];
   poSuggestions?: POMoldSuggestion[];
+  companySuggestions?: CompanyMoldSuggestion[];
 }
 // ---- Production Store (live views from moulding records; by Mould) ----
 export interface ProductionStoreMould {

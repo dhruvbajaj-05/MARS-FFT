@@ -773,6 +773,10 @@ async function upsertOrderMold(payload, createdBy) {
   return orderMoldService.upsertOrderMold({ ...payload, createdBy });
 }
 
+async function deleteOrderMold(moldId) {
+  return orderMoldService.deleteOrderMold(moldId);
+}
+
 module.exports = {
   createMouldingRecord,
   updateMouldingRecord,
@@ -788,6 +792,7 @@ module.exports = {
   upsertMold,
   listOrderMolds,
   upsertOrderMold,
+  deleteOrderMold,
   listRejectionReasons: rejectionReasonService.listReasons,
   persistRejectionReason: (reason, createdBy) => rejectionReasonService.rememberReason(reason, createdBy),
   toPublicMouldingRecord,
