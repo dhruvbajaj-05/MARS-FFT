@@ -168,6 +168,13 @@ export interface Product {
   partName: string | null;
   createdAt: string;
 }
+export type MachineCategory = 'injection' | 'blow';
+export interface Machine {
+  id: string;
+  name: string;
+  category: MachineCategory;
+  createdAt?: string;
+}
 export interface Order {
   id: string;
   orderCode: string | null;

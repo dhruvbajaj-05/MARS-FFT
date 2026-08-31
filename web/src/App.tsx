@@ -10,6 +10,9 @@ import { DashboardPage } from '@/pages/admin/DashboardPage';
 import { FactoryPage } from '@/pages/admin/FactoryPage';
 import { PurchaseOrdersPage } from '@/pages/admin/PurchaseOrdersPage';
 import { PurchaseOrderDetailPage } from '@/pages/admin/PurchaseOrderDetailPage';
+import { CustomersPage } from '@/pages/admin/CustomersPage';
+import { ProductsPage } from '@/pages/admin/ProductsPage';
+import { MachinesPage } from '@/pages/admin/MachinesPage';
 import { UsersPage } from '@/pages/admin/UsersPage';
 import { QCReportsPage } from '@/pages/admin/QCReportsPage';
 import { ROLES } from '@/api/types';
@@ -63,6 +66,9 @@ export default function App() {
           <Route path="purchase-orders" element={<PurchaseOrdersPage />} />
           <Route path="purchase-orders/:id" element={<PurchaseOrderDetailPage />} />
           <Route path="qc" element={<QCReportsPage />} />
+          <Route path="customers" element={<CustomersPage />} />
+          <Route path="products" element={<ProductsPage />} />
+          <Route path="machines" element={<MachinesPage />} />
           <Route path="users" element={<UsersPage />} />
         </Route>
       </Route>

@@ -46,6 +46,17 @@ export function AdminLayout() {
           <NavLink to="/admin/qc" className="nav-item">
             Quality Control
           </NavLink>
+
+          <div className="nav-heading">Master Data</div>
+          <NavLink to="/admin/customers" className="nav-item">
+            Customers
+          </NavLink>
+          <NavLink to="/admin/products" className="nav-item">
+            Products
+          </NavLink>
+          <NavLink to="/admin/machines" className="nav-item">
+            Machines
+          </NavLink>
           <NavLink to="/admin/users" className="nav-item">
             Users
           </NavLink>
