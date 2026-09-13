@@ -172,6 +172,17 @@ async function deleteOrderMold(req, res, next) {
   }
 }
 
+// DELETE /api/v1/moulding/company-molds?customerId=&moldName= — permanently erase a mould
+// from every item code + the learned-mould memory of a company (no trace left in the DB).
+async function deleteCompanyMold(req, res, next) {
+  try {
+    const result = await mouldingService.deleteCompanyMold(req.query.customerId, req.query.moldName);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /api/v1/moulding/rejection-reasons
 async function rejectionReasons(req, res, next) {
   try {
@@ -217,6 +228,7 @@ module.exports = {
   listOrderMolds,
   createOrderMold,
   deleteOrderMold,
+  deleteCompanyMold,
   productionStoreItemCode,
   productionStoreCumulative,
   poDashboard,

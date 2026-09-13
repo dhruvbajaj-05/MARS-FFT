@@ -777,6 +777,11 @@ async function deleteOrderMold(moldId) {
   return orderMoldService.deleteOrderMold(moldId);
 }
 
+// Company-wide hard delete (Delete button on the "Reuse a mould from this company" dropdown).
+async function deleteCompanyMold(customerId, moldName) {
+  return orderMoldService.deleteCompanyMold(customerId, moldName);
+}
+
 module.exports = {
   createMouldingRecord,
   updateMouldingRecord,
@@ -793,6 +798,7 @@ module.exports = {
   listOrderMolds,
   upsertOrderMold,
   deleteOrderMold,
+  deleteCompanyMold,
   listRejectionReasons: rejectionReasonService.listReasons,
   persistRejectionReason: (reason, createdBy) => rejectionReasonService.rememberReason(reason, createdBy),
   toPublicMouldingRecord,

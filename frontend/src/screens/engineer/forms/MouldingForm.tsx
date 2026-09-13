@@ -6,7 +6,7 @@ import { masterApi } from '@/api/endpoints/master';
 import { mouldingApi } from '@/api/endpoints/moulding';
 import { storeApi } from '@/api/endpoints/store';
 import { queryKeys } from '@/api/queryKeys';
-import type { CompanyMoldSuggestion, OrderMold, OrderMoldSuggestion, POMoldSuggestion } from '@/api/types';
+import type { CompanyMoldSuggestion, OrderMold } from '@/api/types';
 import {
   AppText,
   Banner,
@@ -171,6 +171,41 @@ export function MouldingForm() {
     },
   });
 
+  // Company-wide HARD delete from the "Reuse a mould from this company" dropdown: erases the
+  // mould from every item code of this company AND from the learned-mould memory. Nothing is
+  // left in the database. Server blocks it once production has been pushed under the mould.
+  const deleteCompanyMold = useMutation({
+    mutationFn: (moldName: string) =>
+      mouldingApi.deleteCompanyMold({ customerId: cp.customerId!, moldName }),
+    onSuccess: (res) => {
+      setMoldOk(`Mould "${res.moldName}" deleted.`);
+      resetSetupForm();
+      qc.invalidateQueries({ queryKey: ['moulding', 'order-molds'] });
+      if (cp.productId) qc.invalidateQueries({ queryKey: queryKeys.molds(cp.productId) });
+      qc.invalidateQueries({ queryKey: ['store'] });
+      if (cp.jobId) qc.invalidateQueries({ queryKey: queryKeys.dept('moulding').status(cp.jobId) });
+    },
+  });
+
+  const confirmDeleteCompanyMold = (s: CompanyMoldSuggestion) => {
+    Alert.alert(
+      'Delete mould?',
+      `Delete "${s.moldName}" (${s.partName}, ${s.cavity} cavity) from this company?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setMoldOk(null);
+            deleteCompanyMold.reset();
+            deleteCompanyMold.mutate(s.moldName);
+          },
+        },
+      ]
+    );
+  };
+
   // Confirm before removing (the mould setup drives production targets), then delete.
   const confirmDeleteMold = (m: OrderMold) => {
     Alert.alert(
@@ -300,6 +335,8 @@ export function MouldingForm() {
 
   const moldError = saveMold.error instanceof ApiError ? friendlyMessage(saveMold.error) : null;
   const deleteMoldError = deleteMold.error instanceof ApiError ? friendlyMessage(deleteMold.error) : null;
+  const deleteCompanyMoldError =
+    deleteCompanyMold.error instanceof ApiError ? friendlyMessage(deleteCompanyMold.error) : null;
   // The mould-completion lock is NOT an error the engineer did anything wrong — it means the
   // mould already hit its target and its overage is now surplus. Surface it as a calm "Done"
   // message, never a red failure. Any OTHER submit error stays as a plain notice (no red).
@@ -309,7 +346,6 @@ export function MouldingForm() {
   const recoverError = recoverMutation.error instanceof ApiError ? friendlyMessage(recoverMutation.error) : null;
 
   const moldList: OrderMold[] = orderMolds.data?.molds ?? [];
-  const suggestions: OrderMoldSuggestion[] = orderMolds.data?.suggestions ?? [];
   const moldOptions: SelectOption[] = moldList.map((m) => {
     const mp = prodStatus.data?.moldProgress?.find((p) => p.moldName === m.moldName);
     if (mp?.isComplete) {
@@ -325,25 +361,6 @@ export function MouldingForm() {
       hint: `${m.partName} · ${m.cavity} cavity · target ${(m.requiredShots || 0).toLocaleString()} shots`,
     };
   });
-
-  const adoptSuggestion = (s: OrderMoldSuggestion) => {
-    setMMoldName(s.moldName);
-    setMPartName(s.partName);
-    setMCavity(String(s.cavity));
-    setMShots(s.requiredShots ? String(s.requiredShots) : '');
-  };
-
-  // Reuse a physical mould already set up on another item code in this PO (req #6): copy its
-  // identity + cavity + part, but leave Required Shots BLANK — the target is per item code.
-  const poSuggestions: POMoldSuggestion[] = orderMolds.data?.poSuggestions ?? [];
-  const adoptPoSuggestion = (s: POMoldSuggestion) => {
-    setMMoldName(s.moldName);
-    setMPartName(s.partName);
-    setMCavity(String(s.cavity));
-    setMShots('');
-    setEditingMold(null);
-    setMoldOk(null);
-  };
 
   // Company-wide mould picker: every mould set up anywhere for this company, in one dropdown,
   // so the same physical mould can be reused on any item code without re-typing it. Selecting
@@ -592,87 +609,37 @@ export function MouldingForm() {
             </View>
           )}
 
-          {poSuggestions.length > 0 ? (
-            <View style={{ marginBottom: spacing(3) }}>
-              <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg, marginBottom: spacing(1) }}>
-                Reuse a mould from this PO — tap, then set new Required Shots
-              </AppText>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2) }}>
-                {poSuggestions.map((s) => (
-                  <Pressable
-                    key={s.moldName}
-                    onPress={() => adoptPoSuggestion(s)}
-                    style={{
-                      backgroundColor: colors.status.info.bg,
-                      borderRadius: 8,
-                      paddingVertical: spacing(1),
-                      paddingHorizontal: spacing(2),
-                      borderWidth: 1,
-                      borderColor: colors.status.info.fg,
-                    }}
-                  >
-                    <AppText variant="caption" weight="700" style={{ color: colors.status.info.fg }}>
-                      {s.moldName}
-                    </AppText>
-                    <AppText variant="caption" tone="muted">
-                      {s.partName} · {s.cavity} cav
-                    </AppText>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          ) : null}
-
-          {suggestions.length > 0 ? (
-            <View style={{ marginBottom: spacing(3) }}>
-              <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>
-                Suggestions (from previous item codes) — tap to use
-              </AppText>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2) }}>
-                {suggestions.map((s) => (
-                  <Pressable
-                    key={s.moldName}
-                    onPress={() => adoptSuggestion(s)}
-                    style={{
-                      backgroundColor: colors.surfaceAlt,
-                      borderRadius: 8,
-                      paddingVertical: spacing(1),
-                      paddingHorizontal: spacing(2),
-                    }}
-                  >
-                    <AppText variant="caption" weight="600">
-                      {s.moldName}
-                    </AppText>
-                    <AppText variant="caption" tone="muted">
-                      {s.partName} · {s.cavity} cav
-                    </AppText>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-          ) : null}
-
           {/* Company-wide mould dropdown — pick any mould already set up for this company (across
-              all its item codes) instead of re-entering it. Fills the form; set Required Shots + save. */}
+              all its item codes) instead of re-entering it. Fills the form; set Required Shots + save.
+              Each row also carries a solid-red DELETE button that erases the mould company-wide. */}
           {companyMoldOptions.length > 0 && !editingMold ? (
             <View style={{ marginBottom: spacing(3) }}>
               <Select
-                label="Reuse a mould from this company"
+                label="Reuse a mould from this company (tap a name to use it · DELETE removes it)"
                 value={null}
                 options={companyMoldOptions}
                 onChange={(v) => {
                   const s = companySuggestions.find((x) => x.moldName === v);
                   if (s) adoptCompanySuggestion(s);
                 }}
+                onDeleteOption={(o) => {
+                  const s = companySuggestions.find((x) => x.moldName === o.value);
+                  if (s) confirmDeleteCompanyMold(s);
+                }}
+                deleteLabel="DELETE"
                 placeholder="Select an existing mould"
                 emptyHint="No moulds set up for this company yet"
               />
+              {deleteCompanyMold.isPending ? (
+                <AppText variant="caption" tone="muted">Deleting mould…</AppText>
+              ) : null}
             </View>
           ) : null}
 
           {moldOk ? <Banner tone="success" message={moldOk} /> : null}
           {moldError ? <Banner tone="info" message={moldError} /> : null}
           {deleteMoldError ? <Banner tone="info" message={deleteMoldError} /> : null}
+          {deleteCompanyMoldError ? <Banner tone="danger" message={deleteCompanyMoldError} /> : null}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing(1) }}>
             <AppText variant="caption" tone="muted">
               {editingMold ? `Editing mold "${editingMold}"` : 'Add a new mold (tap a mold above to edit it)'}

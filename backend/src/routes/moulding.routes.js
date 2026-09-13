@@ -98,6 +98,13 @@ router.delete(
   validateObjectId('id'),
   mouldingController.deleteOrderMold
 );
+// Permanently erase a mould company-wide (Delete button on the "Reuse a mould from this
+// company" dropdown). Hard delete — blocked once production exists under it anywhere.
+router.delete(
+  '/company-molds',
+  ...protect(ROLES.MOULDING_ENGINEER),
+  mouldingController.deleteCompanyMold
+);
 
 // Production Store — two live views for a PO (moulding engineer + admin). Before /:id so
 // "production-store" is not captured as a record id.

@@ -136,11 +136,43 @@ async function findMold(productId, moldName) {
   return MoldDefinition.findOne({ productId, moldName: String(moldName || '').trim() });
 }
 
+// Remove a learned mold definition (productId, moldName). Called when the last order-level
+// setup for this mould is deleted, so a deleted mould stops surfacing in the product /
+// company-wide "reuse a mould" dropdowns. No-op when the definition doesn't exist.
+async function deleteMold(productId, moldName) {
+  if (!mongoose.Types.ObjectId.isValid(productId)) return { deleted: false };
+  const res = await MoldDefinition.deleteOne({ productId, moldName: String(moldName || '').trim() });
+  return { deleted: res.deletedCount > 0 };
+}
+
+// Hard-delete EVERY learned definition of a mould name for a company (all of its products).
+// Used by the company-wide "reuse a mould" dropdown's Delete button: the mould must vanish
+// from the database outright — no soft-delete flag, no tombstone. Returns the productIds whose
+// definitions were removed so the caller can re-reconcile them.
+async function deleteMoldForCustomer(customerId, moldName) {
+  if (!mongoose.Types.ObjectId.isValid(customerId)) return { deleted: 0, productIds: [] };
+  const name = String(moldName || '').trim();
+  if (!name) return { deleted: 0, productIds: [] };
+  const filter = {
+    customerId,
+    moldName: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+  };
+  const docs = await MoldDefinition.find(filter).select('productId').lean();
+  if (docs.length === 0) return { deleted: 0, productIds: [] };
+  const res = await MoldDefinition.deleteMany(filter);
+  return {
+    deleted: res.deletedCount,
+    productIds: [...new Set(docs.map((d) => d.productId.toString()))],
+  };
+}
+
 module.exports = {
   upsertMold,
   learnMold,
   listMoldsForProduct,
   listMoldsForCustomer,
   findMold,
+  deleteMold,
+  deleteMoldForCustomer,
   toPublicMold,
 };

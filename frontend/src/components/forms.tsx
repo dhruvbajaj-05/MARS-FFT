@@ -86,6 +86,10 @@ interface SelectProps {
   placeholder?: string;
   error?: string | null;
   emptyHint?: string;
+  // When given, every option row gets a big, solid-red "DELETE" button on its right. Tapping
+  // it calls back with the option (the dropdown stays open) and does NOT select the option.
+  onDeleteOption?: (option: SelectOption) => void;
+  deleteLabel?: string;
 }
 
 // Inline expandable dropdown (tap to reveal options). Avoids native Modal/picker
@@ -98,10 +102,14 @@ export function Select({
   placeholder = 'Select…',
   error,
   emptyHint = 'No options available',
+  onDeleteOption,
+  deleteLabel = 'DELETE',
 }: SelectProps) {
   const { colors, radius, spacing } = useTheme();
   const [open, setOpen] = useState(false);
   const selected = options.find((o) => o.value === value) || null;
+  // Solid red in BOTH themes: the delete control must be unmistakable at a glance.
+  const DELETE_RED = '#DC2626';
 
   return (
     <View style={{ marginBottom: spacing(3) }}>
@@ -142,26 +150,55 @@ export function Select({
             </View>
           ) : (
             options.map((o) => (
-              <Pressable
+              <View
                 key={o.value}
-                onPress={() => {
-                  onChange(o.value, o);
-                  setOpen(false);
-                }}
                 style={{
-                  padding: spacing(3),
+                  flexDirection: 'row',
+                  alignItems: 'stretch',
                   backgroundColor: o.value === value ? colors.surfaceAlt : colors.surface,
                   borderTopColor: colors.border,
                   borderTopWidth: StyleSheet.hairlineWidth,
                 }}
               >
-                <AppText>{o.label}</AppText>
-                {o.hint ? (
-                  <AppText variant="caption" tone="muted">
-                    {o.hint}
-                  </AppText>
+                <Pressable
+                  onPress={() => {
+                    onChange(o.value, o);
+                    setOpen(false);
+                  }}
+                  style={{ flex: 1, padding: spacing(3) }}
+                >
+                  <AppText>{o.label}</AppText>
+                  {o.hint ? (
+                    <AppText variant="caption" tone="muted">
+                      {o.hint}
+                    </AppText>
+                  ) : null}
+                </Pressable>
+                {onDeleteOption ? (
+                  <Pressable
+                    onPress={() => onDeleteOption(o)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${deleteLabel} ${o.label}`}
+                    hitSlop={6}
+                    style={({ pressed }) => ({
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      alignSelf: 'center',
+                      marginRight: spacing(2),
+                      marginVertical: spacing(2),
+                      paddingVertical: spacing(2),
+                      paddingHorizontal: spacing(3),
+                      minWidth: 96,
+                      borderRadius: radius.md,
+                      backgroundColor: pressed ? '#B91C1C' : DELETE_RED,
+                    })}
+                  >
+                    <AppText weight="700" style={{ color: '#FFFFFF', letterSpacing: 0.5 }}>
+                      🗑 {deleteLabel}
+                    </AppText>
+                  </Pressable>
                 ) : null}
-              </Pressable>
+              </View>
             ))
           )}
         </View>

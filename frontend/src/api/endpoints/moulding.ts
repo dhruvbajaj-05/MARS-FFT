@@ -124,6 +124,16 @@ export const mouldingApi = {
   deleteOrderMold: (moldId: string) =>
     apiClient.delete<{ deleted: boolean }>(`/moulding/order-molds/${moldId}`).then((r) => r.data),
 
+  // Permanently erase a mould company-wide: every item-code setup + the learned-mould memory.
+  // Hard delete on the server (nothing is left behind). Blocked once production exists under it.
+  deleteCompanyMold: (input: { customerId: string; moldName: string }) =>
+    apiClient
+      .delete<{ deleted: boolean; moldName: string; removedSetups: number; removedDefinitions: number }>(
+        '/moulding/company-molds',
+        { params: input }
+      )
+      .then((r) => r.data),
+
   // All moulding records for the dept (shared visibility — no user filter).
   listMine: (params: ListParams = {}) =>
     apiClient.get<Paginated<MouldingRecord>>('/moulding/mine', { params }).then((r) => r.data),

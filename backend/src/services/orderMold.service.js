@@ -276,10 +276,90 @@ async function deleteOrderMold(moldId) {
 
   await mold.deleteOne();
 
+  // Drop the learned mould definition too, so a deleted mould disappears from the product /
+  // company-wide "reuse a mould" dropdowns (req). Only when NO other item code still has this
+  // mould set up — if the same physical mould is configured on another order, its definition is
+  // kept so it stays reusable there.
+  const stillInUse = await OrderMold.countDocuments({
+    productId: mold.productId,
+    moldName: mold.moldName,
+  });
+  if (stillInUse === 0) {
+    await moldService.deleteMold(mold.productId.toString(), mold.moldName);
+  }
+
   // The removed mould's target no longer counts toward the Pending/Finished/Surplus split.
   await reconcileService.reconcileProduct(mold.customerId.toString(), mold.productId.toString());
 
   return { deleted: true, id: moldId };
+}
+
+// Company-wide HARD delete of a mould (the Delete button on the "Reuse a mould from this
+// company" dropdown). Erases the mould from the database outright — every learned definition
+// for this company AND every per-item-code Mould Setup row that still carries the name. No
+// soft-delete flag or tombstone is written; once this returns, nothing about the mould remains.
+//
+// Safety guards (same rules as the per-item-code delete, applied across the company):
+//   • blocked if ANY item code has production pushed under this mould (deleting would orphan
+//     those records and their derived store balances),
+//   • blocked if ANY affected item code belongs to an archived (read-only) purchase order.
+async function deleteCompanyMold(customerId, moldName) {
+  if (!mongoose.Types.ObjectId.isValid(customerId)) {
+    throw badRequest('A valid customerId is required', 'invalid_customer');
+  }
+  const name = String(moldName || '').trim();
+  if (!name) throw badRequest('moldName is required', 'missing_mold_name');
+  const nameMatch = { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' };
+
+  const setups = await OrderMold.find({ customerId, moldName: nameMatch }).lean();
+
+  if (setups.length > 0) {
+    const orderIds = [...new Set(setups.map((m) => m.orderId.toString()))];
+    const orders = await Order.find({ _id: { $in: orderIds } }).select('purchaseOrderId').lean();
+    const poIds = [...new Set(orders.map((o) => o.purchaseOrderId).filter(Boolean).map(String))];
+    if (poIds.length > 0) {
+      const archived = await PurchaseOrder.countDocuments({ _id: { $in: poIds }, status: 'Archived' });
+      if (archived > 0) {
+        throw conflict(
+          `"${name}" is set up on an archived purchase order — archived POs are read-only.`,
+          'po_archived'
+        );
+      }
+    }
+
+    const producedCount = await MouldingRecord.countDocuments({
+      orderId: { $in: orderIds },
+      moldName: nameMatch,
+    });
+    if (producedCount > 0) {
+      throw conflict(
+        `Cannot delete "${name}" — ${producedCount} production entr${producedCount === 1 ? 'y has' : 'ies have'} been pushed under it. Delete those entries first.`,
+        'mould_has_records'
+      );
+    }
+  }
+
+  const setupsRes = setups.length > 0
+    ? await OrderMold.deleteMany({ _id: { $in: setups.map((m) => m._id) } })
+    : { deletedCount: 0 };
+  const defsRes = await moldService.deleteMoldForCustomer(customerId, name);
+
+  if (setupsRes.deletedCount === 0 && defsRes.deleted === 0) {
+    throw notFound('Mold not found', 'mold_not_found');
+  }
+
+  // Removed targets no longer count toward Pending/Finished/Surplus on any affected product.
+  const productIds = new Set([...setups.map((m) => m.productId.toString()), ...defsRes.productIds]);
+  for (const productId of productIds) {
+    await reconcileService.reconcileProduct(String(customerId), productId);
+  }
+
+  return {
+    deleted: true,
+    moldName: name,
+    removedSetups: setupsRes.deletedCount,
+    removedDefinitions: defsRes.deleted,
+  };
 }
 
 module.exports = {
@@ -287,5 +367,6 @@ module.exports = {
   listForOrder,
   findOrderMold,
   deleteOrderMold,
+  deleteCompanyMold,
   toPublicOrderMold,
 };
