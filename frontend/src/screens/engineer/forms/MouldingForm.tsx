@@ -22,7 +22,7 @@ import { ApiError, friendlyMessage } from '@/services/apiError';
 import { useMouldingSession } from '@/features/moulding/MouldingSessionContext';
 import { usePOItemCode } from '@/screens/engineer/usePOItemCode';
 import { useTheme } from '@/theme/ThemeProvider';
-import { currentShift, shiftLabel } from '@/utils/shift';
+import { SHIFT_OPTIONS, type Shift } from '@/utils/shift';
 
 // Moulding Engineer screen (Company → PO → Item Code workflow):
 //   1. Select Customer → Purchase Order → Item Code (active production jobs only).
@@ -67,6 +67,8 @@ export function MouldingForm() {
   // ---- Production push form ----
   const [machineNumber, setMachineNumber] = useState<string | null>(null);
   const [selectedMold, setSelectedMold] = useState<string | null>(null);
+  // Shift is chosen MANUALLY by the engineer from a dropdown (A/B/C) — never auto-detected.
+  const [shift, setShift] = useState<Shift | null>(null);
   const [shotsDone, setShotsDone] = useState('');
   const [rejectedShots, setRejectedShots] = useState('');
   // Multi-select rejection reasons (req #3)
@@ -248,7 +250,7 @@ export function MouldingForm() {
         shotsDone: Number(shotsDone),
         rejectedShots: Number(rejectedShots),
         rejectionReasons: Number(rejectedShots) > 0 ? rejectionReasons : undefined,
-        shift: currentShift(),
+        shift: shift!,
       }),
     onSuccess: (res) => {
       setOk(
@@ -417,6 +419,7 @@ export function MouldingForm() {
     cp.jobId &&
     selectedMold &&
     machineNumber &&
+    shift &&
     Number.isFinite(shotsNum) &&
     shotsNum >= 0 &&
     Number.isFinite(rejectedShotsNum) &&
@@ -459,6 +462,28 @@ export function MouldingForm() {
           placeholder={cp.customerId ? 'Select a purchase order' : 'Select a customer first'}
           emptyHint="No purchase orders for this customer"
         />
+        {/* Big PO box — same look as the Item Code box below, so the engineer is never in doubt
+            which PO they are working on. Shown the moment a PO is picked. */}
+        {cp.selectedPO ? (
+          <View
+            style={{
+              backgroundColor: colors.status.info.bg,
+              borderWidth: 2,
+              borderColor: colors.status.info.fg,
+              borderRadius: 12,
+              padding: spacing(3),
+              marginBottom: spacing(3),
+            }}
+          >
+            <AppText variant="caption" weight="700" tone="muted">PURCHASE ORDER</AppText>
+            <AppText weight="800" style={{ fontSize: 34, color: colors.status.info.fg }}>
+              {cp.selectedPO.poNumber ?? cp.selectedPO.id}
+            </AppText>
+            <AppText weight="600" style={{ marginTop: 2 }}>
+              {cp.customerOptions.find((o) => o.value === cp.customerId)?.label ?? '—'}
+            </AppText>
+          </View>
+        ) : null}
         <Select
           label="Item Code"
           value={cp.jobId}
@@ -478,7 +503,9 @@ export function MouldingForm() {
               padding: spacing(3),
             }}
           >
-            <AppText variant="caption" weight="700" tone="muted">ITEM CODE</AppText>
+            <AppText variant="caption" weight="700" tone="muted">
+              ITEM CODE{cp.selectedPO ? `  ·  PO ${cp.selectedPO.poNumber ?? cp.selectedPO.id}` : ''}
+            </AppText>
             <View style={{ flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' }}>
               <AppText weight="800" style={{ fontSize: 34, color: colors.status.info.fg }}>
                 {cp.itemCode ?? '—'}
@@ -502,8 +529,13 @@ export function MouldingForm() {
       {/* Mould Setup (per item code) */}
       {cp.jobId && !isProductionComplete ? (
         <Card style={{ marginBottom: spacing(4) }}>
-          <AppText variant="h3" style={{ marginBottom: spacing(2) }}>
+          <AppText variant="h3">
             Mould Setup for this item code
+          </AppText>
+          {/* Repeat the PO + item code here so the context is still visible once the selectors
+              have scrolled off the top of the screen. */}
+          <AppText variant="caption" weight="700" style={{ color: colors.primary, marginBottom: spacing(2) }}>
+            PO {cp.selectedPO?.poNumber ?? cp.selectedPO?.id ?? '—'}  ·  Item code {cp.itemCode ?? '—'}
           </AppText>
 
           {/* Current store surplus (product-level, pooled across jobs) — so the planner can
@@ -540,70 +572,135 @@ export function MouldingForm() {
 
           {moldList.length === 0 ? (
             <AppText tone="muted" style={{ marginBottom: spacing(2) }}>
-              No molds set up yet. Define one below.
+              No moulds set up yet. Define one below.
             </AppText>
           ) : (
             <View style={{ marginBottom: spacing(3) }}>
+              <AppText variant="caption" weight="700" tone="muted" style={{ marginBottom: spacing(2) }}>
+                MOULDS SET UP ({moldList.length})
+              </AppText>
               {moldList.map((m) => {
                 const mp = prodStatus.data?.moldProgress?.find((p) => p.moldName === m.moldName);
                 const hasProg = mp && m.requiredShots > 0;
                 const isEditing = editingMold === m.moldName;
+                const isDone = !!(hasProg && mp.isComplete);
+                // Plain-language status so anyone reading the card knows where this mould stands.
+                const statusLabel = isDone
+                  ? '✓ Done'
+                  : hasProg && mp.displayShots > 0
+                    ? 'In progress'
+                    : 'Not started';
+                const statusTone = isDone ? colors.status.success : hasProg && mp.displayShots > 0 ? colors.status.info : colors.status.neutral;
+                // Labelled fact rows — every value the engineer entered in the setup, spelled out.
+                const facts: Array<{ label: string; value: string; color?: string }> = [
+                  { label: 'Part name', value: m.partName },
+                  { label: 'Cavity', value: `${m.cavity} cavity` },
+                  { label: 'Required shots', value: `${(m.requiredShots || 0).toLocaleString()} good shots` },
+                  {
+                    label: 'Required quantity',
+                    value: `${((m.requiredShots || 0) * (m.cavity || 0)).toLocaleString()} pieces`,
+                  },
+                ];
+                if (hasProg) {
+                  // Entry page is in SHOTS: good shots / target, capped at 100% with ✓ Done.
+                  // The overage is reported separately as Surplus (in shots here).
+                  facts.push({
+                    label: 'Produced so far',
+                    value: `${mp.displayShots.toLocaleString()} / ${mp.requiredShots.toLocaleString()} good shots`,
+                    color: isDone ? colors.status.success.fg : undefined,
+                  });
+                  if (mp.surplusShots > 0) {
+                    facts.push({
+                      label: 'Surplus',
+                      value: `+${mp.surplusShots.toLocaleString()} shots`,
+                      color: colors.status.info.fg,
+                    });
+                  }
+                }
                 return (
-                  <Pressable
+                  <View
                     key={m.id}
-                    onPress={() => editMold(m)}
                     style={{
-                      paddingVertical: spacing(2),
-                      paddingHorizontal: isEditing ? spacing(2) : 0,
-                      borderBottomWidth: 1,
-                      borderBottomColor: colors.border,
-                      backgroundColor: isEditing ? colors.surfaceAlt : 'transparent',
-                      borderRadius: isEditing ? 8 : 0,
+                      borderWidth: isEditing ? 2 : 1,
+                      borderColor: isEditing ? colors.primary : colors.border,
+                      borderRadius: 10,
+                      backgroundColor: isEditing ? colors.surfaceAlt : colors.surface,
+                      padding: spacing(3),
+                      marginBottom: spacing(2),
                     }}
                   >
-                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <AppText weight="600">{m.moldName}</AppText>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing(2) }}>
-                        <AppText tone="muted" variant="caption">
-                          {m.partName} · {m.cavity} cav  ·  ✎ edit
+                    {/* Header: mould name (wraps freely) + status pill */}
+                    <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: spacing(2) }}>
+                      <View style={{ flex: 1 }}>
+                        <AppText variant="caption" tone="muted">Mould</AppText>
+                        <AppText variant="h3">{m.moldName}</AppText>
+                      </View>
+                      <View
+                        style={{
+                          backgroundColor: statusTone.bg,
+                          borderRadius: 999,
+                          paddingVertical: 3,
+                          paddingHorizontal: spacing(2),
+                        }}
+                      >
+                        <AppText variant="caption" weight="700" style={{ color: statusTone.fg }}>
+                          {statusLabel}
                         </AppText>
-                        {/* Delete a wrongly set-up mould. Sits inside the row but handles its own
-                            tap so it never triggers the row's edit action. */}
-                        <Pressable
-                          onPress={() => confirmDeleteMold(m)}
-                          hitSlop={8}
-                          disabled={deleteMold.isPending}
-                          style={{ paddingHorizontal: spacing(1), paddingVertical: 2 }}
-                        >
-                          <AppText variant="caption" weight="700" style={{ color: colors.status.danger.fg }}>
-                            🗑 Delete
-                          </AppText>
-                        </Pressable>
                       </View>
                     </View>
-                    {hasProg ? (
-                      <>
-                        {/* Entry page is in SHOTS: good shots / target, capped at 100% with ✓ Done.
-                            The overage is reported separately as Surplus (in shots here). */}
-                        <AppText
-                          variant="caption"
-                          style={{ color: mp.isComplete ? colors.status.success.fg : colors.textMuted, marginTop: 2 }}
+
+                    {/* Facts: label on the left, value on the right; long values wrap under the label
+                        instead of pushing anything off-screen. */}
+                    <View style={{ marginTop: spacing(2), borderTopWidth: 1, borderTopColor: colors.border }}>
+                      {facts.map((f) => (
+                        <View
+                          key={f.label}
+                          style={{
+                            flexDirection: 'row',
+                            flexWrap: 'wrap',
+                            justifyContent: 'space-between',
+                            gap: spacing(1),
+                            paddingVertical: spacing(1),
+                            borderBottomWidth: 1,
+                            borderBottomColor: colors.border,
+                          }}
                         >
-                          {mp.isComplete ? '✓ Done  ·  ' : ''}
-                          {mp.displayShots.toLocaleString()} / {mp.requiredShots.toLocaleString()} good shots
-                        </AppText>
-                        {mp.surplusShots > 0 ? (
-                          <AppText variant="caption" style={{ color: colors.status.info.fg, marginTop: 2 }}>
-                            +{mp.surplusShots.toLocaleString()} surplus shots
+                          <AppText variant="caption" tone="muted" style={{ minWidth: 120 }}>
+                            {f.label}
                           </AppText>
-                        ) : null}
-                      </>
-                    ) : (
-                      <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
-                        Target: {(m.requiredShots || 0).toLocaleString()} good shots
+                          <AppText variant="caption" weight="600" style={[{ flexShrink: 1 }, f.color ? { color: f.color } : null]}>
+                            {f.value}
+                          </AppText>
+                        </View>
+                      ))}
+                    </View>
+
+                    {isEditing ? (
+                      <AppText variant="caption" weight="700" style={{ color: colors.primary, marginTop: spacing(2) }}>
+                        ✎ Editing this mould in the form below
                       </AppText>
-                    )}
-                  </Pressable>
+                    ) : null}
+
+                    {/* Actions: full-width row under the facts, so they are ALWAYS on screen no
+                        matter how long the mould / part names are. */}
+                    <View style={{ flexDirection: 'row', gap: spacing(2), marginTop: spacing(3) }}>
+                      <Button
+                        label="✎ Edit"
+                        variant="primary"
+                        onPress={() => editMold(m)}
+                        disabled={isEditing}
+                        style={{ flex: 1 }}
+                      />
+                      <Button
+                        label="🗑 Delete"
+                        variant="danger"
+                        onPress={() => confirmDeleteMold(m)}
+                        loading={deleteMold.isPending && deleteMold.variables === m.id}
+                        disabled={deleteMold.isPending}
+                        style={{ flex: 1, backgroundColor: '#DC2626' }}
+                      />
+                    </View>
+                  </View>
                 );
               })}
             </View>
@@ -642,7 +739,7 @@ export function MouldingForm() {
           {deleteCompanyMoldError ? <Banner tone="danger" message={deleteCompanyMoldError} /> : null}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing(1) }}>
             <AppText variant="caption" tone="muted">
-              {editingMold ? `Editing mold "${editingMold}"` : 'Add a new mold (tap a mold above to edit it)'}
+              {editingMold ? `Editing mould "${editingMold}" — change the fields and tap Update` : 'Add a new mould (or tap Edit on a mould above to change it)'}
             </AppText>
             {editingMold ? (
               <Pressable onPress={resetSetupForm}>
@@ -681,10 +778,13 @@ export function MouldingForm() {
           ) : null}
           {error ? <Banner tone="info" message={error} /> : null}
 
-          <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
-            Current shift (from your phone clock):{' '}
-            <AppText weight="700" style={{ color: colors.primary }}>Shift {shiftLabel(currentShift())}</AppText>
-          </AppText>
+          <Select
+            label="Shift"
+            value={shift}
+            options={SHIFT_OPTIONS}
+            onChange={(v) => setShift(v as Shift)}
+            placeholder="Select the shift"
+          />
           <Select
             label="Machine"
             value={machineNumber}

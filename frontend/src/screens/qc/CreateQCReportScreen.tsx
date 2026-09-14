@@ -25,7 +25,7 @@ import { useCurrentUser } from '@/hooks/useAuth';
 import { ApiError, friendlyMessage } from '@/services/apiError';
 import { buildRecordFormData, type PickedFile } from '@/services/mediaUpload';
 import { useTheme } from '@/theme/ThemeProvider';
-import { currentShift, shiftLabel } from '@/utils/shift';
+import { SHIFT_OPTIONS, type Shift } from '@/utils/shift';
 import type { QCStackParamList } from './navTypes';
 
 type Nav = NativeStackNavigationProp<QCStackParamList, 'CreateQCReport'>;
@@ -76,7 +76,8 @@ export function CreateQCReportScreen() {
   const [ok, setOk] = useState<string | null>(null);
 
   const ctx = ctxQuery.data;
-  const shift = currentShift();
+  // Shift is chosen MANUALLY by the engineer from a dropdown (A/B/C) — never auto-detected.
+  const [shift, setShift] = useState<Shift | null>(null);
 
   // Required chain ids: from the route (fall back to order-context if opened directly), so
   // the Submit button never waits on the async context query.
@@ -140,7 +141,7 @@ export function CreateQCReportScreen() {
           machine,
           mould,
           part,
-          shift,
+          shift: shift!,
           severity,
           description,
           defects,
@@ -171,6 +172,7 @@ export function CreateQCReportScreen() {
   const missing: string[] = [];
   if (!customerId || !productId || !orderId) missing.push('order details (reopen from the QC screen)');
   if (!hasContent) missing.push('at least one photo, defect, or description');
+  if (!shift) missing.push('the shift');
   const canSubmit = missing.length === 0 && !submit.isPending;
 
   return (
@@ -188,8 +190,18 @@ export function CreateQCReportScreen() {
         <Row label="Item Code" value={ctx?.order.itemCode ?? '…'} />
         <Row label="Product" value={ctx?.order.productName ?? '…'} />
         <Row label="Engineer" value={user?.name ?? '—'} />
-        <Row label="Shift" value={shiftLabel(shift)} />
         <Row label="Date" value={new Date().toLocaleDateString('en-IN')} last />
+      </Card>
+
+      {/* Shift — picked manually by the engineer (never auto-detected from the clock). */}
+      <Card style={{ marginBottom: spacing(4) }}>
+        <Select
+          label="Shift"
+          value={shift}
+          options={SHIFT_OPTIONS}
+          onChange={(v) => setShift(v as Shift)}
+          placeholder="Select the shift"
+        />
       </Card>
 
       {/* Where — machine + mould from dropdowns (select, don't type). Moulding only: an

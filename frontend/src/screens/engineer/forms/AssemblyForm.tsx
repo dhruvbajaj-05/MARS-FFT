@@ -10,7 +10,7 @@ import { AppText, Banner, Button, Card, FormField, Screen, Select } from '@/comp
 import { ApiError, friendlyMessage } from '@/services/apiError';
 import { usePOItemCode } from '@/screens/engineer/usePOItemCode';
 import { useTheme } from '@/theme/ThemeProvider';
-import { currentShift } from '@/utils/shift';
+import { SHIFT_OPTIONS, type Shift } from '@/utils/shift';
 
 type Row = { partName: string; perSet: string; kind: 'moulded' | 'outsourced' };
 
@@ -34,6 +34,8 @@ export function AssemblyForm() {
   const [sets, setSets] = useState('');
   const [rejected, setRejected] = useState('');
   const [remarks, setRemarks] = useState('');
+  // Shift is chosen MANUALLY by the engineer from a dropdown (A/B/C) — never auto-detected.
+  const [shift, setShift] = useState<Shift | null>(null);
   const [ok, setOk] = useState<string | null>(null);
   // Optional record-keeping fields are tucked away — EOD entry only requires Produced Sets.
   const [showDetails, setShowDetails] = useState(false);
@@ -122,7 +124,7 @@ export function AssemblyForm() {
         assembledSets: Number(sets),
         rejectedQuantity: Number(rejected),
         remarks: remarks.trim() || undefined,
-        shift: currentShift(),
+        shift: shift!,
       }),
     onSuccess: (res) => {
       const extra = res.record.extraSets ?? 0;
@@ -217,6 +219,7 @@ export function AssemblyForm() {
     cp.productId &&
     cp.jobId &&
     hasAssortment &&
+    shift &&
     setsNum > 0 &&
     !anyShort &&
     nums.every((n) => Number.isFinite(n) && n >= 0)
@@ -396,8 +399,15 @@ export function AssemblyForm() {
 
           <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(2) }}>
             Enter the sets produced today — components are deducted automatically from the
-            assortment (normal store first, then surplus). Shift is detected automatically.
+            assortment (normal store first, then surplus).
           </AppText>
+          <Select
+            label="Shift"
+            value={shift}
+            options={SHIFT_OPTIONS}
+            onChange={(v) => setShift(v as Shift)}
+            placeholder="Select the shift"
+          />
           <FormField label="Produced sets" value={sets} onChangeText={setSets} keyboardType="number-pad" placeholder="e.g. 100" />
 
           {extraSets > 0 ? (
