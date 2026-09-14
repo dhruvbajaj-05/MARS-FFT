@@ -183,7 +183,7 @@ export function PurchaseOrderDetailPage() {
           ) : (
             <div className="confirm">
               <span className="confirm-text">
-                Delete this PO and its item codes? This cannot be undone (blocked if production records exist).
+                Delete this PO, its item codes, and every production, QC and dispatch record under them? This cannot be undone.
               </span>
               <button className="btn-danger" disabled={remove.isPending} onClick={() => remove.mutate()}>
                 {remove.isPending ? 'Deleting…' : 'Confirm delete'}

@@ -308,14 +308,15 @@ async function updatePurchaseOrder(id, { notes, status }) {
   return toPublicPO(po);
 }
 
-// Delete a PO and all its jobs. Blocked (409) if any job has production records, so history
-// is never orphaned; each clean job is removed via order.service (reconcile + cleanup).
+// Delete a PO and all its jobs — admin only, allowed at ANY stage (open, in production,
+// completed or archived). Every item-code job is force-deleted via order.service, which
+// purges its moulding / assembly / QC / dispatch records, QC report photos, notifications and
+// stock rows first, then reconciles the product. Nothing about the PO is left behind.
 async function deletePurchaseOrder(id) {
   const po = await loadPO(id);
   const jobs = await Order.find({ purchaseOrderId: po._id }).select('_id orderCode');
   for (const job of jobs) {
-    // deleteOrder throws 409 when the job has records — surfaces as a clean, actionable error.
-    await orderService.deleteOrder(job._id);
+    await orderService.deleteOrder(job._id, { force: true });
   }
   await PurchaseOrder.deleteOne({ _id: po._id });
   return { id: String(id), deleted: true };

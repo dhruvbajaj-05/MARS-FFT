@@ -178,7 +178,7 @@ export function PurchaseOrderDetailScreen() {
                   onPress={() =>
                     confirm(
                       'Delete purchase order',
-                      'This deletes the PO and all its item code jobs. Blocked if any job has production records.',
+                      'This deletes the PO, all its item codes, and every production, QC and dispatch record under them. This cannot be undone.',
                       () => deletePO.mutate(),
                     )
                   }

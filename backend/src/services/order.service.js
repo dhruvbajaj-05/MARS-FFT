@@ -1,5 +1,6 @@
 'use strict';
 
+const fs = require('fs');
 const mongoose = require('mongoose');
 const Order = require('../models/Order');
 const Product = require('../models/Product');
@@ -12,6 +13,11 @@ const OrderMold = require('../models/OrderMold');
 const OutsourcedComponentItem = require('../models/OutsourcedComponentItem');
 const ComponentStockItem = require('../models/ComponentStockItem');
 const StockLedgerEntry = require('../models/StockLedgerEntry');
+const QCReport = require('../models/QCReport');
+const MediaAsset = require('../models/MediaAsset');
+const Notification = require('../models/Notification');
+const QCNotification = require('../models/QCNotification');
+const OutsourcedReceipt = require('../models/OutsourcedReceipt');
 const { notFound, badRequest, conflict } = require('../utils/httpError');
 const { parsePagination, buildList } = require('../utils/pagination');
 const reconcileService = require('./reconcile.service');
@@ -256,11 +262,60 @@ async function updateOrder(id, { orderQuantity, productId, customerId }) {
 // it, so production history is never orphaned. When clean, the order and its derived rows
 // (mould setup, outsourced BOM snapshot, component cells, ledger) are removed and the
 // product's stores are reconciled so any surplus auto-consumed at creation returns.
-async function deleteOrder(id) {
+// HARD-delete every record filed under an order: moulding / assembly / QC / dispatch entries,
+// QC reports, their photo binaries on disk + `mediaassets` rows, and the order's notifications
+// and outsourced receipts. Nothing is soft-deleted or tombstoned. Used ONLY by the admin
+// purchase-order delete (force mode) — the per-item-code delete keeps its records guard.
+async function purgeOrderRecords(orderId) {
+  const [assembly, dispatch, qcRecs, qcReports] = await Promise.all([
+    AssemblyRecord.find({ orderId }).select('photos').lean(),
+    PackingDispatchRecord.find({ orderId }).select('photos').lean(),
+    QCRecord.find({ orderId }).select('photos').lean(),
+    QCReport.find({ orderId }).select('photos').lean(),
+  ]);
+  const photoIds = [...assembly, ...dispatch, ...qcRecs, ...qcReports]
+    .flatMap((r) => r.photos || [])
+    .filter(Boolean);
+
+  if (photoIds.length > 0) {
+    const { diskPathForUrl } = require('../middleware/upload');
+    const assets = await MediaAsset.find({ _id: { $in: photoIds } }).select('url').lean();
+    await Promise.all(
+      assets.map(async (a) => {
+        const disk = diskPathForUrl(a.url);
+        if (!disk) return;
+        try {
+          await fs.promises.unlink(disk);
+        } catch (e) {
+          /* file already gone — nothing to reclaim */
+        }
+      })
+    );
+    await MediaAsset.deleteMany({ _id: { $in: photoIds } });
+  }
+
+  await Promise.all([
+    MouldingRecord.deleteMany({ orderId }),
+    AssemblyRecord.deleteMany({ orderId }),
+    QCRecord.deleteMany({ orderId }),
+    QCReport.deleteMany({ orderId }),
+    PackingDispatchRecord.deleteMany({ orderId }),
+    Notification.deleteMany({ orderId }),
+    QCNotification.deleteMany({ orderId }),
+    OutsourcedReceipt.deleteMany({ orderId }),
+  ]);
+}
+
+// Delete an item-code job. By default it is BLOCKED (409) while production / QC / dispatch
+// records exist so history is never orphaned. With `{ force: true }` (admin PO delete only)
+// those records are purged first and the job goes regardless of production state.
+async function deleteOrder(id, { force = false } = {}) {
   const order = await loadOrder(id);
 
   const counts = await countOrderRecords(order._id);
-  if (counts.total > 0) {
+  if (counts.total > 0 && force) {
+    await purgeOrderRecords(order._id);
+  } else if (counts.total > 0) {
     const parts = [];
     if (counts.moulding) parts.push(`${counts.moulding} moulding`);
     if (counts.assembly) parts.push(`${counts.assembly} assembly`);

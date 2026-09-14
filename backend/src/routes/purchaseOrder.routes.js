@@ -41,7 +41,7 @@ router.delete(
   purchaseOrderController.removeLine
 );
 
-// Edit / delete the PO — admin only.
+// Edit / delete the PO — admin only. Delete is allowed at any stage (cascades to every record).
 router.patch('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), purchaseOrderController.update);
 router.delete('/:id', ...protect(ROLES.ADMIN), validateObjectId('id'), purchaseOrderController.remove);
 
