@@ -46,15 +46,16 @@ async function validateOrder({ orderId, customerId, productId }) {
   return order;
 }
 
-// Define or edit a mold for ONE order (Mould Setup). Upsert on (orderId, moldName) so
-// the setup is editable and idempotent. Saving also reinforces the product-level
-// MoldDefinition so future orders surface this mold/part/cavity as a suggestion.
+// Add or edit ONE Mould Setup row for an order.
 //
-// EVERY field is editable — including the mold NAME (req #9). When `originalMoldName` is
-// supplied and differs from the new name, the existing setup row is RENAMED (and any
-// moulding records already pushed under the old name are re-tagged) so progress/history
-// stay attached to the mold.
-async function upsertOrderMold({ orderId, customerId, productId, moldName, partName, cavity, requiredShots, originalMoldName, createdBy }) {
+// Identity is the row's _id — NEVER the mould name. A mould name is just a label and may
+// repeat: "Mega Block" can be set up any number of times on the same item code (different
+// cavity / part / target) and on every other item code. So:
+//   • no `id`  → ALWAYS creates a new setup row (never overwrites an existing one),
+//   • `id`     → edits that row (every field, including the name); production already pushed
+//                under it stays attached because records carry orderMoldId.
+// Saving also reinforces the product-level MoldDefinition (dropdown memory).
+async function upsertOrderMold({ id, orderId, customerId, productId, moldName, partName, cavity, requiredShots, createdBy }) {
   const order = await validateOrder({ orderId, customerId, productId });
 
   // Archived PO (all Item Codes' production complete) is read-only — no mould editing/setup.
@@ -87,61 +88,35 @@ async function upsertOrderMold({ orderId, customerId, productId, moldName, partN
     throw badRequest('requiredShots must be a number >= 0', 'invalid_required_shots');
   }
 
-  // Rename path: the engineer edited the mold NAME of an existing setup row.
-  const oldName = String(originalMoldName || '').trim();
-  if (oldName && oldName !== name) {
-    const existing = await OrderMold.findOne({ orderId, moldName: oldName });
-    if (existing) {
-      // Guard against colliding with a different mold that already uses the new name.
-      const clash = await OrderMold.findOne({ orderId, moldName: name });
-      if (clash) {
-        throw conflict(`A mold named "${name}" already exists for this order`, 'mold_name_conflict');
-      }
-      existing.moldName = name;
-      existing.partName = part;
-      existing.cavity = cav;
-      existing.requiredShots = shots;
-      await existing.save();
-      // Re-tag production already pushed under the old name so per-mold progress follows.
-      await MouldingRecord.updateMany(
-        { orderId, moldName: oldName },
-        { $set: { moldName: name } }
-      );
-      await moldService.upsertMold({ customerId: cust, productId: prod, moldName: name, partName: part, cavity: cav, requiredShots: shots, createdBy });
-      await reconcileService.reconcileProduct(cust, prod);
-      return toPublicOrderMold(existing);
+  let mold;
+  if (id !== undefined && id !== null && id !== '') {
+    // EDIT path — the engineer tapped Edit on an existing card.
+    if (!mongoose.Types.ObjectId.isValid(id)) throw badRequest('Invalid mold id', 'invalid_id');
+    mold = await OrderMold.findOne({ _id: id, orderId });
+    if (!mold) throw notFound('Mold not found on this order', 'mold_not_found');
+    const renamed = mold.moldName !== name;
+    mold.moldName = name;
+    mold.partName = part;
+    mold.cavity = cav;
+    mold.requiredShots = shots;
+    await mold.save();
+    if (renamed) {
+      // Keep the display name on already-pushed production in step with the setup.
+      await MouldingRecord.updateMany({ orderMoldId: mold._id }, { $set: { moldName: name } });
     }
-    // No row under the old name — fall through and treat as a normal create of `name`.
-  }
-
-  // ADD path (no originalMoldName): a mould name must be unique per item code. Saving a
-  // NEW setup under a name that already exists would silently overwrite that setup's
-  // part / cavity / required shots — the engineer loses a mould without noticing. Refuse
-  // instead and tell them to pick a different name (or use Edit on the existing card).
-  // Case-insensitive so "mega blocks" is treated as the same mould as "Mega blocks".
-  // Skipped only when the engineer is editing this very row under its own name.
-  if (oldName.toLowerCase() !== name.toLowerCase()) {
-    const dup = await OrderMold.findOne({
+  } else {
+    // ADD path — always a NEW row, even when the name already exists on this item code.
+    mold = await OrderMold.create({
       orderId,
-      moldName: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+      customerId: cust,
+      productId: prod,
+      moldName: name,
+      partName: part,
+      cavity: cav,
+      requiredShots: shots,
+      createdBy,
     });
-    if (dup) {
-      throw conflict(
-        `A mould named "${dup.moldName}" is already set up on this item code (${dup.partName}, ${dup.cavity} cavity). ` +
-          `Give this mould a different name (e.g. "${name} – ${cav} cav"), or tap Edit on that card to change it.`,
-        'mold_name_exists'
-      );
-    }
   }
-
-  const mold = await OrderMold.findOneAndUpdate(
-    { orderId, moldName: name },
-    {
-      $set: { partName: part, cavity: cav, requiredShots: shots },
-      $setOnInsert: { customerId: cust, productId: prod, createdBy },
-    },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
-  );
 
   // Reinforce the product-level memory (dropdown suggestions for future orders).
   await moldService.upsertMold({
@@ -217,26 +192,31 @@ async function listForOrder(orderId) {
     }
   }
 
-  // Company-wide moulds (req): every mould this COMPANY has ever set up, pooled across all of
-  // its products and item codes, so on any order the engineer can pick an existing mould from
-  // a single dropdown instead of re-entering it. Identity + part + cavity are reused; Required
-  // Shots is intentionally omitted (it is a per-item-code target, never inherited). Excludes
-  // moulds already set up on THIS order.
-  const companyMoldsResp = await moldService.listMoldsForCustomer(order.customerId.toString());
+  // Company-wide moulds: every mould set up anywhere for this COMPANY, pooled across all of
+  // its item codes — INCLUDING the item code being viewed — distinct by (name, part, cavity).
+  // A mould appears here the moment it is saved for the first time, so the engineer can pick
+  // it straight back, change the other fields and save it as another setup on the same item
+  // code. Required Shots is intentionally omitted (a per-setup target, never inherited).
+  // Learned definitions (MoldDefinition) are merged in so a mould whose setups were all
+  // deleted, or one from before this list existed, still shows up.
+  const [companySetups, companyMoldsResp] = await Promise.all([
+    OrderMold.find({ customerId: order.customerId }).select('moldName partName cavity').sort({ createdAt: 1 }).lean(),
+    moldService.listMoldsForCustomer(order.customerId.toString()),
+  ]);
   const companySuggestions = [];
   {
-    const seen = new Set(definedNames);
-    for (const s of companyMoldsResp.molds || []) {
-      const key = String(s.moldName).toLowerCase();
-      if (seen.has(key)) continue;
+    const seen = new Set();
+    const add = (moldName, partName, cavity) => {
+      const key = `${String(moldName).toLowerCase()}|${String(partName || '').toLowerCase()}|${Number(cavity) || 0}`;
+      if (seen.has(key)) return;
       seen.add(key);
-      companySuggestions.push({
-        moldName: s.moldName,
-        partName: s.defaultPartName || s.partName,
-        cavity: s.cavity,
-      });
-    }
-    companySuggestions.sort((a, b) => a.moldName.localeCompare(b.moldName));
+      companySuggestions.push({ moldName, partName: partName || '', cavity: Number(cavity) || 1 });
+    };
+    for (const m of companySetups) add(m.moldName, m.partName, m.cavity);
+    for (const s of companyMoldsResp.molds || []) add(s.moldName, s.defaultPartName || s.partName, s.cavity);
+    companySuggestions.sort(
+      (a, b) => a.moldName.localeCompare(b.moldName) || a.cavity - b.cavity || a.partName.localeCompare(b.partName)
+    );
   }
 
   return {
@@ -255,6 +235,22 @@ async function listForOrder(orderId) {
 async function findOrderMold(orderId, moldName) {
   if (!mongoose.Types.ObjectId.isValid(orderId)) return null;
   return OrderMold.findOne({ orderId, moldName: String(moldName || '').trim() });
+}
+
+// Look up a setup row by its id, scoped to the order it must belong to (the identity used by
+// production entry now that names may repeat).
+async function findOrderMoldById(orderId, id) {
+  if (!mongoose.Types.ObjectId.isValid(orderId) || !mongoose.Types.ObjectId.isValid(id)) return null;
+  return OrderMold.findOne({ _id: id, orderId });
+}
+
+// Records pushed under a given setup row. Legacy records (before orderMoldId existed) are
+// matched by name when they carry no orderMoldId.
+function recordsUnderSetupFilter(mold) {
+  return {
+    orderId: mold.orderId,
+    $or: [{ orderMoldId: mold._id }, { orderMoldId: null, moldName: mold.moldName }],
+  };
 }
 
 // Delete a mold set up for ONE order (Mould Setup) — used when the engineer set up the
@@ -283,10 +279,7 @@ async function deleteOrderMold(moldId) {
 
   // Block deletion once production exists under this mould — deleting would orphan the
   // pushed records and their derived store balances.
-  const producedCount = await MouldingRecord.countDocuments({
-    orderId: mold.orderId,
-    moldName: mold.moldName,
-  });
+  const producedCount = await MouldingRecord.countDocuments(recordsUnderSetupFilter(mold));
   if (producedCount > 0) {
     throw conflict(
       `Cannot delete "${mold.moldName}" — ${producedCount} production entr${producedCount === 1 ? 'y has' : 'ies have'} been pushed under it. Delete those entries first.`,
@@ -323,15 +316,24 @@ async function deleteOrderMold(moldId) {
 //   • blocked if ANY item code has production pushed under this mould (deleting would orphan
 //     those records and their derived store balances),
 //   • blocked if ANY affected item code belongs to an archived (read-only) purchase order.
-async function deleteCompanyMold(customerId, moldName) {
+async function deleteCompanyMold(customerId, moldName, partName, cavity) {
   if (!mongoose.Types.ObjectId.isValid(customerId)) {
     throw badRequest('A valid customerId is required', 'invalid_customer');
   }
   const name = String(moldName || '').trim();
   if (!name) throw badRequest('moldName is required', 'missing_mold_name');
-  const nameMatch = { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' };
+  const esc = (v) => `^${String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+  const nameMatch = { $regex: esc(name), $options: 'i' };
+  // The dropdown lists one entry per (name, part, cavity); deleting an entry removes only the
+  // setups matching that exact combination. Name-only (legacy callers) removes every setup
+  // with the name.
+  const setupFilter = { customerId, moldName: nameMatch };
+  const part = partName === undefined || partName === null ? '' : String(partName).trim();
+  const cav = Number(cavity);
+  if (part) setupFilter.partName = { $regex: esc(part), $options: 'i' };
+  if (Number.isFinite(cav) && cav >= 1) setupFilter.cavity = cav;
 
-  const setups = await OrderMold.find({ customerId, moldName: nameMatch }).lean();
+  const setups = await OrderMold.find(setupFilter).lean();
 
   if (setups.length > 0) {
     const orderIds = [...new Set(setups.map((m) => m.orderId.toString()))];
@@ -348,8 +350,7 @@ async function deleteCompanyMold(customerId, moldName) {
     }
 
     const producedCount = await MouldingRecord.countDocuments({
-      orderId: { $in: orderIds },
-      moldName: nameMatch,
+      $or: setups.map((m) => recordsUnderSetupFilter(m)),
     });
     if (producedCount > 0) {
       throw conflict(
@@ -362,7 +363,12 @@ async function deleteCompanyMold(customerId, moldName) {
   const setupsRes = setups.length > 0
     ? await OrderMold.deleteMany({ _id: { $in: setups.map((m) => m._id) } })
     : { deletedCount: 0 };
-  const defsRes = await moldService.deleteMoldForCustomer(customerId, name);
+  // Drop the learned definition only when NO setup with this name remains for the company —
+  // deleting the "Mega block · 2 cav" entry must not erase the memory of "Mega block · 11 cav".
+  const remainingWithName = await OrderMold.countDocuments({ customerId, moldName: nameMatch });
+  const defsRes = remainingWithName === 0
+    ? await moldService.deleteMoldForCustomer(customerId, name)
+    : { deleted: 0, productIds: [] };
 
   if (setupsRes.deletedCount === 0 && defsRes.deleted === 0) {
     throw notFound('Mold not found', 'mold_not_found');
@@ -382,11 +388,40 @@ async function deleteCompanyMold(customerId, moldName) {
   };
 }
 
+// Startup, idempotent: make the setup id the mould identity.
+//   1. Sync OrderMold indexes — drops the old UNIQUE (orderId, moldName) index that stopped a
+//      mould name being set up twice on one item code, and creates the plain one.
+//   2. Back-fill orderMoldId on production records that predate it (matched by order + name;
+//      names were unique per order back then, so the match is exact).
+async function ensureMouldIdentity() {
+  try {
+    await OrderMold.syncIndexes();
+  } catch (err) {
+    console.warn('[moulds] index sync failed:', err.message);
+  }
+  const legacy = await MouldingRecord.find({ orderMoldId: null })
+    .select('orderId moldName partName cavity')
+    .lean();
+  let fixed = 0;
+  for (const r of legacy) {
+    const candidates = await OrderMold.find({ orderId: r.orderId, moldName: r.moldName }).lean();
+    if (candidates.length === 0) continue;
+    const exact = candidates.find((m) => m.partName === r.partName && m.cavity === r.cavity);
+    const target = exact || candidates[0];
+    await MouldingRecord.updateOne({ _id: r._id }, { $set: { orderMoldId: target._id } });
+    fixed += 1;
+  }
+  if (legacy.length > 0) console.log(`[moulds] back-filled orderMoldId on ${fixed}/${legacy.length} legacy records`);
+}
+
 module.exports = {
   upsertOrderMold,
   listForOrder,
   findOrderMold,
+  findOrderMoldById,
+  recordsUnderSetupFilter,
   deleteOrderMold,
   deleteCompanyMold,
+  ensureMouldIdentity,
   toPublicOrderMold,
 };

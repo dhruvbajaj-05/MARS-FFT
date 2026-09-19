@@ -33,8 +33,12 @@ const orderMoldSchema = new mongoose.Schema(
   { timestamps: { createdAt: true, updatedAt: true } }
 );
 
-// One setup row per (order, mold). Also makes the define/edit upsert atomic + idempotent.
-orderMoldSchema.index({ orderId: 1, moldName: 1 }, { unique: true });
+// A setup row is identified by its _id. The mould NAME is a label and may repeat freely —
+// the same "Mega Block" can be set up any number of times on one item code (different
+// cavity / part / target) and on every other item code. NOT unique (was unique before; the
+// old unique index is dropped on startup by orderMoldService.ensureMouldIdentity).
+orderMoldSchema.index({ orderId: 1, moldName: 1 });
+orderMoldSchema.index({ customerId: 1 });
 orderMoldSchema.index({ productId: 1 });
 
 module.exports = mongoose.model('OrderMold', orderMoldSchema);

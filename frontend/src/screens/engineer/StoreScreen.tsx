@@ -673,7 +673,7 @@ function ProductionStore() {
                     <AppText weight="700" style={{ fontSize: 16 }}>{i.itemCode ?? '—'}</AppText>
                     <AppText variant="caption" tone="muted" style={{ marginBottom: spacing(1) }}>{i.productName}</AppText>
                     {i.moulds.map((m) => (
-                      <MouldRow key={m.moldName} moldName={m.moldName} produced={m.produced} surplus={m.surplus} required={m.requiredPieces} remaining={m.remaining} sub={`${m.partName} · ${m.cavity} cav`} />
+                      <MouldRow key={m.setupId ?? `${m.moldName}|${m.partName}|${m.cavity}`} moldName={`${m.moldName} · ${m.cavity} cav`} produced={m.produced} surplus={m.surplus} required={m.requiredPieces} remaining={m.remaining} sub={`${m.partName} · ${m.cavity} cav`} />
                     ))}
                   </Card>
                 ))}

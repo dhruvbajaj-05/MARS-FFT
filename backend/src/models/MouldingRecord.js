@@ -13,6 +13,11 @@ const mouldingRecordSchema = new mongoose.Schema(
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
     customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true },
 
+    // The Mould Setup row (OrderMold) this production was pushed under. This is the mould's
+    // IDENTITY for progress / completion / store views — mould names may repeat on an item
+    // code, so the name alone can't tell setups apart. Null only on legacy records whose
+    // setup no longer exists (those fall back to moldName).
+    orderMoldId: { type: mongoose.Schema.Types.ObjectId, ref: 'OrderMold', default: null },
     moldName: { type: String, required: true, trim: true },
     partName: { type: String, required: true, trim: true },
     machineNumber: { type: String, required: true, trim: true },
@@ -39,6 +44,7 @@ const mouldingRecordSchema = new mongoose.Schema(
 
 mouldingRecordSchema.index({ customerId: 1 });
 mouldingRecordSchema.index({ orderId: 1 });
+mouldingRecordSchema.index({ orderMoldId: 1 });
 mouldingRecordSchema.index({ createdBy: 1, createdAt: -1 });
 
 module.exports = mongoose.model('MouldingRecord', mouldingRecordSchema);

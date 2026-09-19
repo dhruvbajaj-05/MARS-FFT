@@ -39,19 +39,67 @@ async function computeTargetShots(orderId) {
   return agg?.total ?? 0;
 }
 
-// Recompute the (order, mould) enforcement counter from the record history and persist it.
+// Resolve the Mould Setup row a record was pushed under (records carry orderMoldId; legacy
+// records without it fall back to the order + name match).
+async function setupForRecord(record) {
+  if (record.orderMoldId) {
+    const byId = await OrderMold.findById(record.orderMoldId);
+    if (byId) return byId;
+  }
+  return orderMoldService.findOrderMold(record.orderId, record.moldName);
+}
+
+// Recompute a setup row's enforcement counter from the record history and persist it.
 // Keeps OrderMold.completedShots exact after edits/deletes (self-healing — never drifts).
-async function recomputeCompletedShots(orderId, moldName) {
+// Keyed by the setup row (mould names may repeat on an item code, so never by name).
+async function recomputeCompletedShots(mold) {
+  if (!mold) return 0;
   const [agg] = await MouldingRecord.aggregate([
-    { $match: { orderId: new mongoose.Types.ObjectId(String(orderId)), moldName } },
+    { $match: orderMoldService.recordsUnderSetupFilter(mold) },
     // The completion counter tracks GOOD shots (shots − rejected): rejected shots never count
     // toward the target, so raising rejects on an edit lowers this and reopens the mould.
     { $group: { _id: null, total: { $sum: { $subtract: ['$shotsDone', { $ifNull: ['$rejectedShots', 0] }] } } } },
   ]);
   const total = agg?.total ?? 0;
-  await OrderMold.updateOne({ orderId, moldName }, { $set: { completedShots: total } });
+  await OrderMold.updateOne({ _id: mold._id }, { $set: { completedShots: total } });
   return total;
 }
+
+// Per-setup production roll-up for an order. Groups records by the setup they were pushed
+// under (orderMoldId), with legacy name-only records attached to the setup carrying that name.
+// Returns { bySetup: Map<setupId, agg>, orphans: agg[] } where orphans are records whose
+// setup no longer exists (kept so totals stay truthful).
+function groupProductionBySetup(prodArr, orderMolds) {
+  const bySetup = new Map();
+  const orphans = [];
+  const byName = new Map();
+  for (const m of orderMolds) if (!byName.has(m.moldName)) byName.set(m.moldName, m);
+  const merge = (into, g) => {
+    into.shotsDone += g.shotsDone || 0;
+    into.rejectedShots += g.rejectedShots || 0;
+    into.goodParts += g.goodParts || 0;
+    into.productionQuantity += g.productionQuantity || 0;
+    into.recordCount += g.recordCount || 0;
+    return into;
+  };
+  const blank = (name) => ({ moldName: name, shotsDone: 0, rejectedShots: 0, goodParts: 0, productionQuantity: 0, recordCount: 0 });
+  const knownIds = new Set(orderMolds.map((m) => String(m._id)));
+  for (const g of prodArr) {
+    const id = g._id.id ? String(g._id.id) : null;
+    const name = g._id.name;
+    let key = id && knownIds.has(id) ? id : null;
+    if (!key && byName.has(name)) key = String(byName.get(name)._id);
+    if (key) {
+      bySetup.set(key, merge(bySetup.get(key) || blank(name), g));
+    } else {
+      orphans.push(merge(blank(name), g));
+    }
+  }
+  return { bySetup, orphans };
+}
+
+// $group stage shared by the per-setup aggregations.
+const GROUP_BY_SETUP_ID = { id: '$orderMoldId', name: '$moldName' };
 
 async function computeOrderStatus(orderId) {
   if (!mongoose.Types.ObjectId.isValid(orderId)) {
@@ -68,7 +116,7 @@ async function computeOrderStatus(orderId) {
       { $match: { orderId: order._id } },
       {
         $group: {
-          _id: '$moldName',
+          _id: GROUP_BY_SETUP_ID,
           shotsDone: { $sum: '$shotsDone' },
           rejectedShots: { $sum: '$rejectedShots' },
           goodParts: { $sum: '$goodParts' },
@@ -77,7 +125,7 @@ async function computeOrderStatus(orderId) {
         },
       },
     ]),
-    OrderMold.find({ orderId: order._id }).lean(),
+    OrderMold.find({ orderId: order._id }).sort({ createdAt: 1 }).lean(),
   ]);
 
   // Overall totals computed from per-mold data.
@@ -85,15 +133,15 @@ async function computeOrderStatus(orderId) {
   const totalProduced = moldProdArr.reduce((s, m) => s + m.productionQuantity, 0);
   const totalRecords = moldProdArr.reduce((s, m) => s + m.recordCount, 0);
 
-  // Index production by moldName for O(1) lookup.
-  const prodByMold = Object.fromEntries(moldProdArr.map((m) => [m._id, m]));
+  // Index production by SETUP ROW (mould names may repeat on an item code).
+  const { bySetup: prodByMold } = groupProductionBySetup(moldProdArr, orderMolds);
 
   // Per-mold progress — each OrderMold is the authoritative source for targets.
   // Completion + progress are measured in GOOD SHOTS (shotsDone − rejectedShots): rejected
   // shots do NOT count toward the target, so a mould is complete only once its GOOD shots reach
   // requiredShots. The Entry page shows SHOTS; good pieces / surplus (pieces) are a Store concern.
   const moldProgress = orderMolds.map((m) => {
-    const prod = prodByMold[m.moldName] || { shotsDone: 0, rejectedShots: 0, goodParts: 0 };
+    const prod = prodByMold.get(String(m._id)) || { shotsDone: 0, rejectedShots: 0, goodParts: 0 };
     const requiredShots = m.requiredShots || 0;
     const cavity = m.cavity || 1;
     const shotsDone = prod.shotsDone || 0;
@@ -109,6 +157,8 @@ async function computeOrderStatus(orderId) {
     const displayShots = requiredShots > 0 ? Math.min(goodShots, requiredShots) : goodShots;
     const surplusShots = requiredShots > 0 ? Math.max(0, goodShots - requiredShots) : 0;
     return {
+      // Setup row id — the mould's identity for the app (names may repeat).
+      id: String(m._id),
       moldName: m.moldName,
       partName: m.partName,
       cavity,
@@ -241,6 +291,7 @@ function toPublicMouldingRecord(record) {
     orderId: record.orderId.toString(),
     productId: record.productId.toString(),
     customerId: record.customerId.toString(),
+    orderMoldId: record.orderMoldId ? record.orderMoldId.toString() : null,
     moldName: record.moldName,
     partName: record.partName,
     machineNumber: record.machineNumber,
@@ -357,9 +408,17 @@ async function createMouldingRecord({ payload, file, createdBy }) {
     }
   }
 
-  const moldName = String(payload.moldName).trim();
-
-  const orderMold = await orderMoldService.findOrderMold(payload.orderId, moldName);
+  // Which Mould Setup is this production for? The app sends the setup row id (orderMoldId) —
+  // names may repeat on an item code, so the id is the only unambiguous key. Older app builds
+  // send only the name; fall back to the first setup carrying it.
+  let orderMold = null;
+  if (payload.orderMoldId) {
+    orderMold = await orderMoldService.findOrderMoldById(payload.orderId, payload.orderMoldId);
+    if (!orderMold) throw badRequest('The selected mould is not set up on this item code', 'mold_not_found');
+  }
+  const moldName = String(orderMold ? orderMold.moldName : payload.moldName || '').trim();
+  if (!moldName) throw badRequest('moldName is required', 'missing_mold_name');
+  if (!orderMold) orderMold = await orderMoldService.findOrderMold(payload.orderId, moldName);
   const mold = orderMold ? null : await moldService.findMold(payload.productId, moldName);
   const source = orderMold || mold;
   const cavity = source ? source.cavity : payload.cavity;
@@ -395,7 +454,7 @@ async function createMouldingRecord({ payload, file, createdBy }) {
     );
     if (!guarded) {
       throw conflict(
-        `Mould ${moldName} has reached its target of ${orderMold.requiredShots} good shots for this item code and is now complete — no further production can be entered.`,
+        `Mould ${moldName} (${orderMold.partName}, ${orderMold.cavity} cavity) has reached its target of ${orderMold.requiredShots} good shots for this item code and is now complete — no further production can be entered.`,
         'mould_completed'
       );
     }
@@ -415,6 +474,7 @@ async function createMouldingRecord({ payload, file, createdBy }) {
       orderId: payload.orderId,
       productId: payload.productId,
       customerId: payload.customerId,
+      orderMoldId: orderMold ? orderMold._id : null,
       moldName,
       partName,
       machineNumber: String(payload.machineNumber).trim(),
@@ -525,7 +585,7 @@ async function updateMouldingRecord(id, payload, user) {
   await record.save();
 
   // Keep the (order, mould) enforcement counter exact after the edit.
-  await recomputeCompletedShots(record.orderId, record.moldName);
+  await recomputeCompletedShots(await setupForRecord(record));
 
   // Recompute balances from the full record history — surplus is consumed before finished,
   // finished before pending, automatically (see reconcile.service).
@@ -553,11 +613,12 @@ async function deleteMouldingRecord(id, user) {
     throw forbidden('Delete window has expired (12 hours after creation)', 'delete_window_expired');
   }
 
-  const { customerId, productId, orderId, moldName } = record;
+  const { customerId, productId, orderId } = record;
+  const setup = await setupForRecord(record);
   await MouldingRecord.deleteOne({ _id: record._id });
 
-  // Keep the (order, mould) enforcement counter exact after the delete.
-  await recomputeCompletedShots(orderId, moldName);
+  // Keep the setup row's enforcement counter exact after the delete.
+  await recomputeCompletedShots(setup);
 
   // Recompute from the remaining records. If parts were already consumed by assembly, the
   // shortfall surfaces correctly as increased Pending (no false "already consumed" error).
@@ -778,8 +839,8 @@ async function deleteOrderMold(moldId) {
 }
 
 // Company-wide hard delete (Delete button on the "Reuse a mould from this company" dropdown).
-async function deleteCompanyMold(customerId, moldName) {
-  return orderMoldService.deleteCompanyMold(customerId, moldName);
+async function deleteCompanyMold(customerId, moldName, partName, cavity) {
+  return orderMoldService.deleteCompanyMold(customerId, moldName, partName, cavity);
 }
 
 module.exports = {

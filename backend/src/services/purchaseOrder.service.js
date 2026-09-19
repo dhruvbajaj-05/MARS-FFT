@@ -209,6 +209,7 @@ async function getPurchaseOrder(id) {
   const jobs = orders.map((o, i) => {
     const st = statuses[i];
     const moulds = (st.moldProgress || []).map((m) => ({
+      id: m.id,
       moldName: m.moldName,
       partName: m.partName,
       cavity: m.cavity,

@@ -26,6 +26,9 @@ export interface MouldingInput {
   orderId: string;
   productId: string;
   customerId: string;
+  // The Mould Setup row being produced on. Names may repeat on an item code, so this id is
+  // what the backend keys progress / completion on; moldName is sent alongside as the label.
+  orderMoldId?: string;
   moldName: string;
   partName?: string;
   machineNumber: string;
@@ -126,7 +129,7 @@ export const mouldingApi = {
 
   // Permanently erase a mould company-wide: every item-code setup + the learned-mould memory.
   // Hard delete on the server (nothing is left behind). Blocked once production exists under it.
-  deleteCompanyMold: (input: { customerId: string; moldName: string }) =>
+  deleteCompanyMold: (input: { customerId: string; moldName: string; partName?: string; cavity?: number }) =>
     apiClient
       .delete<{ deleted: boolean; moldName: string; removedSetups: number; removedDefinitions: number }>(
         '/moulding/company-molds',

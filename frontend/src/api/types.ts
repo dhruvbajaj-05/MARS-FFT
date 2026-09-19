@@ -104,6 +104,8 @@ export interface PurchaseOrder {
 
 // One mould on an Item Code card, with its live Done/in-progress state.
 export interface POJobMould {
+  // Setup row id (mould names may repeat on an item code).
+  id: string;
   moldName: string;
   partName: string;
   cavity: number;
@@ -199,6 +201,8 @@ export interface MouldingRecord {
   orderId: string;
   productId: string;
   customerId: string;
+  // The Mould Setup row this production was pushed under (null on legacy records).
+  orderMoldId?: string | null;
   moldName: string;
   partName: string;
   machineNumber: string;
@@ -301,6 +305,8 @@ export interface OrderStatusBase {
 }
 // Per-mold production progress returned inside MouldingStatus.
 export interface MoldProgress {
+  // Setup row id — match progress to an OrderMold by this, never by name.
+  id: string;
   moldName: string;
   partName: string;
   cavity: number;
@@ -766,6 +772,8 @@ export interface OrderMoldsResponse {
 }
 // ---- Production Store (live views from moulding records; by Mould) ----
 export interface ProductionStoreMould {
+  // Setup row id, null when the setup was deleted but production remains.
+  setupId?: string | null;
   moldName: string;
   partName: string;
   cavity: number;
@@ -820,9 +828,9 @@ export interface OrderMoldInput {
   partName: string;
   cavity: number;
   requiredShots?: number;
-  // When editing an existing setup row, the original mold name so the backend can rename it
-  // (instead of creating a duplicate). See req #9.
-  originalMoldName?: string;
+  // Editing an existing setup row: its id. Without it the backend ALWAYS creates a new row —
+  // mould names may repeat on an item code, so the id (never the name) is the identity.
+  id?: string;
 }
 
 // ---- Assembly assortments (parts-per-set / BOM) ----

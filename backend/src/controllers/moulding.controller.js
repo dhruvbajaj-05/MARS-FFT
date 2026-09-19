@@ -176,7 +176,12 @@ async function deleteOrderMold(req, res, next) {
 // from every item code + the learned-mould memory of a company (no trace left in the DB).
 async function deleteCompanyMold(req, res, next) {
   try {
-    const result = await mouldingService.deleteCompanyMold(req.query.customerId, req.query.moldName);
+    const result = await mouldingService.deleteCompanyMold(
+      req.query.customerId,
+      req.query.moldName,
+      req.query.partName,
+      req.query.cavity
+    );
     res.status(200).json(result);
   } catch (err) {
     next(err);

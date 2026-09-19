@@ -66,6 +66,8 @@ export function CreateQCReportScreen() {
   // Form state.
   const [machine, setMachine] = useState('');
   const [mould, setMould] = useState('');
+  // Setup row id backing the picker (mould names may repeat on an item code).
+  const [mouldId, setMouldId] = useState<string | null>(null);
   const [part, setPart] = useState('');
   const [photos, setPhotos] = useState<PickedFile[]>([]);
   const [defects, setDefects] = useState<string[]>([]);
@@ -91,9 +93,9 @@ export function CreateQCReportScreen() {
     hint: m.category === 'injection' ? 'Injection' : 'Blow',
   }));
   const moldOptions: SelectOption[] = molds.map((m) => ({
-    label: m.moldName,
-    value: m.moldName,
-    hint: `${m.partName} · ${m.cavity} cav`,
+    label: `${m.moldName} · ${m.cavity} cav`,
+    value: m.id,
+    hint: m.partName,
   }));
 
   // Defect options = production-time rejection reasons + the QC defect vocabulary, merged
@@ -105,9 +107,12 @@ export function CreateQCReportScreen() {
 
   // Selecting a mould auto-fills its part (still editable — fix a wrong pick anytime).
   const selectMould = (v: string) => {
-    setMould(v);
-    const m = molds.find((x) => x.moldName === v);
-    if (m) setPart(m.partName);
+    setMouldId(v);
+    const m = molds.find((x) => x.id === v);
+    if (m) {
+      setMould(m.moldName);
+      setPart(m.partName);
+    }
   };
 
   const toggle = (arr: string[], v: string) =>
@@ -221,7 +226,7 @@ export function CreateQCReportScreen() {
           />
           <Select
             label="Mould"
-            value={mould || null}
+            value={mouldId}
             options={moldOptions}
             onChange={selectMould}
             placeholder="Select a mould"

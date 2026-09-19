@@ -993,8 +993,10 @@ async function getOrderDashboard(user, orderId) {
         { $match: { orderId: oid } },
         { $sort: { createdAt: -1 } },
         {
+          // By setup row (names may repeat on an item code); legacy name-only records are
+          // attached to the setup carrying their name below.
           $group: {
-            _id: '$moldName',
+            _id: { setupId: '$orderMoldId', moldName: '$moldName' },
             goodParts: { $sum: '$goodParts' },
             producedQuantity: { $sum: '$productionQuantity' },
             shotsDone: { $sum: '$shotsDone' },
@@ -1072,11 +1074,35 @@ async function getOrderDashboard(user, orderId) {
   const defectReports = defectReportDocs.map(toCustomerDefectReport);
 
   // ---- Moulding: per mould + overall roll-up -------------------------------
-  const producedByMold = new Map(mouldAgg.map((m) => [m._id, m]));
-  const moldNames = new Set([...orderMolds.map((m) => m.moldName), ...mouldAgg.map((m) => m._id)]);
-  const molds = [...moldNames].map((name) => {
-    const def = orderMolds.find((m) => m.moldName === name);
-    const prod = producedByMold.get(name) || {};
+  const knownSetup = new Set(orderMolds.map((m) => String(m._id)));
+  const firstSetupByName = new Map();
+  for (const m of orderMolds) if (!firstSetupByName.has(m.moldName)) firstSetupByName.set(m.moldName, m);
+  const producedByMold = new Map(); // key: setup id, or `name:<moldName>` for orphaned production
+  for (const g of mouldAgg) {
+    const sid = g._id.setupId ? String(g._id.setupId) : null;
+    const key = sid && knownSetup.has(sid)
+      ? sid
+      : firstSetupByName.has(g._id.moldName)
+        ? String(firstSetupByName.get(g._id.moldName)._id)
+        : `name:${g._id.moldName}`;
+    const cur = producedByMold.get(key);
+    if (!cur) {
+      producedByMold.set(key, { ...g, moldName: g._id.moldName });
+    } else {
+      cur.goodParts += g.goodParts || 0;
+      cur.producedQuantity += g.producedQuantity || 0;
+      cur.shotsDone += g.shotsDone || 0;
+      cur.rejectedShots += g.rejectedShots || 0;
+      if (g.lastAt && (!cur.lastAt || g.lastAt > cur.lastAt)) {
+        cur.lastAt = g.lastAt; cur.machine = g.machine; cur.shift = g.shift;
+      }
+    }
+  }
+  const keys = [...orderMolds.map((m) => String(m._id)), ...[...producedByMold.keys()].filter((k) => k.startsWith('name:'))];
+  const molds = keys.map((key) => {
+    const def = orderMolds.find((m) => String(m._id) === key);
+    const prod = producedByMold.get(key) || {};
+    const name = def ? def.moldName : prod.moldName;
     const cavity = (def && def.cavity) || prod.cavity || 1;
     const required = def ? (def.requiredShots || 0) * (def.cavity || 1) : 0;
     const good = prod.goodParts || 0;

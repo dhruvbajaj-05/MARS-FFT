@@ -40,8 +40,11 @@ async function computePoMouldRows(purchaseOrderId) {
     MouldingRecord.aggregate([
       { $match: { orderId: { $in: jobIds } } },
       {
+        // Group by the SETUP ROW the production was pushed under (mould names may repeat on an
+        // item code). Legacy records without orderMoldId are attached to the setup carrying
+        // their name below.
         $group: {
-          _id: { orderId: '$orderId', moldName: '$moldName' },
+          _id: { orderId: '$orderId', setupId: '$orderMoldId', moldName: '$moldName' },
           produced: { $sum: '$goodParts' },
           shots: { $sum: '$shotsDone' },
           rejected: { $sum: '$rejectedShots' },
@@ -53,8 +56,29 @@ async function computePoMouldRows(purchaseOrderId) {
   ]);
 
   const pById = new Map(products.map((p) => [String(p._id), p]));
-  const targetByKey = new Map(orderMolds.map((m) => [`${m.orderId}|${m.moldName}`, m]));
-  const prodByKey = new Map(prodAgg.map((r) => [`${r._id.orderId}|${r._id.moldName}`, r]));
+  // Row key = setup id when the setup exists, else `name:<moldName>` (orphaned production).
+  const targetByKey = new Map(orderMolds.map((m) => [`${m.orderId}|${m._id}`, m]));
+  const firstSetupByName = new Map();
+  for (const m of orderMolds) {
+    const k = `${m.orderId}|${m.moldName}`;
+    if (!firstSetupByName.has(k)) firstSetupByName.set(k, m);
+  }
+  const prodByKey = new Map();
+  for (const r of prodAgg) {
+    const oid = String(r._id.orderId);
+    let key = null;
+    if (r._id.setupId && targetByKey.has(`${oid}|${r._id.setupId}`)) key = `${oid}|${r._id.setupId}`;
+    else if (firstSetupByName.has(`${oid}|${r._id.moldName}`)) key = `${oid}|${firstSetupByName.get(`${oid}|${r._id.moldName}`)._id}`;
+    else key = `${oid}|name:${r._id.moldName}`;
+    const cur = prodByKey.get(key);
+    if (cur) {
+      cur.produced += r.produced || 0;
+      cur.shots += r.shots || 0;
+      cur.rejected += r.rejected || 0;
+    } else {
+      prodByKey.set(key, { ...r, moldName: r._id.moldName });
+    }
+  }
 
   // Per-job identity (item code + product) — needed even for jobs with no moulds yet.
   const jobInfo = jobs.map((job) => {
@@ -66,12 +90,13 @@ async function computePoMouldRows(purchaseOrderId) {
   const rows = [];
   for (const job of jobs) {
     const info = jobInfo.find((j) => j.orderId === String(job._id));
-    const moldNames = new Set();
-    for (const m of orderMolds) if (String(m.orderId) === String(job._id)) moldNames.add(m.moldName);
-    for (const r of prodAgg) if (String(r._id.orderId) === String(job._id)) moldNames.add(r._id.moldName);
-    for (const moldName of moldNames) {
-      const t = targetByKey.get(`${job._id}|${moldName}`);
-      const pr = prodByKey.get(`${job._id}|${moldName}`);
+    const keys = [];
+    for (const m of orderMolds) if (String(m.orderId) === String(job._id)) keys.push(`${job._id}|${m._id}`);
+    for (const k of prodByKey.keys()) if (k.startsWith(`${job._id}|`) && !keys.includes(k)) keys.push(k);
+    for (const key of keys) {
+      const t = targetByKey.get(key);
+      const pr = prodByKey.get(key);
+      const moldName = t ? t.moldName : pr.moldName;
       const produced = pr ? pr.produced || 0 : 0;  // GOOD pieces reaching the store
       const shots = pr ? pr.shots || 0 : 0;         // total shots (incl. rejected)
       const rejected = pr ? pr.rejected || 0 : 0;
@@ -91,6 +116,7 @@ async function computePoMouldRows(purchaseOrderId) {
         orderId: String(job._id),
         itemCode: info.itemCode,
         productName: info.productName,
+        setupId: t ? String(t._id) : null,
         moldName,
         partName,
         cavity,
@@ -128,6 +154,7 @@ async function getItemCodeStore(purchaseOrderId) {
   const items = jobInfo.map((info) => {
     const moulds = (byJob.get(info.orderId) || [])
       .map((r) => ({
+        setupId: r.setupId,
         moldName: r.moldName,
         partName: r.partName,
         cavity: r.cavity,

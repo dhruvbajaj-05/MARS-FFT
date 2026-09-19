@@ -61,14 +61,13 @@ export function MouldingForm() {
   const [mCavity, setMCavity] = useState('');
   const [mShots, setMShots] = useState('');
   const [moldOk, setMoldOk] = useState<string | null>(null);
-  // Set when Save is refused locally because the mould name is already set up on this item
-  // code — saving would silently overwrite that setup (its part/cavity/shots), so we never do.
-  const [moldDupError, setMoldDupError] = useState<string | null>(null);
-  // When set, the setup form is EDITING this existing mold (name locked as the key).
-  const [editingMold, setEditingMold] = useState<string | null>(null);
+  // When set, the setup form is EDITING this existing setup row (by id — mould names may
+  // repeat on an item code, so the name is never the key).
+  const [editingMoldId, setEditingMoldId] = useState<string | null>(null);
 
   // ---- Production push form ----
   const [machineNumber, setMachineNumber] = useState<string | null>(null);
+  // The Mould Setup row (id) production is being entered for.
   const [selectedMold, setSelectedMold] = useState<string | null>(null);
   // Shift is chosen MANUALLY by the engineer from a dropdown (A/B/C) — never auto-detected.
   const [shift, setShift] = useState<Shift | null>(null);
@@ -135,8 +134,7 @@ export function MouldingForm() {
     setMPartName('');
     setMCavity('');
     setMShots('');
-    setEditingMold(null);
-    setMoldDupError(null);
+    setEditingMoldId(null);
   };
 
   const saveMold = useMutation({
@@ -149,11 +147,12 @@ export function MouldingForm() {
         partName: mPartName.trim(),
         cavity: Number(mCavity),
         requiredShots: mShots === '' ? undefined : Number(mShots),
-        // When editing, this is the row's original name so the backend can rename it (req #9).
-        originalMoldName: editingMold ?? undefined,
+        // Editing → the row id. Absent → the backend ALWAYS creates a NEW setup row, even when
+        // the same mould name is already set up on this item code.
+        id: editingMoldId ?? undefined,
       }),
     onSuccess: (mold) => {
-      setMoldOk(`Mold "${mold.moldName}" saved (${mold.partName}, ${mold.cavity} cavity, target ${mold.requiredQuantity}).`);
+      setMoldOk(`Mould "${mold.moldName}" saved (${mold.partName}, ${mold.cavity} cavity, target ${mold.requiredQuantity}).`);
       resetSetupForm();
       qc.invalidateQueries({ queryKey: queryKeys.orderMolds(cp.jobId!) });
       if (cp.productId) qc.invalidateQueries({ queryKey: queryKeys.molds(cp.productId) });
@@ -181,8 +180,13 @@ export function MouldingForm() {
   // mould from every item code of this company AND from the learned-mould memory. Nothing is
   // left in the database. Server blocks it once production has been pushed under the mould.
   const deleteCompanyMold = useMutation({
-    mutationFn: (moldName: string) =>
-      mouldingApi.deleteCompanyMold({ customerId: cp.customerId!, moldName }),
+    mutationFn: (s: CompanyMoldSuggestion) =>
+      mouldingApi.deleteCompanyMold({
+        customerId: cp.customerId!,
+        moldName: s.moldName,
+        partName: s.partName,
+        cavity: s.cavity,
+      }),
     onSuccess: (res) => {
       setMoldOk(`Mould "${res.moldName}" deleted.`);
       resetSetupForm();
@@ -205,7 +209,7 @@ export function MouldingForm() {
           onPress: () => {
             setMoldOk(null);
             deleteCompanyMold.reset();
-            deleteCompanyMold.mutate(s.moldName);
+            deleteCompanyMold.mutate(s);
           },
         },
       ]
@@ -231,17 +235,16 @@ export function MouldingForm() {
     );
   };
 
-  // Load an existing mold into the setup form for quick editing. Every field — including the
-  // mold NAME — is editable; on save the original name is sent so the backend renames the row
-  // (and re-tags its production) instead of creating a duplicate (req #9).
+  // Load an existing setup into the form for editing. Every field — including the mould NAME —
+  // is editable; the row id is sent on save so THAT row is updated (production already pushed
+  // under it stays attached).
   const editMold = (m: OrderMold) => {
     setMMoldName(m.moldName);
     setMPartName(m.partName);
     setMCavity(String(m.cavity));
     setMShots(m.requiredShots ? String(m.requiredShots) : '');
-    setEditingMold(m.moldName);
+    setEditingMoldId(m.id);
     setMoldOk(null);
-    setMoldDupError(null);
   };
 
   const submit = useMutation({
@@ -250,7 +253,8 @@ export function MouldingForm() {
         orderId: cp.jobId!,
         customerId: cp.customerId!,
         productId: cp.productId!,
-        moldName: selectedMold!,
+        orderMoldId: selectedMold!,
+        moldName: activeMold?.moldName ?? '',
         machineNumber: machineNumber!,
         shotsDone: Number(shotsDone),
         rejectedShots: Number(rejectedShots),
@@ -353,19 +357,21 @@ export function MouldingForm() {
   const recoverError = recoverMutation.error instanceof ApiError ? friendlyMessage(recoverMutation.error) : null;
 
   const moldList: OrderMold[] = orderMolds.data?.molds ?? [];
+  // Production mould picker — one entry per SETUP ROW (value = row id). The same mould name
+  // can appear more than once, so the part + cavity are shown on every entry.
   const moldOptions: SelectOption[] = moldList.map((m) => {
-    const mp = prodStatus.data?.moldProgress?.find((p) => p.moldName === m.moldName);
+    const mp = prodStatus.data?.moldProgress?.find((p) => p.id === m.id);
     if (mp?.isComplete) {
       return {
-        label: `${m.moldName}  ✓ Done`,
-        value: m.moldName,
-        hint: `Complete · locked${mp.surplusShots > 0 ? ` · surplus ${mp.surplusShots.toLocaleString()} shots` : ''}`,
+        label: `${m.moldName} · ${m.cavity} cav  ✓ Done`,
+        value: m.id,
+        hint: `${m.partName} · complete · locked${mp.surplusShots > 0 ? ` · surplus ${mp.surplusShots.toLocaleString()} shots` : ''}`,
       };
     }
     return {
-      label: m.moldName,
-      value: m.moldName,
-      hint: `${m.partName} · ${m.cavity} cavity · target ${(m.requiredShots || 0).toLocaleString()} shots`,
+      label: `${m.moldName} · ${m.cavity} cav`,
+      value: m.id,
+      hint: `${m.partName} · target ${(m.requiredShots || 0).toLocaleString()} shots`,
     };
   });
 
@@ -373,26 +379,30 @@ export function MouldingForm() {
   // so the same physical mould can be reused on any item code without re-typing it. Selecting
   // one fills the setup form (identity + part + cavity); the engineer just sets Required Shots
   // and saves — leaving it a normal per-item-code Mould Setup.
+  // Lists every (mould, part, cavity) ever set up for this company — including the ones on
+  // THIS item code, from the moment they are saved. Picking one pre-fills the form; the
+  // engineer changes whatever differs and taps Save → a NEW setup row (never an overwrite).
   const companySuggestions: CompanyMoldSuggestion[] = orderMolds.data?.companySuggestions ?? [];
+  const suggestionKey = (s: CompanyMoldSuggestion) => `${s.moldName}|${s.partName}|${s.cavity}`;
   const companyMoldOptions: SelectOption[] = companySuggestions.map((s) => ({
-    label: s.moldName,
-    value: s.moldName,
-    hint: `${s.partName} · ${s.cavity} cav`,
+    label: `${s.moldName} · ${s.cavity} cav`,
+    value: suggestionKey(s),
+    hint: s.partName,
   }));
   const adoptCompanySuggestion = (s: CompanyMoldSuggestion) => {
     setMMoldName(s.moldName);
     setMPartName(s.partName);
     setMCavity(String(s.cavity));
     setMShots('');
-    setEditingMold(null);
+    setEditingMoldId(null);
     setMoldOk(null);
-    setMoldDupError(null);
   };
 
   const activeMold = useMemo(
-    () => moldList.find((m) => m.moldName === selectedMold) ?? null,
+    () => moldList.find((m) => m.id === selectedMold) ?? null,
     [moldList, selectedMold]
   );
+  const activeMoldLabel = activeMold ? `${activeMold.moldName} (${activeMold.cavity} cav)` : 'This mould';
   const shotsNum = Number(shotsDone);
   const rejectedShotsNum = Number(rejectedShots);
   // Entry page works in SHOTS. Good shots for THIS entry = total − rejected (rejected never count).
@@ -405,7 +415,7 @@ export function MouldingForm() {
   // do NOT count). The target is a PLAN, never a cap: an entry is ALWAYS accepted in full, even
   // when its good shots overshoot. The single entry that reaches/crosses the target completes
   // the mould and its good overage flows to Surplus; only AFTER that is the mould locked.
-  const selectedMoldProgress = prodStatus.data?.moldProgress?.find((m) => m.moldName === selectedMold);
+  const selectedMoldProgress = prodStatus.data?.moldProgress?.find((m) => m.id === selectedMold);
   const targetShots = activeMold?.requiredShots ?? 0;
   const doneShots = selectedMoldProgress?.goodShots ?? 0;
   const remainingShots = targetShots > 0 ? Math.max(0, targetShots - doneShots) : null;
@@ -424,6 +434,7 @@ export function MouldingForm() {
     cp.productId &&
     cp.jobId &&
     selectedMold &&
+    activeMold &&
     machineNumber &&
     shift &&
     Number.isFinite(shotsNum) &&
@@ -586,9 +597,9 @@ export function MouldingForm() {
                 MOULDS SET UP ({moldList.length})
               </AppText>
               {moldList.map((m) => {
-                const mp = prodStatus.data?.moldProgress?.find((p) => p.moldName === m.moldName);
+                const mp = prodStatus.data?.moldProgress?.find((p) => p.id === m.id);
                 const hasProg = mp && m.requiredShots > 0;
-                const isEditing = editingMold === m.moldName;
+                const isEditing = editingMoldId === m.id;
                 const isDone = !!(hasProg && mp.isComplete);
                 // Plain-language status so anyone reading the card knows where this mould stands.
                 const statusLabel = isDone
@@ -639,7 +650,7 @@ export function MouldingForm() {
                     <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: spacing(2) }}>
                       <View style={{ flex: 1 }}>
                         <AppText variant="caption" tone="muted">Mould</AppText>
-                        <AppText variant="h3">{m.moldName}</AppText>
+                        <AppText variant="h3">{m.moldName} · {m.cavity} cav</AppText>
                       </View>
                       <View
                         style={{
@@ -715,18 +726,18 @@ export function MouldingForm() {
           {/* Company-wide mould dropdown — pick any mould already set up for this company (across
               all its item codes) instead of re-entering it. Fills the form; set Required Shots + save.
               Each row also carries a solid-red DELETE button that erases the mould company-wide. */}
-          {companyMoldOptions.length > 0 && !editingMold ? (
+          {companyMoldOptions.length > 0 && !editingMoldId ? (
             <View style={{ marginBottom: spacing(3) }}>
               <Select
-                label="Reuse a mould from this company (tap a name to use it · DELETE removes it)"
+                label="Reuse a mould from this company (tap one to fill the form · DELETE removes it)"
                 value={null}
                 options={companyMoldOptions}
                 onChange={(v) => {
-                  const s = companySuggestions.find((x) => x.moldName === v);
+                  const s = companySuggestions.find((x) => suggestionKey(x) === v);
                   if (s) adoptCompanySuggestion(s);
                 }}
                 onDeleteOption={(o) => {
-                  const s = companySuggestions.find((x) => x.moldName === o.value);
+                  const s = companySuggestions.find((x) => suggestionKey(x) === o.value);
                   if (s) confirmDeleteCompanyMold(s);
                 }}
                 deleteLabel="DELETE"
@@ -740,15 +751,16 @@ export function MouldingForm() {
           ) : null}
 
           {moldOk ? <Banner tone="success" message={moldOk} /> : null}
-          {moldDupError ? <Banner tone="danger" message={moldDupError} /> : null}
           {moldError ? <Banner tone="danger" message={moldError} /> : null}
           {deleteMoldError ? <Banner tone="info" message={deleteMoldError} /> : null}
           {deleteCompanyMoldError ? <Banner tone="danger" message={deleteCompanyMoldError} /> : null}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing(1) }}>
             <AppText variant="caption" tone="muted">
-              {editingMold ? `Editing mould "${editingMold}" — change the fields and tap Update` : 'Add a new mould (or tap Edit on a mould above to change it)'}
+              {editingMoldId
+                ? `Editing "${moldList.find((m) => m.id === editingMoldId)?.moldName ?? 'mould'}" — change the fields and tap Update`
+                : 'Add a new mould — the same mould name can be set up as many times as needed'}
             </AppText>
-            {editingMold ? (
+            {editingMoldId ? (
               <Pressable onPress={resetSetupForm}>
                 <AppText variant="caption" weight="600" style={{ color: colors.primary }}>Cancel edit</AppText>
               </Pressable>
@@ -759,27 +771,11 @@ export function MouldingForm() {
           <FormField label="Cavity number" value={mCavity} onChangeText={setMCavity} keyboardType="number-pad" placeholder="e.g. 11" />
           <FormField label="Required shots" value={mShots} onChangeText={setMShots} keyboardType="number-pad" placeholder="e.g. 3000" />
           <Button
-            label={editingMold ? 'Update Mold' : 'Save Mold'}
+            label={editingMoldId ? 'Update Mould' : 'Save Mould'}
             loading={saveMold.isPending}
             disabled={!canSaveMold}
             onPress={() => {
               setMoldOk(null);
-              setMoldDupError(null);
-              // A mould name is the key of a setup on this item code. Saving a NEW mould under a
-              // name that is already set up would overwrite that setup instead of adding one —
-              // refuse here (and the backend refuses too) so every mould entered is kept.
-              const typed = mMoldName.trim().toLowerCase();
-              const clash = moldList.find(
-                (m) => m.moldName.toLowerCase() === typed && m.moldName !== editingMold
-              );
-              if (clash) {
-                setMoldDupError(
-                  `A mould named "${clash.moldName}" is already set up on this item code ` +
-                    `(${clash.partName}, ${clash.cavity} cavity). Give this mould a different name ` +
-                    `(e.g. "${mMoldName.trim()} – ${mCavity || 'N'} cav"), or tap Edit on that card to change it.`
-                );
-                return;
-              }
               saveMold.mutate();
             }}
           />
@@ -796,7 +792,7 @@ export function MouldingForm() {
           {moldAlreadyComplete ? (
             <Banner
               tone="success"
-              message={`${selectedMold ?? 'This mould'} has already reached its target — it is complete and locked. Any extra shots you produced are counted as surplus below.`}
+              message={`${activeMoldLabel} has already reached its target — it is complete and locked. Any extra shots you produced are counted as surplus below.`}
             />
           ) : null}
           {error ? <Banner tone="info" message={error} /> : null}
@@ -854,10 +850,10 @@ export function MouldingForm() {
               persistent
               message={
                 moldLocked
-                  ? `${selectedMold} is complete for this item code — target of ${targetShots.toLocaleString()} good shots reached (${doneShots.toLocaleString()} done). This mould is locked.`
+                  ? `${activeMoldLabel} is complete for this item code — target of ${targetShots.toLocaleString()} good shots reached (${doneShots.toLocaleString()} done). This mould is locked.`
                   : completesMould
-                    ? `This entry completes ${selectedMold}.${surplusShots > 0 ? ` ${surplusShots.toLocaleString()} good shot${surplusShots === 1 ? '' : 's'} beyond target → Surplus.` : ''} The mould locks after this entry.`
-                    : `Progress for ${selectedMold}: ${doneShots.toLocaleString()} / ${targetShots.toLocaleString()} good shots (${remainingShots.toLocaleString()} to target).`
+                    ? `This entry completes ${activeMoldLabel}.${surplusShots > 0 ? ` ${surplusShots.toLocaleString()} good shot${surplusShots === 1 ? '' : 's'} beyond target → Surplus.` : ''} The mould locks after this entry.`
+                    : `Progress for ${activeMoldLabel}: ${doneShots.toLocaleString()} / ${targetShots.toLocaleString()} good shots (${remainingShots.toLocaleString()} to target).`
               }
             />
           ) : null}
@@ -875,7 +871,7 @@ export function MouldingForm() {
               }}
             >
               <AppText weight="700" style={{ color: colors.status.success.fg }}>
-                ✓ {selectedMold} is complete for this item code
+                ✓ {activeMoldLabel} is complete for this item code
               </AppText>
               <AppText variant="caption" tone="muted" style={{ marginTop: 2 }}>
                 Target of {targetShots.toLocaleString()} shots reached. This mould is locked — no
@@ -978,7 +974,7 @@ export function MouldingForm() {
           ) : (
             itemSurplusMoulds.map((m) => (
               <View
-                key={m.moldName}
+                key={m.id}
                 style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}
               >
                 <AppText variant="caption" weight="600">

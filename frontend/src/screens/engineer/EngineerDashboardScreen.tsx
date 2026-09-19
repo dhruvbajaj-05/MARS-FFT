@@ -100,7 +100,7 @@ function POCard({ po, archived }: { po: MouldingPOCard; archived?: boolean }) {
                       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2), marginTop: spacing(2) }}>
                         {moulds.map((m) => (
                           <View
-                            key={m.moldName}
+                            key={m.id ?? `${m.moldName}|${m.partName}|${m.cavity}`}
                             style={{
                               flexDirection: 'row',
                               alignItems: 'center',
@@ -270,7 +270,7 @@ function AssemblyPOCard({ po, archived }: { po: MouldingPOCard; archived?: boole
                       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: spacing(2), marginTop: spacing(2) }}>
                         {parts.map((m) => (
                           <View
-                            key={m.moldName}
+                            key={m.id ?? `${m.moldName}|${m.partName}|${m.cavity}`}
                             style={{
                               backgroundColor: colors.surface,
                               borderRadius: radius.sm,
