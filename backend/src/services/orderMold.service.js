@@ -114,6 +114,26 @@ async function upsertOrderMold({ orderId, customerId, productId, moldName, partN
     // No row under the old name — fall through and treat as a normal create of `name`.
   }
 
+  // ADD path (no originalMoldName): a mould name must be unique per item code. Saving a
+  // NEW setup under a name that already exists would silently overwrite that setup's
+  // part / cavity / required shots — the engineer loses a mould without noticing. Refuse
+  // instead and tell them to pick a different name (or use Edit on the existing card).
+  // Case-insensitive so "mega blocks" is treated as the same mould as "Mega blocks".
+  // Skipped only when the engineer is editing this very row under its own name.
+  if (oldName.toLowerCase() !== name.toLowerCase()) {
+    const dup = await OrderMold.findOne({
+      orderId,
+      moldName: { $regex: `^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' },
+    });
+    if (dup) {
+      throw conflict(
+        `A mould named "${dup.moldName}" is already set up on this item code (${dup.partName}, ${dup.cavity} cavity). ` +
+          `Give this mould a different name (e.g. "${name} – ${cav} cav"), or tap Edit on that card to change it.`,
+        'mold_name_exists'
+      );
+    }
+  }
+
   const mold = await OrderMold.findOneAndUpdate(
     { orderId, moldName: name },
     {

@@ -61,6 +61,9 @@ export function MouldingForm() {
   const [mCavity, setMCavity] = useState('');
   const [mShots, setMShots] = useState('');
   const [moldOk, setMoldOk] = useState<string | null>(null);
+  // Set when Save is refused locally because the mould name is already set up on this item
+  // code — saving would silently overwrite that setup (its part/cavity/shots), so we never do.
+  const [moldDupError, setMoldDupError] = useState<string | null>(null);
   // When set, the setup form is EDITING this existing mold (name locked as the key).
   const [editingMold, setEditingMold] = useState<string | null>(null);
 
@@ -133,6 +136,7 @@ export function MouldingForm() {
     setMCavity('');
     setMShots('');
     setEditingMold(null);
+    setMoldDupError(null);
   };
 
   const saveMold = useMutation({
@@ -237,6 +241,7 @@ export function MouldingForm() {
     setMShots(m.requiredShots ? String(m.requiredShots) : '');
     setEditingMold(m.moldName);
     setMoldOk(null);
+    setMoldDupError(null);
   };
 
   const submit = useMutation({
@@ -381,6 +386,7 @@ export function MouldingForm() {
     setMShots('');
     setEditingMold(null);
     setMoldOk(null);
+    setMoldDupError(null);
   };
 
   const activeMold = useMemo(
@@ -734,7 +740,8 @@ export function MouldingForm() {
           ) : null}
 
           {moldOk ? <Banner tone="success" message={moldOk} /> : null}
-          {moldError ? <Banner tone="info" message={moldError} /> : null}
+          {moldDupError ? <Banner tone="danger" message={moldDupError} /> : null}
+          {moldError ? <Banner tone="danger" message={moldError} /> : null}
           {deleteMoldError ? <Banner tone="info" message={deleteMoldError} /> : null}
           {deleteCompanyMoldError ? <Banner tone="danger" message={deleteCompanyMoldError} /> : null}
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing(1) }}>
@@ -757,6 +764,22 @@ export function MouldingForm() {
             disabled={!canSaveMold}
             onPress={() => {
               setMoldOk(null);
+              setMoldDupError(null);
+              // A mould name is the key of a setup on this item code. Saving a NEW mould under a
+              // name that is already set up would overwrite that setup instead of adding one —
+              // refuse here (and the backend refuses too) so every mould entered is kept.
+              const typed = mMoldName.trim().toLowerCase();
+              const clash = moldList.find(
+                (m) => m.moldName.toLowerCase() === typed && m.moldName !== editingMold
+              );
+              if (clash) {
+                setMoldDupError(
+                  `A mould named "${clash.moldName}" is already set up on this item code ` +
+                    `(${clash.partName}, ${clash.cavity} cavity). Give this mould a different name ` +
+                    `(e.g. "${mMoldName.trim()} – ${mCavity || 'N'} cav"), or tap Edit on that card to change it.`
+                );
+                return;
+              }
               saveMold.mutate();
             }}
           />
