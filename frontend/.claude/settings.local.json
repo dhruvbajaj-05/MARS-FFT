@@ -39,7 +39,8 @@
       "Bash(node -c src/controllers/customer.controller.js)",
       "Bash(node -c src/routes/customer.routes.js)",
       "Bash(node -c src/services/store.service.js)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(xargs grep -l -iE \"outsourc\")"
     ]
   }
 }

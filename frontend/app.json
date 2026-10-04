@@ -2,15 +2,10 @@
   "expo": {
     "name": "FFT Manufacturing",
     "slug": "fft-manufacturing-mobile",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "default",
     "scheme": "fftmfg",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
-    "splash": {
-      "resizeMode": "contain",
-      "backgroundColor": "#0F172A"
-    },
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -43,7 +38,9 @@
           "photosPermission": "Allow FFT Manufacturing to access your photos to attach record images.",
           "cameraPermission": "Allow FFT Manufacturing to use the camera to capture record photos."
         }
-      ]
+      ],
+      "expo-image",
+      "expo-status-bar"
     ],
     "extra": {
       "apiBaseUrl": "https://mars-fft-production.up.railway.app",
